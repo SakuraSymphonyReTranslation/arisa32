@@ -1,6 +1,6 @@
-#include "dc4/movie.h"
-#include "dc4/audio.h"
-#include "dc4/resource.h"
+#include "arisa32/movie.h"
+#include "arisa32/audio.h"
+#include "arisa32/resource.h"
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"

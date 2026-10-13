@@ -8,11 +8,66 @@ import android.graphics.drawable.*;
 import android.view.*;
 import android.widget.*;
 
+import java.io.File;
+
 /** The adv32 / Circus Engine visual system for Arisa32. */
 final class ArisaUi {
-    static final int INK=0xff0c121c, PANEL=0xf5131b26, TEXT=0xffe6edf5;
+    static final int INK=0xff0c121c, PANEL=0xd0131b26, TEXT=0xffe6edf5;
     static final int MUTED=0xff8899ac, CYAN=0xff38bdf8, GOLD=0xfff59e0b, LINE=0x33455a73;
     private static Bitmap wallpaper;
+
+    static File getCustomWallpaperFile(Context c) {
+        return new File(c.getFilesDir(), "custom_wallpaper.png");
+    }
+
+    static boolean hasCustomWallpaper(Context c) {
+        return getCustomWallpaperFile(c).exists();
+    }
+
+    static void reloadWallpaper(Context c) {
+        if (wallpaper != null && !wallpaper.isRecycled()) {
+            wallpaper.recycle();
+        }
+        wallpaper = null;
+        loadWallpaper(c);
+    }
+
+    static void clearCustomWallpaper(Context c) {
+        File file = getCustomWallpaperFile(c);
+        if (file.exists()) {
+            file.delete();
+        }
+        reloadWallpaper(c);
+    }
+
+    static Bitmap loadWallpaper(Context c) {
+        if (wallpaper != null && !wallpaper.isRecycled()) return wallpaper;
+        File custom = getCustomWallpaperFile(c);
+        if (custom.exists()) {
+            try {
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(custom.getAbsolutePath(), opts);
+                int maxDim = 1920;
+                int sample = 1;
+                while (opts.outWidth / sample > maxDim || opts.outHeight / sample > maxDim) {
+                    sample *= 2;
+                }
+                opts.inJustDecodeBounds = false;
+                opts.inSampleSize = sample;
+                opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                wallpaper = BitmapFactory.decodeFile(custom.getAbsolutePath(), opts);
+            } catch (Throwable ignored) {
+                wallpaper = null;
+            }
+        }
+        if (wallpaper == null) {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inPreferredConfig = Bitmap.Config.RGB_565;
+            wallpaper = BitmapFactory.decodeResource(c.getResources(), R.drawable.arisa_wallpaper, o);
+        }
+        return wallpaper;
+    }
     static int dp(Context c,float n){return (int)(n*c.getResources().getDisplayMetrics().density+.5f);}
     static GradientDrawable shape(Context c,int color,int radius){
         GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(c,radius));return d;
@@ -38,6 +93,14 @@ final class ArisaUi {
         b.setMinimumHeight(dp(c,44));b.setMinWidth(0);b.setMinimumWidth(0);
         b.setPadding(dp(c,16),dp(c,8),dp(c,16),dp(c,8));b.setStateListAnimator(null);
         b.setOnClickListener(v->action.run());return b;
+    }
+    static Button dangerButton(Context c, String label, Runnable action) {
+        Button b = new Button(c); b.setText(label); b.setAllCaps(true); b.setTextSize(13);
+        b.setTypeface(Typeface.create("sans-serif-bold", Typeface.BOLD)); b.setTextColor(0xffff6b6b);
+        b.setBackground(ripple(c, 0xd02a161b, 6)); b.setMinHeight(dp(c, 44));
+        b.setMinimumHeight(dp(c, 44)); b.setMinWidth(0); b.setMinimumWidth(0);
+        b.setPadding(dp(c, 14), dp(c, 8), dp(c, 14), dp(c, 8)); b.setStateListAnimator(null);
+        b.setOnClickListener(v -> action.run()); return b;
     }
     static EditText input(Context c,String hint){
         EditText e=new EditText(c);e.setTextColor(TEXT);e.setHintTextColor(MUTED);e.setTextSize(14);
@@ -66,19 +129,22 @@ final class ArisaUi {
         private Shader shade;
         Wallpaper(Context c){
             super(c);setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-            if(wallpaper==null){BitmapFactory.Options o=new BitmapFactory.Options();o.inPreferredConfig=Bitmap.Config.RGB_565;
-                wallpaper=BitmapFactory.decodeResource(c.getResources(),R.drawable.arisa_wallpaper,o);}
+            loadWallpaper(c);
         }
         @Override protected void onSizeChanged(int w,int h,int ow,int oh){
-            if(wallpaper!=null){float scale=Math.max(w/(float)wallpaper.getWidth(),h/(float)wallpaper.getHeight());
+            if(wallpaper!=null && !wallpaper.isRecycled()){
+                float scale=Math.max(w/(float)wallpaper.getWidth(),h/(float)wallpaper.getHeight());
                 float bw=wallpaper.getWidth()*scale,bh=wallpaper.getHeight()*scale;
-                float x=(w-bw)*.68f,y=(h-bh)*.40f;destination.set(x,y,x+bw,y+bh);}
-            shade=new LinearGradient(0,0,w,0,new int[]{0xfc0c121c,0xee0c121c,0x990c121c,0x550c121c},new float[]{0,.36f,.68f,1},Shader.TileMode.CLAMP);
+                float x=(w-bw)*.5f,y=(h-bh)*.5f;
+                destination.set(x,y,x+bw,y+bh);
+            }
+            shade=new LinearGradient(0,0,w,0,new int[]{0xf00c121c,0xd20c121c,0x880c121c,0x440c121c},new float[]{0,.36f,.68f,1},Shader.TileMode.CLAMP);
         }
         @Override protected void onDraw(Canvas c){
-            c.drawColor(INK);paint.setShader(null);if(wallpaper!=null)c.drawBitmap(wallpaper,null,destination,paint);
+            c.drawColor(INK);paint.setShader(null);
+            if(wallpaper!=null && !wallpaper.isRecycled()) c.drawBitmap(wallpaper,null,destination,paint);
             paint.setShader(shade);c.drawRect(0,0,getWidth(),getHeight(),paint);paint.setShader(null);
-            paint.setColor(0x180c121c);c.drawRect(0,0,getWidth(),getHeight(),paint);
+            paint.setColor(0x240c121c);c.drawRect(0,0,getWidth(),getHeight(),paint);
         }
     }
 

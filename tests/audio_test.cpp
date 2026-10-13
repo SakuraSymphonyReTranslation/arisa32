@@ -1,5 +1,5 @@
-#include "dc4/audio.h"
-#include "dc4/scene_audio.h"
+#include "arisa32/audio.h"
+#include "arisa32/scene_audio.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

@@ -1,4 +1,4 @@
-#include "dc4/scene.h"
+#include "arisa32/scene.h"
 
 #include <cmath>
 #include <cstring>
@@ -315,6 +315,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         script_wait_pending_ = false; script_wait_ms_ = 0;
         credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
         credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();
+        effect_pck_.clear();
         transition_active_ = transition_pending_ = false; transition_snap_.clear();
         scene_chips_.clear(); pending_scene_blit_ = false;
         if (restore_error) restore_error->clear();

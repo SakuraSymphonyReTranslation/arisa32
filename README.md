@@ -4,16 +4,56 @@
 > ### 🤖 Full LLM Generated / 100% Dibuat oleh AI (LLM)
 > Seluruh kode sumber, arsitektur sistem, reverse-engineering opcode MES adv32, dekoder aset, antarmuka Android/JNI, serta dokumentasi pada repositori ini **dibuat secara penuh oleh Large Language Model (LLM)**.
 >
-> ### 🎮 Kompatibilitas Game / Game Compatibility: D.C.4 Only
-> Untuk saat ini runtime engine **hanya mendukung dan diuji khusus untuk D.C.4 (Da Capo 4)**. Judul visual novel lain yang menggunakan engine CIRCUS adv32 (seperti D.C.3, Dal Segno, dsb.) **belum didukung**.
+> ### 🎮 Kompatibilitas Game / Game Compatibility: Da Capo & Dal Segno Series (CIRCUS adv32)
+> Runtime engine mendukung judul visual novel yang ditenagai oleh engine **CIRCUS adv32**, difokuskan secara khusus pada seri **Da Capo** dan **Dal Segno** (termasuk D.C.4, D.C.4 Plus Harmony, D.C. III series, D.C. II series, D.C. series, dan Dal Segno series). Judul non-adv32 (seperti D.C.4 Fortunate Departures yang menggunakan engine berbeda) tidak didukung.
 >
 > ### 📦 Nama Proyek / Repository: Arisa32
 > Nama proyek dan repositori ini adalah **Arisa32** (pengganti penamaan internal sebelumnya `dc4engine`). Target paket Android menggunakan identifier `org.dc4engine` demi menjaga kompatibilitas save data dan path aplikasi.
 
-A portable C++17 reimplementation of the CIRCUS adv32 visual novel engine runtime specifically for **D.C.4 (Da Capo 4)** on Windows (SDL2) and Android (NativeActivity + JNI). It reads the original game's installed MES scripts, CRX/CRM artwork, and XPCM audio directly in place.
+A portable C++17 reimplementation of the CIRCUS adv32 visual novel engine runtime for **Da Capo & Dal Segno series** on Windows (SDL2) and Android (NativeActivity + JNI). It reads the original game's installed MES scripts, CRX/CRM artwork, and XPCM audio directly in place.
 
 > [!NOTE]
-> **Game assets are not included.** A legitimate copy of D.C.4 (Da Capo 4) is required. Game files (`AdvData`) are read in place and are never modified by the engine.
+> **Game assets are not included.** A legitimate copy of supported games is required. Game files (`AdvData`) are read in place and are never modified by the engine.
+
+---
+
+## Supported Games / Judul Game yang Didukung
+
+Arisa32 mengenali dan mendukung 21 judul resmi dari seri Da Capo & Dal Segno berbasis engine CIRCUS adv32 dengan deteksi otomatis skrip dan aset:
+
+### Da Capo 4 Series
+- `D.C.4 ~Da Capo 4~`
+- `D.C.4 ~Da Capo 4~ Plus Harmony` *(didukung sebagai judul terpisah dengan deteksi rute skrip khusus)*
+
+### Da Capo III Series
+- `D.C. III ~Da Capo III~`
+- `D.C. III R ~Da Capo III R~`
+- `D.C. III P.P. ~Da Capo III Platinum Partner~`
+- `D.C. III With You ~Da Capo III With You~`
+- `D.C. III Dream Days ~Da Capo III Dream Days~`
+
+### Da Capo II Series
+- `D.C. II ~Da Capo II~`
+- `D.C. II Spring Celebration ~Da Capo II Spring Celebration~`
+- `D.C. II P.C. ~Da Capo II Plus Communication~`
+- `D.C. II To You ~Da Capo II To You~`
+- `D.C. II Fall in Love ~Da Capo II Fall in Love~`
+- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
+
+### Da Capo (Original) Series
+- `D.C. ~Da Capo~`
+- `D.C.P.C. ~Da Capo Plus Communication~`
+- `D.C. White Season ~Da Capo White Season~`
+- `D.C. Summer Vacation ~Da Capo Summer Vacation~`
+- `D.C.A.S. ~Da Capo After Seasons~`
+- `D.C. Dream X'mas ~Da Capo Dream X'mas~`
+
+### Dal Segno Series
+- `D.S. -Dal Segno-`
+- `D.S. i.F. -Dal Segno- in Future`
+
+> [!NOTE]
+> Seluruh variasi edisi (seperti Standard Edition, Limited Edition, Deluxe Edition, Download Edition) dikelompokkan ke dalam judul utama resminya. Judul non-adv32 seperti *D.C. 4 Fortunate Departures* tidak menggunakan engine adv32 sehingga tidak termasuk dalam lingkup runtime ini.
 
 ---
 
@@ -27,11 +67,14 @@ A portable C++17 reimplementation of the CIRCUS adv32 visual novel engine runtim
    - Title screen, config menus, gallery, and scene selector.
 
 2. **Android App** (NativeActivity + JNI + Java UI)
-   - Built-in persistent Game Library manager with folder import/linking via Storage Access Framework (SAF).
+   - Built-in persistent Game Library manager with auto-detection for all 21 Da Capo & Dal Segno titles.
+   - **External Storage Support**: Direct playback from MicroSD & USB OTG drives (`/storage/XXXX-XXXX`) without mandatory file copying, saving internal device storage.
+   - **Pre-bundled Default Font**: Bundled `MSGOTHIC.TTC` font ensures crisp Japanese dialogue out of the box, with options for system default font or custom TTF/OTF/TTC fonts.
+   - **Library Management**: Dedicated "REMOVE" button on game cards with prompt to optionally clean up copied files to reclaim space, plus duplicate detection.
    - Clean adv32 / Circus Engine UI theme (`ArisaUi`) with Arisa crest icon.
    - Save archive import/export system (`.zip` backup/restore).
    - Integrated full-screen touch controls, dialogue backlog, and fast-forward skipping.
-   - Targets Android API 35 (compatible with Android 7.0 / API 24+; `arm64-v8a` & `armeabi-v7a`).
+   - Targets Android API 36 (compatible with Android 5.0 / API 21+; `arm64-v8a` & `armeabi-v7a`; 16 KB page-size ready).
 
 ---
 
@@ -148,16 +191,16 @@ ctest --test-dir build/desktop --output-on-failure
 
 ## Current Status & Limitations
 
-- **D.C.4 Specific**: Tested against D.C.4's original assets and scripts. Compatibility with other CIRCUS adv32 games is not implemented.
+- **CIRCUS adv32 Scope**: Tested against CIRCUS adv32 visual novel assets and scripts (Da Capo & Dal Segno series). Non-adv32 games (such as *D.C. 4 Fortunate Departures*) use a completely different engine architecture and are not supported.
 - **Opcode Coverage**: Core gameplay, dialogue flow, branching choices, voice playback, background transitions, CG displays, BGM, and system menus are functional. Roughly 39% of less common opcodes fall through to default stub behavior (see `docs/RE-HANDOFF.md` §12).
-- **Save Compatibility**: Saves cannot be imported from or exported to the original D.C.4 Windows binary.
+- **Save Compatibility**: Saves cannot be imported from or exported to the original Windows binary.
 - **Work in Progress**: Not an official product of CIRCUS. This is an independent, clean-room reverse-engineering project created entirely with LLMs for preservation and research purposes.
 
 ---
 
 ## Legal & Trademark Notice
 
-- **D.C.4 ~Da Capo 4~** and **CIRCUS / adv32** are trademarks and copyrighted intellectual property of **CIRCUS**.
+- **D.C. \~Da Capo\~**, **D.C. II**, **D.C. III**, **D.C.4**, **D.S. -Dal Segno-**, and **CIRCUS / adv32** are trademarks and copyrighted intellectual property of **CIRCUS**.
 - This project is an independent, clean-room reimplementation developed strictly for educational, interoperability, and preservation purposes.
-- No copyrighted game assets, scripts (`.mes`), images (`.crx`/`.crm`), or audio streams (`.xpcm`/`VOICE.DAT`) are bundled or distributed with this repository. Users must own and provide their own legitimate copy of the game.
+- No copyrighted game assets, scripts (`.mes`), images (`.crx`/`.crm`), or audio streams (`.xpcm`/`VOICE.DAT`) are bundled or distributed with this repository. Users must own and provide their own legitimate copy of the games.
 

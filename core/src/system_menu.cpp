@@ -1,5 +1,5 @@
-#include "dc4/system_menu.h"
-#include "dc4/resource.h"
+#include "arisa32/system_menu.h"
+#include "arisa32/resource.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -440,6 +440,7 @@ void SystemMenu::resume_scenes() {
 }
 void SystemMenu::open(SystemMenuPage page) {
     p_->confirm.close();p_->pending_tag.clear();cancel_pointer();
+    if (page == Page::Title) p_->in_game = false;
     if (page == Page::Config && p_->page != Page::Config) p_->config_return = p_->page;
     p_->page = page; p_->gallery_view = false; p_->movie_menu = false;
     if (page == Page::Gallery || page == Page::Scenes) {
@@ -540,7 +541,7 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
     if(tag=="end" || tag=="gomenu05")return {Type::Quit};
     if(tag=="extra") {open(Page::Extras);return {};}
     if(tag=="config" || tag=="gomenu03") {open(Page::Config);return {};}
-    if(tag=="gomenu04" || tag=="menutitle") {open(Page::Title);return {};}
+    if(tag=="gomenu04" || tag=="menutitle") {p_->in_game = false; open(Page::Title); return {Type::Title};}
     if(tag=="cgmode") {open(Page::Gallery);return {};}
     if(tag=="scemode") {open(Page::Scenes);return {};}
     if(tag=="musmode") {open(Page::Music);return {};}

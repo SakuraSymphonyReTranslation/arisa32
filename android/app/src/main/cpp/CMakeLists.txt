@@ -36,12 +36,12 @@ set_source_files_properties(${DC4_ROOT}/third_party/miniz/miniz.c
     ${DC4_ROOT}/third_party/miniz/miniz_tinfl.c
     ${DC4_ROOT}/third_party/miniz/miniz_tdef.c PROPERTIES LANGUAGE C)
 
-add_library(dc4 SHARED
+add_library(arisa32 SHARED
     ${DC4_CORE_SRC}
-    dc4_jni.cpp
+    arisa32_jni.cpp
 )
 
-target_include_directories(dc4 PRIVATE
+target_include_directories(arisa32 PRIVATE
     ${DC4_CORE}/include
     ${DC4_ROOT}/third_party/miniz
     ${DC4_ROOT}/third_party/stb
@@ -50,7 +50,7 @@ target_include_directories(dc4 PRIVATE
 )
 
 # miniaudio: OpenSL|ES on every supported API (AAudio is disabled).
-target_compile_definitions(dc4 PRIVATE
+target_compile_definitions(arisa32 PRIVATE
     MA_NO_RUNTIME_LINKING
     MA_NO_AAUDIO
 )
@@ -60,10 +60,14 @@ find_library(android-lib android)
 find_library(openmaxndk OpenMAXAL)
 find_library(opensles-lib OpenSLES)
 find_library(jnigraphics-lib jnigraphics)
-target_link_libraries(dc4 PRIVATE
+target_link_libraries(arisa32 PRIVATE
     ${log-lib}
     ${android-lib}
     ${openmaxndk}
     ${opensles-lib}
     ${jnigraphics-lib}
 )
+
+# Support 16 KB page sizes for Android 15 and Android 16 (Baklava)
+target_link_options(arisa32 PRIVATE "-Wl,-z,max-page-size=16384")
+

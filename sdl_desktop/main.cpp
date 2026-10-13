@@ -1,15 +1,15 @@
 // SDL desktop frontend. Game state and native artwork are owned by dc4core.
-#include "dc4/audio.h"
-#include "dc4/bgm.h"
-#include "dc4/crx.h"
-#include "dc4/scene.h"
-#include "dc4/voice.h"
-#include "dc4/log_screen.h"
-#include "dc4/save_screen.h"
-#include "dc4/system_menu.h"
-#include "dc4/movie.h"
-#include "dc4/resource.h"
-#include "dc4/confirm_dialog.h"
+#include "arisa32/audio.h"
+#include "arisa32/bgm.h"
+#include "arisa32/crx.h"
+#include "arisa32/scene.h"
+#include "arisa32/voice.h"
+#include "arisa32/log_screen.h"
+#include "arisa32/save_screen.h"
+#include "arisa32/system_menu.h"
+#include "arisa32/movie.h"
+#include "arisa32/resource.h"
+#include "arisa32/confirm_dialog.h"
 #include "ui_script.h"
 
 #include <SDL.h>
@@ -965,6 +965,13 @@ int run(const Options& o) {
             if(scene&&scene->load_state((profile_dir/"autosave.dc4sav").string())){menu_open=slots.open=false;apply_settings();}
             break;
         case T::Quit:run_loop=false;break; // Already confirmed by SystemMenu.
+        case T::Title:
+            audio.engine.stop_all();
+            system_menu.set_in_game(false);
+            system_menu.open(dc4ui::SystemMenuPage::Title);
+            title_music();
+            update_title();
+            break;
         case T::PlayMusic: {
             std::string name=selected.asset;std::replace(name.begin(),name.end(),'\\','/');
             if(fs::path(name).extension().empty())name+=".pcm";

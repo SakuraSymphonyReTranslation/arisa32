@@ -69,3 +69,11 @@ test_*.png
 test_*.exe
 test_*.obj
 *.crash.dmp
+
+# Private local tools and mirroring
+mcp-server/
+mirror.bat
+scene-test-data/
+/MSGOTHIC.TTC
+
+

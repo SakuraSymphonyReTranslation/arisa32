@@ -1,5 +1,5 @@
-#include "dc4/crm.h"
-#include "dc4/resource.h"
+#include "arisa32/crm.h"
+#include "arisa32/resource.h"
 
 #include <algorithm>
 #include <cctype>

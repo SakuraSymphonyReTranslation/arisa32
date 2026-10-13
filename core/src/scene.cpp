@@ -1,8 +1,11 @@
-#include "dc4/scene.h"
-#include "dc4/resource.h"
+#include "arisa32/scene.h"
+#include "arisa32/resource.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +19,9 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 namespace dc4scene {
 
@@ -24,17 +30,25 @@ using namespace dc4;
 SjisDecoder g_sjis_decoder = nullptr;
 
 std::u16string sjis_to_utf16(const std::string& s) {
+    auto normalize_spaces = [](std::u16string& text) {
+        for (char16_t& ch : text) {
+            // U+3000: Japanese fullwidth space
+            // U+FF65: Halfwidth katakana middle dot (custom space placeholder 0xA5 from translation patches)
+            if (ch == u'\u3000' || ch == u'\uff65') ch = u' ';
+            // In Latin translation text: middle dot (U+30FB) or delimiter ($) acts as space
+            else if (is_latin() && (ch == u'\u30fb' || ch == u'$')) ch = u' ';
+        }
+    };
     if (prefers_utf8_text()) {
         std::u16string decoded;
-        if (decode_utf8(s, &decoded)) return decoded;
+        if (decode_utf8(s, &decoded)) {
+            normalize_spaces(decoded);
+            return decoded;
+        }
     }
     if (g_sjis_decoder) {
         std::u16string w = g_sjis_decoder(s);
-        if (is_latin()) {
-            for (char16_t& ch : w) {
-                if (ch == u'\u3000') ch = u' ';
-            }
-        }
+        normalize_spaces(w);
         return w;
     }
 #ifdef _WIN32
@@ -43,16 +57,10 @@ std::u16string sjis_to_utf16(const std::string& s) {
     std::u16string w(size_t(wlen), 0);
     MultiByteToWideChar(932, 0, s.c_str(), int(s.size()),
                         reinterpret_cast<wchar_t*>(&w[0]), wlen);
-    if (is_latin()) {
-        for (char16_t& ch : w) {
-            if (ch == u'\u3000') ch = u' ';
-        }
-    }
+    normalize_spaces(w);
     return w;
 #else
-    // Fallback: lead byte + trail byte from the Shift-JIS table. Enough for
-    // kana and the common kanji ranges; platforms can override with a real
-    // converter.
+    // Fallback: lead byte + trail byte from the Shift-JIS table.
     std::u16string w;
     w.reserve(s.size());
     for (size_t i = 0; i < s.size();) {
@@ -68,7 +76,7 @@ std::u16string sjis_to_utf16(const std::string& s) {
             unsigned int code = ((c - 0x81) * 188) + (d < 0x7F ? d - 0x40
                                   : d < 0x9F ? d - 0x41 : d - 0x9E);
             // JIS X 0208 -> UTF-16 for the kana block; kanji need a table.
-            if (code == 0) w.push_back(is_latin() ? u' ' : 0x3000);
+            if (code == 0) w.push_back(u' ');
             else if (code < 0x1E00) w.push_back(char16_t(0x3040 + code));
             else w.push_back(0x25A1);
             i += 2;
@@ -76,11 +84,7 @@ std::u16string sjis_to_utf16(const std::string& s) {
             ++i;
         }
     }
-    if (is_latin()) {
-        for (char16_t& ch : w) {
-            if (ch == u'\u3000') ch = u' ';
-        }
-    }
+    normalize_spaces(w);
     return w;
 #endif
 }
@@ -225,6 +229,7 @@ const FontRenderer::Glyph& FontRenderer::glyph(char16_t ch, int size, bool wide)
             const int cell = (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size) * (wide ? 2 : 1);
             g.x = metrics.gmptGlyphOrigin.x + (cell - metrics.gmCellIncX) / 2;
             g.y = -metrics.gmptGlyphOrigin.y;
+            g.advance = metrics.gmCellIncX;
             g.coverage.resize(size_t(g.w) * g.h);
             const int stride = (g.w + 3) & ~3;
             if (size_t(stride) * g.h > raw.size()) { g.w = g.h = 0; g.coverage.clear(); }
@@ -237,8 +242,9 @@ const FontRenderer::Glyph& FontRenderer::glyph(char16_t ch, int size, bool wide)
     }
 #endif
     const auto* f = static_cast<const stbtt_fontinfo*>(font_);
-    // EM scaling keeps a Japanese cell at the requested width on Android.
-    const float sc = stbtt_ScaleForMappingEmToPixels(f, float(size));
+    // Scale Latin characters by pixel height so they are never vertically elongated.
+    // Full-width CJK characters retain EM scaling to match visual novel grid cells.
+    const float sc = (ch < 0x100) ? stbtt_ScaleForPixelHeight(f, float(size)) : stbtt_ScaleForMappingEmToPixels(f, float(size));
     const float sx = wide ? sc * 2 : sc;
     int x1, y1;
     stbtt_GetCodepointBitmapBox(f, ch, sx, sc, &g.x, &g.y, &x1, &y1);
@@ -247,12 +253,16 @@ const FontRenderer::Glyph& FontRenderer::glyph(char16_t ch, int size, bool wide)
         g.coverage.resize(size_t(g.w) * g.h);
         stbtt_MakeCodepointBitmap(f, g.coverage.data(), g.w, g.h, g.w, sx, sc, ch);
     }
+    int adv = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(f, ch, &adv, &lsb);
+    if (adv > 0) g.advance = int(std::round(adv * sx));
     return glyphs_.emplace(key, std::move(g)).first->second;
 }
 
 void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseline,
                                   std::vector<uint8_t>* rgba, int buf_w,
-                                  int buf_h, float pixel_size, uint32_t rgb, bool wide) const {
+                                  int buf_h, float pixel_size, uint32_t rgb, bool wide,
+                                  uint32_t outline_rgb) const {
     if (!font_) return;
     if (!rgba || buf_w <= 0 || buf_h <= 0 || rgba->size() < size_t(buf_w) * buf_h * 4) return;
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
@@ -266,28 +276,56 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
             auto& value = mask[size_t(py) * buf_w + px];
             value = std::max(value, g.coverage[size_t(ry) * g.w + rx]);
         }
-        x += (ch < 0x100 || ch == u'\u3000' || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1);
+        if (g.advance > 0 && ch < 0x100) {
+            x += g.advance;
+        } else {
+            x += (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1);
+        }
     }
-    // Build the outline from the completed coverage mask. The old per-pixel
-    // outline overwrote neighbouring white strokes, making glyphs look broken.
+    // Build the outline from the completed coverage mask.
     for (int y = 0; y < buf_h; ++y) for (int px = 0; px < buf_w; ++px) {
         const size_t i = size_t(y) * buf_w + px;
         uint8_t edge = mask[i];
-        for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+        const int r = outline_rgb != 0 ? 2 : 1;
+        for (int dy = -r; dy <= r; ++dy) for (int dx = -r; dx <= r; ++dx) {
+            if (dx * dx + dy * dy > r * r + (r > 1 ? 1 : 0)) continue;
             const int xx = px + dx, yy = y + dy;
             if (xx >= 0 && yy >= 0 && xx < buf_w && yy < buf_h)
                 edge = std::max(edge, mask[size_t(yy) * buf_w + xx]);
         }
         if (!edge) continue;
         uint8_t* d = &(*rgba)[i * 4];
-        const int alpha = edge + mask[i] * (255 - edge) / 255;
-        const int white = alpha ? mask[i] * 255 / alpha : 0;
-        for (int k = 0; k < 3; ++k) {
-            const int component = int((rgb >> (16 - 8 * k)) & 255);
-            d[k] = uint8_t((white * alpha * component / 255 + d[k] * d[3] * (255 - alpha) / 255) / std::max(1, alpha + int(d[3]) * (255 - alpha) / 255));
+        const int m = int(mask[i]);
+        const int ed = int(edge);
+        const int out_w = ed - m;
+        const int bg_a = int(d[3]);
+        const int out_a = ed + bg_a * (255 - ed) / 255;
+        if (out_a > 0) {
+            for (int k = 0; k < 3; ++k) {
+                const int fg_chan = int((rgb >> (16 - 8 * k)) & 255);
+                const int out_chan = int((outline_rgb >> (16 - 8 * k)) & 255);
+                const int text_rgb_premul = fg_chan * m + out_chan * out_w;
+                const int bg_rgb_premul = int(d[k]) * bg_a * (255 - ed) / 255;
+                d[k] = uint8_t(std::clamp((text_rgb_premul + bg_rgb_premul) / out_a, 0, 255));
+            }
+            d[3] = uint8_t(std::clamp(out_a, 0, 255));
         }
-        d[3] = uint8_t(alpha + d[3] * (255 - alpha) / 255);
     }
+}
+
+int FontRenderer::text_width(const std::u16string& text, float pixel_size) const {
+    if (!font_) return 0;
+    const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
+    int w = 0;
+    for (char16_t ch : text) {
+        const Glyph& g = glyph(ch, ps, false);
+        if (g.advance > 0 && ch < 0x100) {
+            w += g.advance;
+        } else {
+            w += (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps);
+        }
+    }
+    return w;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +411,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     credits_pages_.clear();
     credits_archive_.clear();
     credits_entries_.clear();
+    effect_pck_.clear();
     input_skip_label_.clear();
     // Layer/sprite state deliberately persists: the engine keeps its graphics
     // across Mes_RunScriptByName jumps (the prologue chains a1 -> a2 -> ...).
@@ -385,6 +424,7 @@ bool SceneRunner::jump_to_label(const std::string& label) {
     pending_movie_.clear();
     script_wait_pending_ = false;
     credits_active_ = false;
+    effect_pck_.clear();
     return true;
 }
 
@@ -395,6 +435,11 @@ void SceneRunner::finish_script_wait() {
     }
     script_wait_ms_ = 0;
     credits_active_ = false;
+    if (effect_pck_.active) {
+        effect_pck_.active = false;
+        effect_pck_.current_frame = -1;
+        effect_pck_.current_img = Image{};
+    }
     scene_dirty_ = true;
 }
 
@@ -433,8 +478,22 @@ bool SceneRunner::advance_to_next_text() {
         }
         if (c.kind == K::Param2 && c.op == 0x15 && animation_enabled_) {
             // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
-            if (c.p1 == 254) continue; // effect/audio wait is already host-driven
-            script_wait_ms_ = c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1;
+            if (c.p1 == 254) {
+                if (effect_pck_.active) {
+                    double rem = effect_pck_.duration_ms - effect_pck_.elapsed_ms;
+                    if (rem > 0) {
+                        script_wait_ms_ = rem;
+                        script_wait_pending_ = true;
+                        return false;
+                    }
+                }
+                continue; // effect/audio wait is already host-driven
+            }
+            // Opcode 0x15(72) is the introductory wait before Kotori's song performance
+            // (EFF\KTR.PCK / KotoRI_uta01.mpg). BGM 43's acapella intro lasts exactly 12.58s
+            // (72 eighth-notes at 171.7 BPM), after which the chorus beat drops.
+            // Using 200ms*72 = 14.4s caused a 1.82s overshoot into the chorus.
+            script_wait_ms_ = (c.p1 == 72) ? 12580.0 : (c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1);
             if (script_wait_ms_ != 0) {
                 script_wait_pending_ = true;
                 return false;
@@ -502,10 +561,15 @@ bool SceneRunner::advance_to_next_text() {
             }
         } else if (c.kind == K::Words4 && c.op == 0x95) {
             if (!effect_movie_.empty()) {
-                scene_audio_.stop_for_movie();
+                // Cutscene effect video (e.g. KotoRI_uta01.mpg).
+                // Do not wipe BGM; movie audio will suspend other channels during playback
+                // so the song seamlessly continues when the video finishes.
                 pending_movie_ = effect_movie_;
                 effect_movie_.clear();
                 return false;
+            }
+            if (c.words[3] == 4 && effect_pck_.valid()) {
+                start_pck_effect(c.words[0], c.words[1], c.words[2]);
             }
         } else if (c.kind == K::Words4 && c.op == 0x8B) {
             set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
@@ -769,7 +833,12 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     }
     std::string up = name;
     for (char& c : up) c = char(std::toupper((unsigned char)c));
-    if (up.find(".PCK") != std::string::npos) return;
+    if (up.find(".PCK") != std::string::npos) {
+        if (up.find("KTR") == std::string::npos) {
+            load_pck_effect(name);
+        }
+        return;
+    }
     if (up.rfind("BST\\", 0) == 0 || up.rfind("CUT", 0) == 0) {
         if (preload) load_preload(slot, name);
         else if (idx >= 0) { load_bst(idx, name, slot); pending_sprites_[idx] = true; }
@@ -782,6 +851,7 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     // is active; case 73 still releases old, unqueued character resources.
     if (slot == 1 && !preserve_scene_) {
         reset_camera();
+        effect_pck_.clear();
     }
     if (slot != 1) {
         // Non-background images load into the sheet registry under their raw
@@ -1316,6 +1386,9 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         camera_motion_.erase(camera_motion_.begin());
         if (!remaining) break;
     }
+    if (effect_pck_.active) {
+        update_pck_effect(remaining);
+    }
 }
 
 void SceneRunner::finish_animations() {
@@ -1330,6 +1403,12 @@ void SceneRunner::finish_animations() {
             s.visible = false;
             s.fade = BstSprite::Fade{};
         }
+    }
+    if (effect_pck_.active) {
+        effect_pck_.active = false;
+        effect_pck_.current_frame = -1;
+        effect_pck_.current_img = Image{};
+        scene_dirty_ = true;
     }
     if (transition_active_ || transition_pending_) {
         transition_active_ = false;
@@ -1395,6 +1474,11 @@ void SceneRunner::draw(int reveal_chars) {
             blit(&frame_, kScreenW, kScreenH, dx, dy, s.img,
                  s.scale * camera_scale_, s.alpha);
         }
+    }
+    // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
+    if (effect_pck_.active && effect_pck_.current_img.valid()) {
+        blit(&frame_, kScreenW, kScreenH, effect_pck_.x, effect_pck_.y,
+             effect_pck_.current_img, 1.0f, 255);
     }
     // Retained 0x7A chip blits (the script-driven date HUD). The native draws
     // them top-left anchored at dst + the 0x88 offset, 1:1 from the sheet.
@@ -1521,6 +1605,161 @@ void SceneRunner::draw_credits() {
         const double brightness = std::clamp(1.0 - (credits_elapsed_ms_ - scroll_end - 5000) / (200 * 1000.0 / 60), 0.0, 1.0);
         for (size_t i = 0; i < frame_.size(); i += 4)
             for (size_t c = 0; c < 3; ++c) frame_[i+c] = uint8_t(frame_[i+c] * brightness);
+    }
+}
+
+bool SceneRunner::load_pck_effect(const std::string& rel) {
+    effect_pck_.clear();
+    std::string normalized = rel;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    std::filesystem::path full = std::filesystem::path(data_) / "GRP";
+    for (const auto& part : std::filesystem::path(normalized)) {
+        const std::string resolved = find_file_ci(full.string(), part.string());
+        full /= resolved.empty() ? part : std::filesystem::path(resolved);
+    }
+    if (!read_file(full.string(), &effect_pck_.archive)) {
+        full = std::filesystem::path(data_);
+        for (const auto& part : std::filesystem::path(normalized)) {
+            const std::string resolved = find_file_ci(full.string(), part.string());
+            full /= resolved.empty() ? part : std::filesystem::path(resolved);
+        }
+        if (!read_file(full.string(), &effect_pck_.archive)) {
+            last_error_ = "cannot load effect pck: " + rel;
+            return false;
+        }
+    }
+
+    auto u32 = [&](size_t at) -> uint32_t {
+        if (at + 4 > effect_pck_.archive.size()) return 0;
+        const auto* p = effect_pck_.archive.data() + at;
+        return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
+    };
+
+    const uint32_t count = u32(0);
+    if (!count || count > 2000 || 4ull + uint64_t(count) * 8 > effect_pck_.archive.size()) {
+        last_error_ = "invalid effect pck header";
+        effect_pck_.clear();
+        return false;
+    }
+
+    effect_pck_.entries.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t off = u32(4 + i * 8);
+        uint32_t sz = u32(8 + i * 8);
+        if (off + sz > effect_pck_.archive.size()) {
+            last_error_ = "effect pck entry exceeds archive";
+            effect_pck_.clear();
+            return false;
+        }
+        effect_pck_.entries.emplace_back(off, sz);
+    }
+    effect_pck_.name = rel;
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "dc4_eff", "Loaded PCK effect: %s (%zu frames)", rel.c_str(), effect_pck_.entries.size());
+#else
+    printf("Loaded PCK effect: %s (%zu frames)\n", rel.c_str(), effect_pck_.entries.size());
+#endif
+    return true;
+}
+
+bool SceneRunner::decode_pck_frame(size_t index, Image* out) {
+    if (index >= effect_pck_.entries.size()) return false;
+    const auto& entry = effect_pck_.entries[index];
+    if (entry.first + entry.second > effect_pck_.archive.size()) return false;
+    const uint8_t* ptr = effect_pck_.archive.data() + entry.first;
+    const size_t sz = entry.second;
+    if (sz < 4) return false;
+
+    if (std::memcmp(ptr, "CRXG", 4) == 0) {
+        CrxInfo info;
+        std::vector<uint8_t> rgba;
+        std::string err;
+        if (!crx_decode(ptr, sz, &rgba, &info, &err)) {
+            return false;
+        }
+        out->w = info.width;
+        out->h = info.height;
+        out->rgba = std::move(rgba);
+        out->name = effect_pck_.name;
+        return true;
+    }
+
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* data = stbi_load_from_memory(ptr, int(sz), &w, &h, &channels, 4);
+    if (!data) return false;
+
+    out->w = w;
+    out->h = h;
+    out->rgba.resize(size_t(w) * h * 4);
+    std::memcpy(out->rgba.data(), data, size_t(w) * h * 4);
+    stbi_image_free(data);
+
+    if (channels == 3) {
+        for (size_t i = 0; i < out->rgba.size(); i += 4) {
+            uint8_t r = out->rgba[i];
+            uint8_t g = out->rgba[i + 1];
+            uint8_t b = out->rgba[i + 2];
+            out->rgba[i + 3] = std::max({r, g, b});
+        }
+    }
+    out->name = effect_pck_.name;
+    return true;
+}
+
+void SceneRunner::start_pck_effect(uint16_t w0, uint16_t w1, uint16_t w2) {
+    if (!effect_pck_.valid() || !effects_enabled_) return;
+    effect_pck_.active = true;
+    effect_pck_.elapsed_ms = 0;
+    effect_pck_.duration_ms = double(effect_pck_.entries.size()) * (1000.0 / 60.0);
+    effect_pck_.current_frame = -1;
+    effect_pck_.current_img = Image{};
+    effect_pck_.x = int(int16_t(w0));
+    effect_pck_.y = int(int16_t(w1));
+    effect_pck_.loop = int(w2);
+    if (decode_pck_frame(0, &effect_pck_.current_img)) {
+        effect_pck_.current_frame = 0;
+        if (effect_pck_.current_img.w == kScreenW && effect_pck_.current_img.h == kScreenH) {
+            effect_pck_.x = 0;
+            effect_pck_.y = 0;
+        }
+    }
+    scene_dirty_ = true;
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "dc4_eff", "Started PCK effect: %s (%zu frames, duration=%.1fms, loop=%d)",
+                        effect_pck_.name.c_str(), effect_pck_.entries.size(), effect_pck_.duration_ms, effect_pck_.loop);
+#else
+    printf("Started PCK effect: %s (%zu frames, duration=%.1fms, loop=%d)\n",
+           effect_pck_.name.c_str(), effect_pck_.entries.size(), effect_pck_.duration_ms, effect_pck_.loop);
+#endif
+}
+
+void SceneRunner::update_pck_effect(double elapsed_ms) {
+    if (!effect_pck_.active || !effect_pck_.valid()) return;
+    effect_pck_.elapsed_ms += elapsed_ms;
+    const size_t count = effect_pck_.entries.size();
+    if (!count) {
+        effect_pck_.active = false;
+        return;
+    }
+    size_t target_frame = size_t(effect_pck_.elapsed_ms * 60.0 / 1000.0);
+    if (target_frame >= count) {
+        if (effect_pck_.loop > 1) {
+            effect_pck_.loop--;
+            effect_pck_.elapsed_ms -= double(count) * (1000.0 / 60.0);
+            target_frame = size_t(effect_pck_.elapsed_ms * 60.0 / 1000.0) % count;
+        } else {
+            effect_pck_.active = false;
+            effect_pck_.current_frame = -1;
+            effect_pck_.current_img = Image{};
+            scene_dirty_ = true;
+            return;
+        }
+    }
+    if (int(target_frame) != effect_pck_.current_frame) {
+        if (decode_pck_frame(target_frame, &effect_pck_.current_img)) {
+            effect_pck_.current_frame = int(target_frame);
+            scene_dirty_ = true;
+        }
     }
 }
 

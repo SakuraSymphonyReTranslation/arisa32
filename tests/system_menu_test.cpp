@@ -1,5 +1,5 @@
-#include "dc4/system_menu.h"
-#include "dc4/mesvm.h"
+#include "arisa32/system_menu.h"
+#include "arisa32/mesvm.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>

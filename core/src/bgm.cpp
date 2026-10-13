@@ -1,4 +1,4 @@
-#include "dc4/bgm.h"
+#include "arisa32/bgm.h"
 
 #include <cctype>
 #include <cstring>

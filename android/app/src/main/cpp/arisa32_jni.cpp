@@ -1,13 +1,13 @@
 // Android shell bridge. All VM, graphics, choices and audio dispatch stay in core.
-#include "dc4/audio.h"
-#include "dc4/log_screen.h"
-#include "dc4/save_screen.h"
-#include "dc4/scene.h"
-#include "dc4/voice.h"
-#include "dc4/resource.h"
-#include "dc4/system_menu.h"
-#include "dc4/movie.h"
-#include "dc4/bgm.h"
+#include "arisa32/audio.h"
+#include "arisa32/log_screen.h"
+#include "arisa32/save_screen.h"
+#include "arisa32/scene.h"
+#include "arisa32/voice.h"
+#include "arisa32/resource.h"
+#include "arisa32/system_menu.h"
+#include "arisa32/movie.h"
+#include "arisa32/bgm.h"
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -88,6 +89,7 @@ struct Engine {
     bool menu_down = false;
     bool menu_music = false;
     bool movie_suspended = false;
+    std::string current_bgm;
 };
 
 // Java serializes native access: input/render on its render thread, lifecycle
@@ -354,7 +356,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
         !next->show_message_window("SYSTEM/MESWIN.CRX") ||
         !next->load_script(e->data_dir + "/MES/" + name, label)) return next->last_error();
     e->menu.initialize_scene(*next,replay);
-    e->movie.close(); e->movie_suspended = false; e->audio.stop_all();
+    e->movie.close(); e->movie_suspended = false; e->audio.stop_all(); e->current_bgm.clear();
     next->set_audio(&e->audio, &e->voice);
     next->set_observer([e](const dc4::MesCommand& c, const std::string& script) { e->menu.observe(c,script); });
     e->scene = std::move(next);
@@ -369,7 +371,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
 std::string restore_save(Engine* e, const std::string& path) {
     std::vector<uint8_t> current;
     if (!e->scene->load_state(path)) return "Load failed: " + e->scene->last_error();
-    e->movie.close();
+    e->movie.close(); e->current_bgm.clear();
     e->menu_open = e->menu_return = false; e->in_game = true; e->replay = false;
     e->menu.set_in_game(true); sync_progress(e); apply_config(e);
     e->line_key.clear(); begin_line(e); e->fully_revealed = true;
@@ -388,19 +390,50 @@ void open_menu(Engine* e, dc4ui::SystemMenuPage page) {
 
 bool play_menu_music(Engine* e, std::string asset, bool loop) {
     if (std::filesystem::path(asset).extension().empty()) asset += ".pcm";
+    if (e->current_bgm == asset && e->audio.channel_playing(0)) return true;
     int first = 0, last = 0;
     dc4::bgm_loop_for(asset,&first,&last);
     e->audio.set_group_volume(dc4::AudioGroup::Bgm,100);
-    return e->audio.play_bgm_file(dc4::resolve_asset(e->data_dir + "/" + asset),
+    const bool ok = e->audio.play_bgm_file(dc4::resolve_asset(e->data_dir + "/" + asset),
         size_t(std::max(0,first)),size_t(std::max(0,last)),loop);
+    if (ok) e->current_bgm = asset;
+    else e->current_bgm.clear();
+    return ok;
+}
+
+void return_to_title(Engine* e) {
+    using P = dc4ui::SystemMenuPage;
+    e->movie.close();
+    e->movie_suspended = false;
+    e->scene->finish_movie();
+    e->audio.stop_all();
+    e->current_bgm.clear();
+    e->in_game = false;
+    e->replay = false;
+    save_profile(e);
+    e->menu.set_in_game(false);
+    open_menu(e, P::Title);
+    e->menu_music = false;
+    play_menu_music(e, "music/001.pcm", true);
 }
 
 void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
     using P = dc4ui::SystemMenuPage;
     if (e->menu.page() == before) return;
-    if (e->menu.page() == P::Music) { e->audio.stop_bgm(); e->menu_music = false; }
-    else if (before == P::Music && e->menu.page() != P::Config) {
-        e->menu_music = false; play_menu_music(e,"music/001.pcm",true);
+    if (e->menu.page() == P::Music) {
+        e->audio.stop_bgm();
+        e->menu_music = false;
+        e->current_bgm.clear();
+    } else if (e->menu.page() == P::Title || e->menu.page() == P::Extras) {
+        if (!e->in_game) {
+            e->menu_music = false;
+            play_menu_music(e, "music/001.pcm", true);
+        }
+    } else if (before == P::Music && e->menu.page() != P::Config) {
+        e->menu_music = false;
+        if (!e->in_game) {
+            play_menu_music(e, "music/001.pcm", true);
+        }
     }
 }
 
@@ -442,7 +475,11 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
         e->menu_music = play_menu_music(e,action.asset,e->menu.variable(100,26) == 0);
         return e->menu_music ? "" : "Music unavailable: " + action.asset;
     }
-    case A::StopMusic: e->audio.stop_bgm(); e->menu_music = false; return {};
+    case A::StopMusic: e->audio.stop_bgm(); e->menu_music = false; e->current_bgm.clear(); return {};
+    case A::Title: {
+        return_to_title(e);
+        return {};
+    }
     case A::SeekMusic: e->audio.seek_channel_fraction(0,double(action.index)/100); return {};
     case A::PlayMovie: {
         std::string error; e->movie_from_scene = false;
@@ -461,7 +498,11 @@ void tick_engine(Engine* e) {
     const uint32_t elapsed = uint32_t(std::clamp<int64_t>(delta,0,250));
     if (!e->menu_open && !e->movie.active() && !e->scene->pending_movie().empty()) {
         std::string error; e->movie_from_scene = true;
-        if (!e->movie.open(e->data_dir,e->scene->pending_movie(),&e->audio,&error)) {
+        e->menu_down = false;
+        // In-scene effect movies (like KotoRI_uta01.mpg) play while BGM is already active on channel 0.
+        // Don't hijack audio: let BGM continue seamlessly in Vorbis without repeat or quality degradation.
+        dc4::AudioEngine* movie_audio = e->audio.channel_playing(0) ? nullptr : &e->audio;
+        if (!e->movie.open(e->data_dir,e->scene->pending_movie(),movie_audio,&error)) {
             LOGE("movie: %s",error.c_str()); e->scene->finish_movie(); advance_scene(e);
         }
     }
@@ -523,10 +564,15 @@ Java_org_dc4engine_Dc4Activity_dc4ValidateSaveFile(JNIEnv* env,jobject,jstring b
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_dir) {
     if (g_engine) return JNI_TRUE;
+    // Emulate Japanese system environment (Locale Emulator)
+    std::setlocale(LC_ALL, "ja_JP.UTF-8");
+    setenv("LANG", "ja_JP.UTF-8", 1);
+    setenv("LC_ALL", "ja_JP.UTF-8", 1);
     Engine* e = new Engine();
     g_engine = e;  // Decoder is needed during initialization/first dialogue.
     e->data_dir = jstr_to_std(env, data_dir);
     e->save_dir = g_config.saves;
+    if (g_config.encoding.empty()) g_config.encoding = "windows-31j";
     dc4::configure_resources(e->data_dir,g_config.overlay,g_config.encoding);
     if (g_config.language == "id") dc4::set_language(dc4::Language::Indonesian);
     else if (g_config.language == "en") dc4::set_language(dc4::Language::English);
@@ -550,7 +596,12 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     else LOGE("VOICE.DAT: %s", err.c_str());
     if (!e->audio.init()) LOGE("audio init failed; continuing without device output");
 
-    bool font_ok = !g_config.font.empty() && e->font.load(g_config.font,0,22.0f);
+    bool font_ok = false;
+    if (!g_config.font.empty()) {
+        font_ok = e->font.load(g_config.font, 1, 22.0f);
+        if (!font_ok) font_ok = e->font.load(g_config.font, 0, 22.0f);
+        if (font_ok) LOGI("font: %s", g_config.font.c_str());
+    }
     for (const char* path : kFontCandidates) {
         if (font_ok) break;
         if (e->font.load(path, 0, 22.0f)) {
@@ -611,9 +662,7 @@ Java_org_dc4engine_Dc4Activity_dc4OpenMenu(JNIEnv* env,jobject,jstring name) {
     if (page == "back") return env->NewStringUTF(menu_action(e,e->menu.back()).c_str());
     using P = dc4ui::SystemMenuPage;
     if (page == "title") {
-        e->movie.close(); e->movie_suspended = false; e->scene->finish_movie(); e->audio.stop_all();
-        e->in_game = false; e->replay = false; save_profile(e);
-        open_menu(e,P::Title); e->menu_music = false; play_menu_music(e,"music/001.pcm",true);
+        return_to_title(e);
     } else {
         if (e->movie.active()) { e->movie_suspended = true; e->movie.set_paused(true); }
         open_menu(e,page == "gallery" ? P::Gallery : page == "music" ? P::Music :
@@ -648,8 +697,22 @@ Java_org_dc4engine_Dc4Activity_dc4MenuTouch(JNIEnv* env,jobject,jint action,jint
         if (action == 0) e->menu_down = true;
         else if (action == 3) e->menu_down = false;
         else if (action == 1 && e->menu_down) {
-            e->menu_down = false; e->movie.close();
-            if (e->movie_from_scene) { e->scene->finish_movie(); advance_scene(e); }
+            e->menu_down = false;
+            // Prevent accidental instant skip from the touch-up of the previous dialog/button.
+            // Require at least 1.0 second of playback before allowing touch-to-skip.
+            if (e->movie.time() >= 1.0) {
+                const double movie_time = e->movie.time();
+                const double movie_duration = e->movie.duration();
+                e->movie.close();
+                if (e->audio.channel_playing(0)) {
+                    const double remaining = movie_duration - movie_time;
+                    if (remaining > 0) {
+                        const double current_pos = e->audio.channel_position_seconds(0);
+                        e->audio.seek_channel_seconds(0, current_pos + remaining);
+                    }
+                }
+                if (e->movie_from_scene) { e->scene->finish_movie(); advance_scene(e); }
+            }
         }
         return env->NewStringUTF("");
     }
@@ -1172,5 +1235,139 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
         return env->NewStringUTF("voice");
     }
     return env->NewStringUTF("");
+}
+
+// Forwarding exports for Arisa32Activity
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Configure(JNIEnv* env, jobject thiz, jstring saves, jstring overlay, jstring encoding, jstring font, jstring language) {
+    Java_org_dc4engine_Dc4Activity_dc4Configure(env, thiz, saves, overlay, encoding, font, language);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4ValidateSaveFile(JNIEnv* env, jobject thiz, jstring base, jstring overlay, jstring encoding, jstring path) {
+    return Java_org_dc4engine_Dc4Activity_dc4ValidateSaveFile(env, thiz, base, overlay, encoding, path);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_dir) {
+    return Java_org_dc4engine_Dc4Activity_dc4Init(env, thiz, data_dir);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Quit(JNIEnv* env, jobject thiz) {
+    Java_org_dc4engine_Dc4Activity_dc4Quit(env, thiz);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4OpenMenu(JNIEnv* env, jobject thiz, jstring name) {
+    return Java_org_dc4engine_Dc4Activity_dc4OpenMenu(env, thiz, name);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4MenuActive(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4MenuActive(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4MenuFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
+    return Java_org_dc4engine_Dc4Activity_dc4MenuFrame(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4MenuTouch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
+    return Java_org_dc4engine_Dc4Activity_dc4MenuTouch(env, thiz, action, x, y);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4RequestConfirm(JNIEnv* env, jobject thiz, jstring requested) {
+    return Java_org_dc4engine_Dc4Activity_dc4RequestConfirm(env, thiz, requested);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4ConfirmActive(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4ConfirmActive(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4CancelConfirmation(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4CancelConfirmation(env, thiz);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4ConfirmFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
+    Java_org_dc4engine_Dc4Activity_dc4ConfirmFrame(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4ConfirmTouch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
+    return Java_org_dc4engine_Dc4Activity_dc4ConfirmTouch(env, thiz, action, x, y);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4PlaybackSettings(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4PlaybackSettings(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Advance(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4Advance(env, thiz);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
+    return Java_org_dc4engine_Dc4Activity_dc4Touch(env, thiz, action, x, y);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SetPaused(JNIEnv* env, jobject thiz, jboolean paused, jstring checkpoint) {
+    return Java_org_dc4engine_Dc4Activity_dc4SetPaused(env, thiz, paused, checkpoint);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Render(JNIEnv* env, jobject thiz, jobject bitmap) {
+    Java_org_dc4engine_Dc4Activity_dc4Render(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4CurrentLine(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4CurrentLine(env, thiz);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Status(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4Status(env, thiz);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Speaker(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4Speaker(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SkipAdvance(JNIEnv* env, jobject thiz) {
+    return Java_org_dc4engine_Dc4Activity_dc4SkipAdvance(env, thiz);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Save(JNIEnv* env, jobject thiz, jstring path) {
+    return Java_org_dc4engine_Dc4Activity_dc4Save(env, thiz, path);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4Load(JNIEnv* env, jobject thiz, jstring path) {
+    return Java_org_dc4engine_Dc4Activity_dc4Load(env, thiz, path);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4RenderPreview(JNIEnv* env, jobject thiz, jobject bitmap) {
+    Java_org_dc4engine_Dc4Activity_dc4RenderPreview(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SlotsOpen(JNIEnv* env, jobject thiz, jboolean loading, jboolean latest, jboolean quick) {
+    return Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(env, thiz, loading, latest, quick);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SlotInfo(JNIEnv* env, jobject thiz, jint index, jboolean occupied, jstring timestamp, jstring excerpt, jobject thumbnail) {
+    Java_org_dc4engine_Dc4Activity_dc4SlotInfo(env, thiz, index, occupied, timestamp, excerpt, thumbnail);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SlotsFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
+    return Java_org_dc4engine_Dc4Activity_dc4SlotsFrame(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SlotsTouch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
+    return Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(env, thiz, action, x, y);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4LogOpen(JNIEnv* env, jobject thiz) {
+    Java_org_dc4engine_Dc4Activity_dc4LogOpen(env, thiz);
+}
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4LogClear(JNIEnv* env, jobject thiz) {
+    Java_org_dc4engine_Dc4Activity_dc4LogClear(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4LogFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
+    return Java_org_dc4engine_Dc4Activity_dc4LogFrame(env, thiz, bitmap);
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4LogTouch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
+    return Java_org_dc4engine_Dc4Activity_dc4LogTouch(env, thiz, action, x, y);
 }
 }  // extern "C"

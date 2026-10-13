@@ -1,5 +1,5 @@
-#include "dc4/confirm_dialog.h"
-#include "dc4/save_screen.h"
+#include "arisa32/confirm_dialog.h"
+#include "arisa32/save_screen.h"
 #include <iostream>
 
 namespace {

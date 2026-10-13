@@ -1,5 +1,5 @@
-#include "dc4/mesfile.h"
-#include "dc4/resource.h"
+#include "arisa32/mesfile.h"
+#include "arisa32/resource.h"
 
 #include <cstdio>
 #include <cstring>

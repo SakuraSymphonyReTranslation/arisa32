@@ -3,8 +3,8 @@
 //   mesdis <file.mes>          full disassembly with labels, decoded text
 //   mesdis <file.mes> text     message text only
 //   mesdis <dir>               all .mes in a directory (summary)
-#include "dc4/mesfile.h"
-#include "dc4/messtream.h"
+#include "arisa32/mesfile.h"
+#include "arisa32/messtream.h"
 
 #include <cstdio>
 #include <cstring>

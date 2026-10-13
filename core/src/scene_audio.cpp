@@ -1,6 +1,6 @@
-#include "dc4/scene_audio.h"
-#include "dc4/bgm.h"
-#include "dc4/resource.h"
+#include "arisa32/scene_audio.h"
+#include "arisa32/bgm.h"
+#include "arisa32/resource.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>

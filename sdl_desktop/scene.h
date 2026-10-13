@@ -4,7 +4,7 @@
 // header only uploads that frame to a texture. Keeping the shell thin is what
 // lets the identical core drive the Android build.
 #pragma once
-#include "dc4/scene.h"
+#include "arisa32/scene.h"
 
 #include <SDL.h>
 

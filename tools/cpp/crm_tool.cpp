@@ -8,7 +8,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-#include "dc4/crm.h"
+#include "arisa32/crm.h"
 
 #include <cstdio>
 #include <cstring>

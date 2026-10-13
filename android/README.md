@@ -16,7 +16,7 @@ NDK 27.3.13750724 and JDK 17+. Override defaults with `ANDROID_SDK`,
 `DC4_BUILD_DIR`; use a dedicated build directory, never a source or game-data
 folder. Gradle/Android Studio can also build `android/`.
 
-The APK targets API 35, supports Android 7.0/API 24 onward, and contains
+The APK targets API 36 (Android 16), supports Android 5.0/API 21 onward, and contains
 `arm64-v8a` and `armeabi-v7a` libraries. The standalone script compiles every
 Java helper with UTF-8 source encoding. C++ exceptions must remain enabled for
 checked scene snapshots.
@@ -24,24 +24,28 @@ checked scene snapshots.
 ## Add and choose games
 
 - **Add game folder → Choose folder** uses Android's Storage Access Framework.
-  Choose `AdvData`, its parent, or a translation root containing `MES`. The
-  activity copies the selected game's files into app-owned storage on a worker
-  thread, with progress and cancellation. It checks free space, entry counts,
-  nesting and file sizes, and removes incomplete copies. `content://` URIs are
-  never passed to the filesystem-based core. Original folders are read-only.
-- **Use existing readable folder path** registers data in place without copying.
-  Shared paths may require the explicitly selected **Storage access** grant:
-  all-files access on Android 11+, legacy read permission on older releases.
-  The ordinary folder picker requires neither grant.
-- The complete game needs `MES/start.mes`, `MES/win_size.mes`,
-  `MES/dc4_kyo20190204a1.mes`, `GRP/SYSTEM/MESWIN.CRX`, original system-menu
-  scripts/artwork, and the remaining `GRP`, `MUSIC`, `MOVIE`, `NAMES.DAT` and
-  `VOICE.DAT` resources. Missing required resources produce a diagnostic.
-- On an empty library, an already readable app-specific `AdvData`,
-  `/storage/emulated/0/DC4/AdvData`, `/sdcard/DC4/AdvData`, or a valid `data_dir`
-  intent extra is registered automatically. Startup still shows the library.
-- Entries can be renamed or removed. Removing an entry retains game files and
-  emulator saves. Re-adding identical scripts reconnects the same save identity.
+  Choose `AdvData`, its parent, or a translation root containing `MES`. If the
+  directory is accessible via direct filesystem paths, the app offers instant
+  **Direct Playback** without copying, preserving internal flash storage.
+  Alternatively, choosing **Copy to App Storage** copies files into app-owned
+  storage on a worker thread with progress and cancellation.
+- **External Storage (MicroSD / USB OTG)** provides automatic scanning and a
+  built-in directory browser for external drives (`/storage/XXXX-XXXX`), running
+  directly in place with zero disk copying.
+- **Auto-Detection**: The library recognizes 21 official Da Capo & Dal Segno
+  titles by inspecting MES scripts and directory fingerprints (e.g. Asumi/Alice
+  route detection differentiates D.C.4 Plus Harmony from standard D.C.4).
+- **Library Management & Duplicate Prevention**: Game cards feature dedicated
+  **LAUNCH**, **MANAGE**, and **REMOVE** actions. Removing an entry gives the
+  option to delete imported files from internal storage to reclaim space, or
+  safely remove from the list while keeping original external files untouched.
+  Registering paths automatically checks for existing entries to prevent duplicates.
+- The complete game needs `MES/start.mes` (or valid start scenario for the title),
+  `GRP/SYSTEM/MESWIN.CRX`, system-menu scripts/artwork, and the remaining `GRP`,
+  `MUSIC`, `MOVIE`, `NAMES.DAT` and `VOICE.DAT` resources. Missing required
+  resources produce a diagnostic.
+- On an empty library, readable storage paths or a valid `data_dir` intent extra
+  are registered automatically. Startup still shows the library.
 
 The catalogue is atomically persisted in `files/library.properties`. Game
 identity is SHA-256 over sorted relative MES script names and contents, so moving
@@ -50,9 +54,9 @@ from their backup.
 
 ```bash
 adb install -r android/Arisa32-debug.apk
-adb shell am start -n org.dc4engine/.Dc4Activity \
-  --es data_dir /storage/emulated/0/Android/data/org.dc4engine/files/AdvData
-adb logcat -s dc4
+adb shell am start -n org.dc4engine/.Arisa32Activity \
+  --es data_dir /storage/emulated/0/DC4PH/AdvData
+adb logcat -s Arisa32 dc4
 ```
 
 ## Languages and fonts
@@ -69,12 +73,15 @@ contain actual MES scripts; empty placeholder directories are rejected. Select
 it under **Game language** after import. `GRP`, `MES` and `MOVIE` resolve from
 the overlay first, with case-insensitive matching and per-file base fallback.
 Audio, saves and unrelated paths are not redirected. UTF-8 uses strict decoding
-with CP932 fallback for untranslated strings. The local `eng_data` and `id_Data`
-folders inspected during development contain no translation assets; the app
-does not generate or bundle translated dialogue.
+with CP932 fallback for untranslated strings.
 
-Each game remembers its content language and dialogue font. Import a `.ttf`,
-`.otf` or `.ttc` through Android's document picker, or select **System default**.
+Each game remembers its content language and dialogue font.
+- **Default Font (`MSGOTHIC.TTC`)**: Bundled directly within the APK assets and
+  automatically extracted to ensure standard Circus visual novel typography
+  out of the box.
+- **System Default & Custom Fonts**: Users can toggle between MS Gothic, the
+  Android system default font, or import custom `.ttf`, `.otf`, or `.ttc` fonts
+  through Android's document picker.
 Fonts are size-limited, checked for a supported font signature and loaded by
 Android before installation. A changed font applies on the next game launch.
 Changing content language returns to the library; save progress first. Separate

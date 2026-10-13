@@ -1,4 +1,4 @@
-#include "dc4/resource.h"
+#include "arisa32/resource.h"
 #include <algorithm>
 #include <filesystem>
 #include <map>

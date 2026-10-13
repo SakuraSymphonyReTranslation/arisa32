@@ -1,7 +1,7 @@
-#include "dc4/confirm_dialog.h"
-#include "dc4/crm.h"
-#include "dc4/crx.h"
-#include "dc4/resource.h"
+#include "arisa32/confirm_dialog.h"
+#include "arisa32/crm.h"
+#include "arisa32/crx.h"
+#include "arisa32/resource.h"
 
 #include <algorithm>
 #include <fstream>
@@ -90,30 +90,16 @@ void draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
                int x, int top, int size, uint32_t rgb,
                std::vector<uint8_t>* frame, uint32_t outline_rgb = 0) {
     if (text.empty()) return;
-    const int tw = text_width(text, size) + 8;
-    const int th = size + 16;
+    int tw = font.text_width(text, float(size));
+    if (tw <= 0) tw = text_width(text, size);
+    tw += 32;
+    const int th = size + 24;
     dc4scene::Image img;
     img.w = tw;
     img.h = th;
     img.rgba.assign(size_t(tw) * th * 4, 0);
-    font.rasterize_line(text, 2, size + 2, &img.rgba, tw, th, float(size), rgb);
-    if (outline_rgb != 0) {
-        const uint8_t or_ = uint8_t(outline_rgb >> 16);
-        const uint8_t og = uint8_t(outline_rgb >> 8);
-        const uint8_t ob = uint8_t(outline_rgb);
-        for (size_t i = 0; i < img.rgba.size(); i += 4) {
-            if (img.rgba[i + 3] > 0) {
-                const int brightness = (int(img.rgba[i]) + int(img.rgba[i + 1]) + int(img.rgba[i + 2])) / 3;
-                if (brightness < 220) {
-                    const int factor = brightness * 255 / 220;
-                    img.rgba[i] = uint8_t((int(or_) * (255 - factor) + int(img.rgba[i]) * factor) / 255);
-                    img.rgba[i + 1] = uint8_t((int(og) * (255 - factor) + int(img.rgba[i + 1]) * factor) / 255);
-                    img.rgba[i + 2] = uint8_t((int(ob) * (255 - factor) + int(img.rgba[i + 2]) * factor) / 255);
-                }
-            }
-        }
-    }
-    blit_subimage(img, 0, 0, tw, th, x - 2, top - 2, frame);
+    font.rasterize_line(text, 4, size + 2, &img.rgba, tw, th, float(size), rgb, false, outline_rgb);
+    blit_subimage(img, 0, 0, tw, th, x - 4, top - 2, frame);
 }
 
 } // namespace
@@ -278,15 +264,22 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
     }
     if (lines.empty()) lines.push_back(prompt);
 
-    const int font_size = lines.size() > 1 ? 16 : 18;
-    const int line_pitch = font_size + 6;
-    const int total_h = int(lines.size()) * line_pitch;
-    const int banner_y = kBoxY + 58 - total_h / 2;
+    int font_size = lines.size() > 1 ? 20 : 24;
+    if (lines.size() == 1) {
+        int tw = font.text_width(lines[0], float(font_size));
+        if (tw <= 0) tw = text_width(lines[0], font_size);
+        if (tw > 370) font_size = 22;
+        if (tw > 410) font_size = 20;
+    }
+    const int line_pitch = font_size + 4;
+    const int total_h = int(lines.size()) * font_size + (int(lines.size()) - 1) * 4;
+    const int banner_y = kBoxY + 52 - total_h / 2;
 
     for (size_t li = 0; li < lines.size(); ++li) {
-        const int tw = text_width(lines[li], font_size);
+        int tw = font.text_width(lines[li], float(font_size));
+        if (tw <= 0) tw = text_width(lines[li], font_size);
         const int tx = kBoxX + (kBoxW - tw) / 2;
-        draw_text(font, lines[li], tx, banner_y + int(li) * line_pitch, font_size, 0xFFFFFF, frame, 0x0078D0);
+        draw_text(font, lines[li], tx, banner_y + int(li) * line_pitch, font_size, 0xFFFFFF, frame, 0x0078FF);
     }
 
     // 3. Center buttons (YES / NO)
@@ -317,11 +310,6 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
         } else {
             blit_subimage(chip_, 618, 11, 75, 39, kBoxX + 274, kBoxY + 116, frame);
         }
-
-        // Native Checkbox row: [ ] 確認をしない
-        const int chk_sx = dont_confirm_ ? 588 : 436;
-        if(language_==dc4::Language::Japanese)
-            blit_subimage(chip_, chk_sx, 181, 149, 28, kBoxX + 157, kBoxY + 184, frame);
     } else {
         // High fidelity vector fallback
         const int yes_x = kBoxX + kYesRelX;
@@ -330,7 +318,8 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
         fill_rect(yes_x, yes_y, kYesW, kYesH, bg_yes, 255, frame);
         stroke_rect(yes_x, yes_y, kYesW, kYesH, 2, hover_yes ? 0x00FFFF : 0x00AFCB, 255, frame);
         std::u16string ylbl = yes_text_.empty() ? u"YES" : yes_text_;
-        const int ytw = text_width(ylbl, 20);
+        int ytw = font.text_width(ylbl, 20.0f);
+        if (ytw <= 0) ytw = text_width(ylbl, 20);
         draw_text(font, ylbl, yes_x + (kYesW - ytw) / 2, yes_y + 10, 20, 0xFFFFFF, frame);
 
         // Slash
@@ -342,20 +331,32 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
         fill_rect(no_x, no_y, kNoW, kNoH, bg_no, 255, frame);
         stroke_rect(no_x, no_y, kNoW, kNoH, 2, hover_no ? 0xA0C0E0 : 0x48607A, 255, frame);
         std::u16string nlbl = no_text_.empty() ? u"NO" : no_text_;
-        const int ntw = text_width(nlbl, 20);
+        int ntw = font.text_width(nlbl, 20.0f);
+        if (ntw <= 0) ntw = text_width(nlbl, 20);
         draw_text(font, nlbl, no_x + (kNoW - ntw) / 2, no_y + 10, 20, 0xFFFFFF, frame);
-
     }
-    if(!chip_.valid() || chip_.w < 760 || chip_.h < 210 || language_!=dc4::Language::Japanese) {
-        // Localized checkbox, also used when the atlas is unavailable.
-        const int chk_x = kBoxX + 157;
-        const int chk_y = kBoxY + 184;
-        stroke_rect(chk_x, chk_y + 4, 16, 16, 2, 0x0090D0, 255, frame);
-        if (dont_confirm_) {
-            fill_rect(chk_x + 3, chk_y + 7, 10, 10, 0x00C0FF, 255, frame);
+
+    // 4. Checkbox row: [ ] 確認をしない / Jangan tanya lagi / Don't ask again
+    const int chk_sx = dont_confirm_ ? 588 : 436;
+    const int chk_x = kBoxX + kChkRelX;
+    const int chk_y = kBoxY + kChkRelY;
+    if (chip_.valid() && chip_.w >= 760 && chip_.h >= 210) {
+        if (language_ == dc4::Language::Japanese || language_ == dc4::Language::Indonesian) {
+            blit_subimage(chip_, chk_sx, 181, 149, 28, chk_x, chk_y, frame);
+        } else {
+            // Blit authentic 28x28 stylized checkbox icon from game asset
+            blit_subimage(chip_, chk_sx, 181, 28, 28, chk_x, chk_y, frame);
+            const auto label = language_ == dc4::Language::English ? u"Don't ask again" : u"確認をしない";
+            draw_text(font, label, chk_x + 34, chk_y + 3, 18, 0xFFFFFF, frame, 0x0088F9);
         }
-        const auto label=language_==dc4::Language::English?u"Don't ask again":language_==dc4::Language::Indonesian?u"Jangan tanya lagi":u"確認をしない";
-        draw_text(font,label, chk_x + 22, chk_y + 4, 16, 0x0070B0, frame);
+    } else {
+        stroke_rect(chk_x + 4, chk_y + 4, 20, 20, 2, 0x0090D0, 255, frame);
+        if (dont_confirm_) {
+            fill_rect(chk_x + 8, chk_y + 8, 12, 12, 0x00C0FF, 255, frame);
+        }
+        const auto label = language_ == dc4::Language::English ? u"Don't ask again" :
+                           language_ == dc4::Language::Indonesian ? u"Jangan tanya lagi" : u"確認をしない";
+        draw_text(font, label, chk_x + 34, chk_y + 3, 18, 0xFFFFFF, frame, 0x0088F9);
     }
 }
 

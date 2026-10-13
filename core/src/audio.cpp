@@ -1,6 +1,6 @@
-#include "dc4/audio.h"
-#include "dc4/xpcm.h"
-#include "dc4/resource.h"
+#include "arisa32/audio.h"
+#include "arisa32/xpcm.h"
+#include "arisa32/resource.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -258,6 +258,21 @@ bool AudioEngine::seek_channel_fraction(int channel, double fraction) {
     }
     return true;
 }
+bool AudioEngine::seek_channel_seconds(int channel, double seconds) {
+    if (!valid_channel(channel) || !std::isfinite(seconds) || seconds < 0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    Channel& sound = channels_[channel];
+    if (sound.pcm.empty() || sound.rate_step <= 0) return false;
+    const double rate = kOutputRate * sound.rate_step;
+    double frame = seconds * rate;
+    if (frame > double(sound.end)) frame = double(sound.end);
+    sound.position = frame;
+    if (frame == double(sound.end)) {
+        if (sound.loop) sound.position = sound.loop_start;
+        else sound.playing = false;
+    }
+    return true;
+}
 double AudioEngine::channel_fraction(int channel) const {
     if (!valid_channel(channel)) return 0;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -268,7 +283,13 @@ double AudioEngine::channel_duration_seconds(int channel) const {
     if (!valid_channel(channel)) return 0;
     std::lock_guard<std::mutex> lock(mutex_);
     const auto& sound = channels_[channel];
-    return sound.end / (kOutputRate * sound.rate_step);
+    return (sound.rate_step > 0) ? sound.end / (kOutputRate * sound.rate_step) : 0;
+}
+double AudioEngine::channel_position_seconds(int channel) const {
+    if (!valid_channel(channel)) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& sound = channels_[channel];
+    return (sound.rate_step > 0) ? sound.position / (kOutputRate * sound.rate_step) : 0;
 }
 AudioMixerSnapshot AudioEngine::capture_snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);

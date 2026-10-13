@@ -1,12 +1,12 @@
-#include "dc4/log_screen.h"
-#include "dc4/resource.h"
+#include "arisa32/log_screen.h"
+#include "arisa32/resource.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
 
-#include "dc4/crm.h"
-#include "dc4/crx.h"
+#include "arisa32/crm.h"
+#include "arisa32/crx.h"
 
 namespace dc4ui {
 

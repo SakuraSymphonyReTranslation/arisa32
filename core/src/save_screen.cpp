@@ -1,5 +1,5 @@
-#include "dc4/save_screen.h"
-#include "dc4/resource.h"
+#include "arisa32/save_screen.h"
+#include "arisa32/resource.h"
 
 #include <algorithm>
 #include <fstream>
@@ -7,8 +7,8 @@
 #include <limits>
 #include <utility>
 
-#include "dc4/crm.h"
-#include "dc4/crx.h"
+#include "arisa32/crm.h"
+#include "arisa32/crx.h"
 
 namespace dc4ui {
 namespace {

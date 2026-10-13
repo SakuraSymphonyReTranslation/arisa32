@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dc4engine CXX C)
+project(arisa32 CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,7 +10,7 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
-add_library(dc4core STATIC
+add_library(arisa32_core STATIC
     core/src/messtream.cpp
     core/src/mesfile.cpp
     core/src/mesvm.cpp
@@ -26,28 +26,29 @@ add_library(dc4core STATIC
     core/src/movie.cpp
     core/src/confirm_dialog.cpp
 )
-target_include_directories(dc4core PUBLIC core/include)
-target_include_directories(dc4core PRIVATE third_party/pl_mpeg)
+add_library(dc4core ALIAS arisa32_core)
+target_include_directories(arisa32_core PUBLIC core/include)
+target_include_directories(arisa32_core PRIVATE third_party/pl_mpeg third_party/stb)
 
 add_executable(mesdis tools/cpp/mesdis.cpp)
-target_link_libraries(mesdis PRIVATE dc4core)
+target_link_libraries(mesdis PRIVATE arisa32_core)
 
 add_executable(voicetool tools/cpp/voicetool.cpp)
-target_link_libraries(voicetool PRIVATE dc4core)
+target_link_libraries(voicetool PRIVATE arisa32_core)
 
-target_sources(dc4core PRIVATE core/src/crx.cpp)
-target_include_directories(dc4core PRIVATE third_party/miniz)
+target_sources(arisa32_core PRIVATE core/src/crx.cpp)
+target_include_directories(arisa32_core PRIVATE third_party/miniz)
 
 add_executable(crx_tool tools/cpp/crx_tool.cpp)
-target_link_libraries(crx_tool PRIVATE dc4core)
+target_link_libraries(crx_tool PRIVATE arisa32_core)
 target_include_directories(crx_tool PRIVATE third_party/stb)
 
-target_sources(dc4core PRIVATE core/src/crm.cpp)
+target_sources(arisa32_core PRIVATE core/src/crm.cpp)
 add_executable(crm_tool tools/cpp/crm_tool.cpp)
-target_link_libraries(crm_tool PRIVATE dc4core)
+target_link_libraries(crm_tool PRIVATE arisa32_core)
 target_include_directories(crm_tool PRIVATE third_party/stb)
 
-target_sources(dc4core PRIVATE
+target_sources(arisa32_core PRIVATE
     third_party/miniz/miniz.c
     third_party/miniz/miniz_tinfl.c
     third_party/miniz/miniz_tdef.c
@@ -55,30 +56,31 @@ target_sources(dc4core PRIVATE
 set_source_files_properties(third_party/miniz/miniz.c third_party/miniz/miniz_tinfl.c third_party/miniz/miniz_tdef.c PROPERTIES LANGUAGE C)
 
 # --- desktop SDL2 app ---
-add_executable(dc4_desktop sdl_desktop/main.cpp sdl_desktop/ui_script.cpp)
-target_link_libraries(dc4_desktop PRIVATE dc4core)
+add_executable(arisa32_desktop sdl_desktop/main.cpp sdl_desktop/ui_script.cpp)
+target_link_libraries(arisa32_desktop PRIVATE arisa32_core)
+add_executable(dc4_desktop ALIAS arisa32_desktop)
 if(WIN32)
     if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR "The bundled SDL2 library requires an x64 build (run build.bat).")
     endif()
     set(DC4_SDL2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdl2/SDL2-2.32.10"
         CACHE PATH "SDL2 development package containing include/ and lib/x64/")
-    target_include_directories(dc4_desktop PRIVATE "${DC4_SDL2_ROOT}/include")
-    target_link_libraries(dc4_desktop PRIVATE "${DC4_SDL2_ROOT}/lib/x64/SDL2.lib")
-    add_custom_command(TARGET dc4_desktop POST_BUILD
+    target_include_directories(arisa32_desktop PRIVATE "${DC4_SDL2_ROOT}/include")
+    target_link_libraries(arisa32_desktop PRIVATE "${DC4_SDL2_ROOT}/lib/x64/SDL2.lib")
+    add_custom_command(TARGET arisa32_desktop POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DC4_SDL2_ROOT}/lib/x64/SDL2.dll" $<TARGET_FILE_DIR:dc4_desktop>
+            "${DC4_SDL2_ROOT}/lib/x64/SDL2.dll" $<TARGET_FILE_DIR:arisa32_desktop>
         VERBATIM)
 else()
     find_package(SDL2 2.0.18 REQUIRED)
     find_package(Threads REQUIRED)
-    target_link_libraries(dc4_desktop PRIVATE SDL2::SDL2)
-    target_link_libraries(dc4core PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_link_libraries(arisa32_desktop PRIVATE SDL2::SDL2)
+    target_link_libraries(arisa32_core PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
 endif()
-target_compile_definitions(dc4_desktop PRIVATE SDL_MAIN_HANDLED)
-target_include_directories(dc4_desktop PRIVATE third_party/stb)
-target_sources(dc4core PRIVATE core/src/audio.cpp core/src/scene_audio.cpp)
-target_include_directories(dc4core PRIVATE third_party/miniaudio third_party/stb)
+target_compile_definitions(arisa32_desktop PRIVATE SDL_MAIN_HANDLED)
+target_include_directories(arisa32_desktop PRIVATE third_party/stb)
+target_sources(arisa32_core PRIVATE core/src/audio.cpp core/src/scene_audio.cpp)
+target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_party/stb)
 
 include(CTest)
 if(BUILD_TESTING)

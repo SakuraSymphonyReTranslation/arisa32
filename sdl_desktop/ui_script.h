@@ -6,8 +6,8 @@
 //   0x77 u16x4  chip size (w, h, sheet_id, state) — 99=normal 1=hover 2=pressed
 //   0x17 u16x2  opacity (not yet applied)
 #pragma once
-#include "dc4/mesfile.h"
-#include "dc4/messtream.h"
+#include "arisa32/mesfile.h"
+#include "arisa32/messtream.h"
 
 #include <SDL.h>
 

@@ -4,13 +4,13 @@ plugins {
 
 android {
     namespace 'org.dc4engine'
-    compileSdk 35
+    compileSdk 36
     ndkVersion '27.3.13750724'
 
     defaultConfig {
         applicationId 'org.dc4engine'
-        minSdk 24          // Android 7.0
-        targetSdk 35
+        minSdk 21          // Android 5.0 (Lollipop)+
+        targetSdk 36       // Android 16 (Baklava)
         versionCode 2
         versionName '0.2.0'
         externalNativeBuild {

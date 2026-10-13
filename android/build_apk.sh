@@ -6,14 +6,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SDK="${ANDROID_SDK:-C:/Users/Atho/AppData/Local/Android/Sdk}"
-JDK="${JAVA_HOME:-C:/Users/Atho/.jdks/jdk-17.0.20+8}"
+SDK="${ANDROID_SDK:-$LOCALAPPDATA/Android/Sdk}"
+if [ ! -d "$SDK" ]; then SDK="C:/Users/adamb/AppData/Local/Android/Sdk"; fi
+JDK="${JAVA_HOME:-C:/Program Files/Microsoft/jdk-25.0.2.10-hotspot}"
 NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.3.13750724}"
-BT="$SDK/build-tools/35.0.0"
-PLATFORM="$SDK/platforms/android-35/android.jar"
+BT="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.1.0}"
+PLATFORM="${ANDROID_PLATFORM:-$SDK/platforms/android-36/android.jar}"
 # aapt2 chokes on spaces in its own command line, so build in a space-free plain path.
 OUT="${DC4_BUILD_DIR:-C:/dc4build/arisa32}"
-MIN_SDK=24
+MIN_SDK=21
+TARGET_SDK=36
 
 CMAKE="$SDK/cmake/3.22.1/bin/cmake.exe"
 NINJA="$SDK/cmake/3.22.1/bin/ninja.exe"
@@ -54,7 +56,7 @@ cp -r "$ROOT/android/app/src/main/res/." "$OUT/staging_res/"
 echo "== aapt2 link"
 "$BT/aapt2.exe" link -o "$OUT/apk/base.apk" -I "$PLATFORM" \
   --manifest "$ROOT/android/app/src/main/AndroidManifest.xml" \
-  --min-sdk-version $MIN_SDK --target-sdk-version 35 \
+  --min-sdk-version $MIN_SDK --target-sdk-version $TARGET_SDK \
   --version-code 2 --version-name "0.2.0" \
   --java "$OUT/gen/r" \
   "$OUT/gen/res.zip"

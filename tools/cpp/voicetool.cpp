@@ -4,8 +4,8 @@
 //   voicetool <VOICE.DAT> find <name>            lookup like the engine (e.g. VOICE\asa011)
 //   voicetool <VOICE.DAT> extract <name> <out>   extract raw XPCM blob
 //   voicetool <VOICE.DAT> extractoggs <name> <out.ogg>  extract payload (voice: strip hdr)
-#include "dc4/voice.h"
-#include "dc4/xpcm.h"
+#include "arisa32/voice.h"
+#include "arisa32/xpcm.h"
 
 #include <cstdio>
 #include <cstring>
