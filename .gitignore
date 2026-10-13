@@ -33,7 +33,7 @@ android/.gradle/
 android/build/
 android/app/build/
 android/app/src/main/cpp/build-*/
-android/*.apk
+*.apk
 android/*.idsig
 android/*.aab
 android/local.properties
