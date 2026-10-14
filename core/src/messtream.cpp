@@ -29,16 +29,107 @@ bool MesStream::next(MesCommand* out) {
         pos_ = p + 1;
         return true;
     }
-    if (op <= 0x3A) {
-        if (p + 3 > n) return false;
-        out->kind = CmdKind::Param2;
-        out->p1 = code_[p + 1];
-        out->p2 = code_[p + 2];
-        out->size = 3;
-        pos_ = p + 3;
+
+    if (dialect_ == MesDialect::ClassicDC2) {
+        if (op < 0x29) {
+            if (p + 3 > n) return false;
+            out->kind = CmdKind::Param2;
+            out->p1 = code_[p + 1];
+            out->p2 = code_[p + 2];
+            out->size = 3;
+            pos_ = p + 3;
+            return true;
+        }
+        if (op < 0x2F) {
+            if (p + 2 > n) return false;
+            long l = cstr_len(p + 2);
+            if (l < 0) return false;
+            out->kind = CmdKind::ParamStr;
+            out->p1 = code_[p + 1];
+            out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
+            out->size = 2 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (op < 0x4A) {
+            long l = cstr_len(p + 1);
+            if (l < 0) return false;
+            out->kind = CmdKind::Str;
+            out->str.assign(reinterpret_cast<const char*>(&code_[p + 1]), size_t(l));
+            out->size = 1 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (op < 0x4E) {
+            long l = cstr_len(p + 1);
+            if (l < 0) return false;
+            out->kind = CmdKind::Text;
+            out->str = mes_decode_text(&code_[p + 1], size_t(l));
+            out->size = 1 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (p + 9 > n) return false;
+        out->kind = CmdKind::Words4;
+        for (int i = 0; i < 4; ++i) {
+            out->words[i] = uint16_t(code_[p + 1 + 2 * i] | (code_[p + 2 + 2 * i] << 8));
+        }
+        out->size = 9;
+        pos_ = p + 9;
         return true;
     }
-    if (op <= 0x47) {
+
+    if (dialect_ == MesDialect::ClassicDM) {
+        if (op < 0x2A) {
+            if (p + 3 > n) return false;
+            out->kind = CmdKind::Param2;
+            out->p1 = code_[p + 1];
+            out->p2 = code_[p + 2];
+            out->size = 3;
+            pos_ = p + 3;
+            return true;
+        }
+        if (op < 0x32) {
+            if (p + 2 > n) return false;
+            long l = cstr_len(p + 2);
+            if (l < 0) return false;
+            out->kind = CmdKind::ParamStr;
+            out->p1 = code_[p + 1];
+            out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
+            out->size = 2 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (op < 0x4D) {
+            long l = cstr_len(p + 1);
+            if (l < 0) return false;
+            out->kind = CmdKind::Str;
+            out->str.assign(reinterpret_cast<const char*>(&code_[p + 1]), size_t(l));
+            out->size = 1 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (op < 0x51) {
+            long l = cstr_len(p + 1);
+            if (l < 0) return false;
+            out->kind = CmdKind::Text;
+            out->str = mes_decode_text(&code_[p + 1], size_t(l));
+            out->size = 1 + size_t(l) + 1;
+            pos_ = p + out->size;
+            return true;
+        }
+        if (p + 9 > n) return false;
+        out->kind = CmdKind::Words4;
+        for (int i = 0; i < 4; ++i) {
+            out->words[i] = uint16_t(code_[p + 1 + 2 * i] | (code_[p + 2 + 2 * i] << 8));
+        }
+        out->size = 9;
+        pos_ = p + 9;
+        return true;
+    }
+
+    // Modern (DC3, DC4, DC4PH)
+    if (op == 0x2E) {
         if (p + 2 > n) return false;
         long l = cstr_len(p + 2);
         if (l < 0) return false;
@@ -49,7 +140,27 @@ bool MesStream::next(MesCommand* out) {
         pos_ = p + out->size;
         return true;
     }
-    if (op <= 0x68) {
+    if (op < 0x3B) {
+        if (p + 3 > n) return false;
+        out->kind = CmdKind::Param2;
+        out->p1 = code_[p + 1];
+        out->p2 = code_[p + 2];
+        out->size = 3;
+        pos_ = p + 3;
+        return true;
+    }
+    if (op < 0x48) {
+        if (p + 2 > n) return false;
+        long l = cstr_len(p + 2);
+        if (l < 0) return false;
+        out->kind = CmdKind::ParamStr;
+        out->p1 = code_[p + 1];
+        out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
+        out->size = 2 + size_t(l) + 1;
+        pos_ = p + out->size;
+        return true;
+    }
+    if (op < 0x69) {
         long l = cstr_len(p + 1);
         if (l < 0) return false;
         out->kind = CmdKind::Str;
@@ -58,7 +169,7 @@ bool MesStream::next(MesCommand* out) {
         pos_ = p + out->size;
         return true;
     }
-    if (op <= 0x6D) {
+    if (op < 0x6E) {
         long l = cstr_len(p + 1);
         if (l < 0) return false;
         out->kind = CmdKind::Text;

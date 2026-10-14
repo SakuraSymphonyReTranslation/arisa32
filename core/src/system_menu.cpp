@@ -128,14 +128,20 @@ struct SystemMenu::Impl {
         };
         for (auto v : defaults) vars[{99, v.first}] = v.second;
         vars[{100,49}] = 80;
-        for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 0; }
+        for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
     }
     int get(int b, int i) const {
         if (b == 99 && i == 4) return get(99,1);
         if (b == 99 && i == 20) return latest;
         if (b == 99 && i == 21) return quick;
         if (b == 99 && i == 22) return automatic;
-        auto at = vars.find({b,i}); return at == vars.end() ? 0 : at->second;
+        auto at = vars.find({b,i});
+        if (at == vars.end()) {
+            if (b == 94) return 100;
+            if (b == 95) return 1;
+            return 0;
+        }
+        return at->second;
     }
     void put(int b, int i, int value) {
         if (b < 0 || b > 100 || i < 0 || i > 4095) return;
@@ -180,22 +186,44 @@ struct SystemMenu::Impl {
     }
     bool names() {
         std::vector<uint8_t> b;
-        if (!read_bytes(resolve(data, "GRP/NAMES.DAT"), &b) || b.size() < 232 || u32(b,0) != 7) return false;
-        size_t p = 228;
-        auto table = [&](size_t stride, std::vector<std::string>* target) {
-            if (p + 4 > b.size()) return false;
-            uint32_t n = u32(b,p); p += 4;
-            if (n > 2000 || n > (b.size() - p) / stride) return false;
-            if (target) target->clear();
-            for (uint32_t i = 0; i < n; ++i, p += stride) {
+        std::string path = resolve(data, "GRP/NAMES.DAT");
+        if (!read_bytes(path, &b)) path = resolve(data, "DAT/names.dat");
+        if (!read_bytes(path, &b)) path = resolve(data, "DAT/NAMES.DAT");
+        if (!read_bytes(path, &b) || b.size() < 4) return false;
+        uint32_t ver = u32(b, 0);
+        if (ver == 7) {
+            if (b.size() < 232) return false;
+            size_t p = 228;
+            auto table = [&](size_t stride, std::vector<std::string>* target) {
+                if (p + 4 > b.size()) return false;
+                uint32_t n = u32(b,p); p += 4;
+                if (n > 2000 || n > (b.size() - p) / stride) return false;
+                if (target) target->clear();
+                for (uint32_t i = 0; i < n; ++i, p += stride) {
+                    const char* s = reinterpret_cast<const char*>(b.data() + p);
+                    const char* end = static_cast<const char*>(std::memchr(s,0,32));
+                    if (!end) return false;
+                    if (target) target->emplace_back(s,end);
+                }
+                return true;
+            };
+            return table(48,&bgm_names) && table(36,nullptr) && table(32,&cg_names) && table(32,&scene_names);
+        }
+        if (ver == 6) {
+            bgm_names.clear(); cg_names.clear(); scene_names.clear();
+            for (size_t p = 4; p + 128 <= b.size(); p += 128) {
                 const char* s = reinterpret_cast<const char*>(b.data() + p);
-                const char* end = static_cast<const char*>(std::memchr(s,0,32));
-                if (!end) return false;
-                if (target) target->emplace_back(s,end);
+                const char* end = static_cast<const char*>(std::memchr(s, 0, 64));
+                if (end && end > s) {
+                    std::string str(s, end);
+                    if (str.rfind("music", 0) == 0) bgm_names.push_back(str);
+                    else if (str.rfind("cg", 0) == 0) cg_names.push_back(str);
+                    else scene_names.push_back(str);
+                }
             }
             return true;
-        };
-        return table(48,&bgm_names) && table(36,nullptr) && table(32,&cg_names) && table(32,&scene_names);
+        }
+        return false;
     }
     void progress_vars() {
         for (size_t i = 0; i < cg_names.size(); ++i) put(97,int(i),seen_cg.count(key(cg_names[i])) ? 1 : 0);
@@ -375,7 +403,7 @@ struct SystemMenu::Impl {
         clear_layout();
         if (page == Page::Title) run("main","main",false);
         else if (page == Page::Extras) run("main","ex_main",false);
-        else if (page == Page::Config) { put(3,97,2); run("config","menu1",false); }
+        else if (page == Page::Config) { put(3,97,2); if (script("config")) run("config","menu1",false); else run("option","menu1",false); }
         else if (page == Page::Gallery || page == Page::Scenes) run(script_name,"menu",false);
         else if (page == Page::Music) {
             if (movie_menu) run("music","qmovie",false);
@@ -420,12 +448,21 @@ SystemMenu& SystemMenu::operator=(SystemMenu&&) noexcept = default;
 bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->data = data_dir; p_->scripts.clear(); p_->images.clear(); p_->last_error.clear(); p_->ready = false;
     p_->confirm.load(data_dir);
-    for (const char* name : {"main","config","music","cg_asa","sce_asa"})
-        if (!p_->script(name)) { if (error) *error = p_->last_error; return false; }
+    for (const char* name : {"main","config","music","cg_asa","sce_asa"}) {
+        if (std::string(name) == "config" && !p_->script(name)) {
+            if (p_->script("option")) continue;
+        }
+        if (!p_->script(name)) {
+            if (std::string(name) == "cg_asa" || std::string(name) == "sce_asa") continue;
+            if (error) *error = p_->last_error; return false;
+        }
+    }
     if (!p_->names()) { p_->last_error = "Invalid or missing version 7 GRP/NAMES.DAT"; if (error) *error = p_->last_error; return false; }
     for (const char* name : {"system/titleback02","system/titlechip01","system/configback01","system/configchip01","system/exchip"}) {
         auto* img = p_->image(name);
-        if (!img || !img->valid()) { p_->last_error = std::string("Missing menu artwork: ") + name; if(error)*error=p_->last_error; return false; }
+        if (!img || !img->valid()) {
+            p_->last_error = std::string("Missing menu artwork: ") + name; if(error)*error=p_->last_error; return false;
+        }
     }
     p_->ready = true; p_->progress_vars(); open(Page::Title); if(error)error->clear(); return true;
 }
@@ -474,7 +511,20 @@ Action SystemMenu::pointer_up(int x,int y) {
         auto out=p_->slider(pressed,x,y); cancel_pointer(); return out;
     }
     std::string tag = held && pressed == hit && hit >= 0 ? p_->widgets[size_t(hit)].tag : "";
-    cancel_pointer(); return tag.empty() ? Action{} : activate(tag);
+    cancel_pointer();
+    if (!tag.empty()) return activate(tag);
+    if (held && p_->page == Page::Config && p_->get(100,54) == 3 && y >= 127 && y <= 195) {
+        static const struct { int left, right, id; } kCards[] = {
+            {34,126,0},{128,220,1},{222,314,2},{316,408,3},{410,502,4},
+            {504,596,5},{598,690,6},{692,784,7},{786,878,8},{880,972,10},{974,1066,11}
+        };
+        for (const auto& card : kCards) {
+            if (x >= card.left && x <= card.right && p_->get(100,56) == card.id) {
+                return {Type::PlayVoice, -1, system_voice(18), {}};
+            }
+        }
+    }
+    return {};
 }
 void SystemMenu::cancel_pointer() { p_->held=false; p_->pressed=-1;p_->confirm.cancel_pointer(); }
 void SystemMenu::scroll(int delta) {
@@ -676,8 +726,22 @@ SystemConfig SystemMenu::config() const {
     c.text_speed=v(26);c.auto_speed=v(27);c.auto_wait=v(29);c.window_opacity=std::clamp(p_->get(100,49),0,100);
     c.skip_unread=v(30)!=0;c.stop_skip_at_choice=v(210)!=0;c.stop_auto_at_choice=v(209)!=0;
     c.wait_for_voice=v(28)!=0;c.stop_voice_on_advance=v(208)!=0;c.fullscreen=v(1)!=0;c.effects=v(10);c.effect_speed=v(12);
-    for(int i=0;i<51;++i){c.character_volume[size_t(i)]=std::clamp(p_->get(94,i),0,100);c.character_muted[size_t(i)]=p_->get(95,i)!=0;}
+    for(int i=0;i<51;++i){c.character_volume[size_t(i)]=std::clamp(p_->get(94,i),0,100);c.character_muted[size_t(i)]=(p_->get(95,i)==2);}
     return c;
+}
+std::string SystemMenu::system_voice(int event_id) const {
+    int actor_idx = p_->get(100, 56);
+    static const char* kActors[] = {
+        "ASA", "NIN", "SOR", "HYR", "SII", "MIU", "TIY", "SGN", "KAN", "", "KTR", "CHE"
+    };
+    if (actor_idx == 50 || actor_idx < 0 || actor_idx >= 12 || strlen(kActors[actor_idx]) == 0) {
+        static const int kValid[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11};
+        actor_idx = kValid[size_t(p_->random() % 11)];
+    }
+    const char* actor = kActors[actor_idx];
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "VOICE\\SYSTEM\\SYSTEM_%s%03d", actor, event_id);
+    return std::string(buf);
 }
 int SystemMenu::variable(int b,int i)const{return p_->get(b,i);}
 void SystemMenu::set_variable(int b,int i,int value){p_->put(b,i,value);p_->rebuild();}
@@ -727,6 +791,10 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
         else if(type=='p'){int id;if(!(row>>id)||id<0||id>1000){if(error)*error="Invalid playlist entry";return false;}playlist.insert(id);}
         else if(type){if(error)*error="Unknown profile record";return false;}
+    }
+    for (int i = 0; i < 51; ++i) {
+        if (vars.find({94, i}) == vars.end()) vars[{94, i}] = 100;
+        if (vars.find({95, i}) == vars.end() || vars[{95, i}] == 0) vars[{95, i}] = 1;
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);
     p_->progress_vars();p_->rebuild();if(error)error->clear();return true;

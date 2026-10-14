@@ -13,11 +13,18 @@ struct MesLabel {
     uint16_t id;
 };
 
+enum class MesDialect {
+    ClassicDC2, // DC2PC, DC2SC, DC2TY, DC2FL (4-byte label table, pos=2)
+    ClassicDM,  // DC2DM (6-byte label table, version 0x009D72, pos=3)
+    Modern,     // DC3, DC4, DC4PH (6-byte label table, pos=3)
+};
+
 struct MesFile {
-    uint32_t version = 0;                  // 0x00AAB6 = DC4, 0x00ABB6 = Plus Harmony
+    uint32_t version = 0;                  // 0x00AAB6 = DC4, 0x00ABB6 = Plus Harmony, 0x009D72 = DC2DM
+    MesDialect dialect = MesDialect::Modern;
     std::vector<MesLabel> labels;
-    std::vector<uint8_t> code;             // includes 4-byte version prefix at [0..3]
-    size_t code_base = 0;                  // offset of code (post-version) within file
+    std::vector<uint8_t> code;             // includes version prefix
+    size_t code_base = 0;                  // offset of code within file
 
     bool load(const uint8_t* data, size_t size, std::string* err = nullptr);
     bool load_file(const std::string& path, std::string* err = nullptr);

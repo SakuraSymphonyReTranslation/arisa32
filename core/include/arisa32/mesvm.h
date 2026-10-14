@@ -56,6 +56,7 @@ public:
     const std::vector<MesChoice>& choices() const { return choices_; }
     bool choose(size_t index);
     bool jump(const std::string& label);
+    bool has_label(const std::string& label) const;
 
     // Byte banks truncate on writes exactly as the original does. System bank
     // 99 holds host-supplied state; absent engine services read as zero.
@@ -87,6 +88,7 @@ private:
     bool waiting_for_choice_ = false;
     bool transferring_ = false;
     bool ended_ = false;
+    bool pending_button_action_ = false;
 };
 
 }  // namespace dc4

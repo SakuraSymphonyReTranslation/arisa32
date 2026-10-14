@@ -23,20 +23,44 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
         return false;
     }
     const uint32_t count = rd_u32(data);
-    const size_t table_end = size_t(count) * 6 + 4;
-    if (count == 0 || count > 0x100000 || table_end + 4 > size) {
+    if (count > 0x100000) {
         if (err) *err = "bad label count";
         return false;
     }
-    version = rd_u32(data + table_end);
+    const size_t te4 = size_t(count) * 4 + 4;
+    const size_t te6 = size_t(count) * 6 + 4;
+
+    bool is_4byte = false;
+    if (count == 0) {
+        is_4byte = true;
+    } else if (te6 + 4 > size) {
+        is_4byte = true;
+    } else if (te4 < size && (data[te4] == 0x69 || data[te4] == 0x63)) {
+        is_4byte = true;
+    }
+
+    const size_t table_end = is_4byte ? te4 : te6;
+    if (table_end > size) {
+        if (err) *err = "truncated MES table";
+        return false;
+    }
+    version = (table_end + 4 <= size) ? rd_u32(data + table_end) : 0;
+
+    if (is_4byte) {
+        dialect = MesDialect::ClassicDC2;
+    } else if (table_end + 3 <= size && data[table_end] == 0x72 && data[table_end + 1] == 0x9D && data[table_end + 2] == 0x00) {
+        dialect = MesDialect::ClassicDM;
+    } else {
+        dialect = MesDialect::Modern;
+    }
     labels.resize(count);
     const uint8_t* offs = data + 4;
-    const uint8_t* ids = data + 4 + size_t(count) * 4;
+    const uint8_t* ids = is_4byte ? nullptr : (data + 4 + size_t(count) * 4);
     for (uint32_t i = 0; i < count; ++i) {
         const uint32_t raw = rd_u32(offs + i * 4);
         labels[i].offset = raw & 0x00FFFFFFu;
         labels[i].flags = raw >> 24;
-        labels[i].id = rd_u16(ids + i * 2);
+        labels[i].id = ids ? rd_u16(ids + i * 2) : uint16_t(i);
     }
     code.assign(data + table_end, data + size);
     code_base = table_end;

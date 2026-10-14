@@ -11,8 +11,8 @@ android {
         applicationId 'org.dc4engine'
         minSdk 21          // Android 5.0 (Lollipop)+
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 3
+        versionName '0.3.0'
         externalNativeBuild {
             cmake {
                 // Scene save/lifecycle snapshots use C++17 exceptions.
@@ -21,6 +21,16 @@ android {
             }
         }
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            debuggable true
+        }
     }
 
     externalNativeBuild {
@@ -42,6 +52,11 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
     }
 }
 

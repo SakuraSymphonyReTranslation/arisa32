@@ -200,6 +200,7 @@ public:
 
     bool load_script(const std::string& mes_path, const std::string& entry_label = {});
     bool jump_to_label(const std::string& label);
+    bool has_label(const std::string& label) const { return vm_.has_label(label); }
     const std::string& script_name() const { return script_name_; }
     using CommandObserver = std::function<void(const dc4::MesCommand&, const std::string&)>;
     void set_observer(CommandObserver observer) { observer_ = std::move(observer); }
@@ -211,12 +212,15 @@ public:
     bool script_ready() const { return script_wait_pending_ && script_wait_ms_ == 0; }
     void finish_script_wait();
     bool credits_active() const { return credits_active_; }
+    bool effect_pck_active() const { return effect_pck_.active; }
     void set_window_opacity(int percent);
     void set_effects_enabled(bool enabled);
     void set_effect_speed(int native_0_to_11);
     void set_character_volume(size_t id, int percent, bool muted = false) { scene_audio_.set_character_volume(id, percent, muted); }
     void set_latin_mode(bool latin);
     bool latin_mode() const { return latin_mode_; }
+    void set_use_system_menu(bool use) { use_system_menu_ = use; }
+    bool use_system_menu() const { return use_system_menu_; }
     // Advances to (and including) the next dialogue line. Speaker names
     // (0x6A) are consumed on the way and stored separately.
     bool advance_to_next_text();
@@ -349,7 +353,10 @@ private:
     std::vector<UiChip> scene_chips_;      // 0x7A blits executed by the scene
     UiChip pending_scene_chip_;
     bool pending_scene_blit_ = false;
+    bool pending_chip_is_button_ = false;
     std::vector<UiButton> buttons_;        // 0x72/0x54/0x73/0x77 widgets
+    UiButton pending_button_;
+    bool pending_has_button_ = false;
     MesWinLayout layout_;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
@@ -395,6 +402,7 @@ private:
     bool message_visible_ = true;
     int window_opacity_ = 50;
     bool latin_mode_ = false;
+    bool use_system_menu_ = true;
 };
 
 }  // namespace dc4scene

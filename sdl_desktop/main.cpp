@@ -948,19 +948,28 @@ int run(const Options& o) {
         if(resume && scene){scene->finish_movie();advance_script();}
         else if(!o.movie.empty() && !o.title) run_loop = false;
     };
+    auto play_sys_voice = [&](int event_id) {
+        if (!audio_ready || !voices.loaded()) return;
+        const auto cfg = system_menu.config();
+        if (!cfg.voice_enabled || !cfg.master_enabled) return;
+        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
+    };
     auto menu_action = [&](const dc4ui::SystemMenuAction& selected) {
         using T=dc4ui::SystemMenuActionType;
         switch(selected.type) {
         case T::Back:
+            play_sys_voice(11);
             if(scene && !scene->script_name().empty()){menu_open=false;scene->set_message_visible(true);}
             break;
-        case T::NewGame:case T::StartScene:start_scene(selected);break;
-        case T::Load:open_slots(true);break;
-        case T::Save:open_slots(false);break;
+        case T::NewGame:case T::StartScene:play_sys_voice(7);start_scene(selected);break;
+        case T::Load:play_sys_voice(13);open_slots(true);break;
+        case T::Save:play_sys_voice(12);open_slots(false);break;
         case T::LatestLoad:
+            play_sys_voice(8);
             open_slots(true);if(slots.latest_slot>=0)persist_state(true,slots.latest_slot);break;
-        case T::QuickLoad:open_slots(true);persist_state(true,-1);break;
+        case T::QuickLoad:play_sys_voice(8);open_slots(true);persist_state(true,-1);break;
         case T::AutoLoad:
+            play_sys_voice(8);
             open_slots(true);
             if(scene&&scene->load_state((profile_dir/"autosave.dc4sav").string())){menu_open=slots.open=false;apply_settings();}
             break;
@@ -996,16 +1005,27 @@ int run(const Options& o) {
         const auto before=system_menu.page();
         menu_action(system_menu.activate(tag));
         if(menu_open&&before!=system_menu.page()){
-            if(system_menu.page()==dc4ui::SystemMenuPage::Music)audio.engine.stop_bgm();
-            else if(system_menu.page()==dc4ui::SystemMenuPage::Title||system_menu.page()==dc4ui::SystemMenuPage::Extras)title_music();
+            if(system_menu.page()==dc4ui::SystemMenuPage::Music){
+                audio.engine.stop_bgm();
+                play_sys_voice(16);
+            }
+            else if(system_menu.page()==dc4ui::SystemMenuPage::Title||system_menu.page()==dc4ui::SystemMenuPage::Extras){
+                title_music();
+                if(system_menu.page()==dc4ui::SystemMenuPage::Extras) play_sys_voice(15);
+                else play_sys_voice(2);
+            }
+            else if(system_menu.page()==dc4ui::SystemMenuPage::Config) play_sys_voice(14);
+            else if(system_menu.page()==dc4ui::SystemMenuPage::Gallery) play_sys_voice(15);
+            else if(system_menu.page()==dc4ui::SystemMenuPage::Scenes) play_sys_voice(17);
         }
     };
     auto save_action = [&](const dc4ui::SaveAction& selected) {
         switch (selected.type) {
-        case dc4ui::SaveActionType::Back: close_slots(); break;
+        case dc4ui::SaveActionType::Back: play_sys_voice(11); close_slots(); break;
         case dc4ui::SaveActionType::Slot: select_slot(selected.index); break;
         case dc4ui::SaveActionType::Page:
         case dc4ui::SaveActionType::Mode:
+            play_sys_voice(selected.index == 1 ? 13 : 12);
             status.clear(); update_title(); break;
         case dc4ui::SaveActionType::LatestLoad:
             if (slots.latest_slot >= 0) persist_state(true, slots.latest_slot);

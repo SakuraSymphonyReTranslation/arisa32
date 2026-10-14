@@ -20,6 +20,7 @@ class VoiceArchive {
 public:
     bool open(const std::string& path, std::string* err = nullptr);
     const std::vector<VoiceEntry>& entries() const { return entries_; }
+    bool loaded() const { return !entries_.empty(); }
 
     // Lookup like the engine: strip path before last '\\', append ".pcm",
     // case-insensitive compare. Returns nullptr if not found.

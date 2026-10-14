@@ -6,6 +6,12 @@
 namespace dc4 {
 namespace {
 
+std::string to_lower(const std::string& str) {
+    std::string out = str;
+    for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
 int byte_bank_size(uint16_t bank) {
     if (bank <= 10) return 100;
     switch (bank) {
@@ -82,7 +88,7 @@ void MesVm::reset() {
     choices_.clear();
     entry_label_.clear();
     error_.clear();
-    waiting_for_choice_ = transferring_ = ended_ = false;
+    waiting_for_choice_ = transferring_ = ended_ = pending_button_action_ = false;
 }
 
 bool MesVm::bind(const MesFile& mes) {
@@ -91,26 +97,39 @@ bool MesVm::bind(const MesFile& mes) {
     labels_.clear();
     choices_.clear();
     error_.clear();
-    waiting_for_choice_ = transferring_ = ended_ = false;
+    waiting_for_choice_ = transferring_ = ended_ = pending_button_action_ = false;
     if (mes.code.size() < 3) return fail("missing MES header", 0);
 
-    // sub_438420 scans from offset 3, compares case-sensitively, and stops at
-    // the first 0x00. Keep the first duplicate exactly as that scan does.
     MesStream scan(mes);
     MesCommand command;
     while (scan.pos() < mes.code.size()) {
         command = MesCommand{};
         if (!scan.next(&command))
             return fail("truncated MES command", scan.pos());
-        if (command.op == 0) break;
-        if (command.op == 0x4B)
-            labels_.emplace(command.str, command.pos);
+        if (command.op == 0) continue;
+        if (command.kind == CmdKind::Str || command.kind == CmdKind::ParamStr) {
+            if (command.op == 0x4B || command.op == 0x35 || command.op == 0x34 ||
+                (!command.str.empty() && command.str[0] == ':')) {
+                labels_.emplace(command.str, command.pos);
+                std::string lower = to_lower(command.str);
+                if (lower != command.str) labels_.emplace(lower, command.pos);
+                if (!command.str.empty() && command.str[0] == ':') {
+                    labels_.emplace(command.str.substr(1), command.pos);
+                    std::string lower_sub = to_lower(command.str.substr(1));
+                    if (lower_sub != command.str.substr(1)) labels_.emplace(lower_sub, command.pos);
+                }
+            }
+        }
+    }
+
+    for (const auto& l : mes.labels) {
+        labels_.emplace(std::to_string(l.id), l.offset);
     }
 
     if (!entry_label_.empty()) {
         const std::string entry = std::move(entry_label_);
         entry_label_.clear();
-        return jump(entry);
+        jump(entry);
     }
     return true;
 }
@@ -232,12 +251,38 @@ bool MesVm::consume_companion(MesCommand* command, const char* purpose) {
 }
 
 bool MesVm::jump(const std::string& label) {
-    const auto found = labels_.find(label);
-    if (found == labels_.end())
+    auto it = labels_.find(label);
+    if (it == labels_.end() && !label.empty() && label[0] != ':') {
+        it = labels_.find(":" + label);
+    }
+    if (it == labels_.end() && !label.empty() && label[0] == ':') {
+        it = labels_.find(label.substr(1));
+    }
+    if (it == labels_.end()) {
+        char* end = nullptr;
+        unsigned long id = std::strtoul(label.c_str(), &end, 10);
+        if (end != label.c_str() && *end == '\0' && mes_) {
+            const MesLabel* ml = mes_->find_label(uint16_t(id));
+            if (ml) {
+                stream_->seek(ml->offset);
+                ended_ = false;
+                return true;
+            }
+        }
         return fail("unknown MES label '" + label + "'", pos());
-    stream_->seek(found->second);
+    }
+    stream_->seek(it->second);
     ended_ = false;
     return true;
+}
+
+bool MesVm::has_label(const std::string& label) const {
+    if (labels_.count(label)) return true;
+    if (!label.empty() && label[0] != ':' && labels_.count(":" + label)) return true;
+    if (!label.empty() && label[0] == ':' && labels_.count(label.substr(1))) return true;
+    std::string lower = to_lower(label);
+    if (labels_.count(lower)) return true;
+    return false;
 }
 
 bool MesVm::choose(size_t index) {
@@ -362,12 +407,36 @@ bool MesVm::next(MesCommand* out) {
     for (size_t executed = 0; executed < 100000; ++executed) {
         MesCommand command;
         if (!read_command(&command)) return false;
+        if (pending_button_action_) {
+            pending_button_action_ = false;
+            *out = command;
+            return true;
+        }
+        if (command.kind == CmdKind::Words4 &&
+            (command.op == 0x72 || command.op == 0x54 || command.op == 0x4F)) {
+            pending_button_action_ = true;
+            *out = command;
+            return true;
+        }
         switch (command.op) {
         case 0:
-            ended_ = true;
-            return false;
+            if (!stream_ || stream_->pos() >= mes_->code.size()) {
+                ended_ = true;
+                return false;
+            }
+            continue;
         case 0x02: // companion marker; harmless if reached linearly
-        case 0x4B: // named-label declaration
+        case 0x4B: // named-label declaration (Modern)
+        case 0x34: // named-label declaration (ClassicDM)
+            continue;
+        case 0x35: // named-label declaration (Classic) or voice
+            if (!command.str.empty()) {
+                std::string s = to_lower(command.str);
+                if (s.rfind("voice\\", 0) == 0 || s.rfind("lvoice\\", 0) == 0 ||
+                    s.rfind("mvoice\\", 0) == 0 || s.rfind("svoice\\", 0) == 0) {
+                    break;
+                }
+            }
             continue;
         case 0x09:
             choices_.clear();
@@ -392,29 +461,83 @@ bool MesVm::next(MesCommand* out) {
         case 0x20:
             if (!command.p1 && !skip_scope(command.p2)) return false;
             continue;
-        case 0x4F:
-        case 0x50:
+        case 0x2E:
             transferring_ = true;
             break;
+        case 0x4F:
+        case 0x50:
+            if (command.kind == CmdKind::Str && !command.str.empty() &&
+                static_cast<unsigned char>(command.str[0]) >= 0x20 &&
+                static_cast<unsigned char>(command.str[0]) < 0x7F &&
+                command.str[0] != ':') {
+                transferring_ = true;
+            }
+            break;
+        case 0x3B:
         case 0x51:
-            entry_label_ = command.str;
-            continue;
+            if (command.kind == CmdKind::Str) {
+                entry_label_ = command.str;
+                continue;
+            }
+            break;
+        case 0x3A:
         case 0x54:
-            if (!jump(command.str)) return false;
-            continue;
+        case 0x3D:
+            if (command.kind == CmdKind::Str) {
+                if (!command.str.empty() && command.str[0] != ':') {
+                    if (!jump(command.str)) return false;
+                    continue;
+                }
+            }
+            break;
+        case 0x62: {
+            if (command.kind == CmdKind::Words4) {
+                int32_t value = signed_word(command.words[2]);
+                const int32_t old = read_variable(command.words[0], command.words[1]);
+                if (command.words[3] == 1) value = wrap_add(old, value);
+                else if (command.words[3] == 2) value = wrap_add(old, -value);
+                else if (command.words[3] != 0)
+                    return fail("unsupported assignment operator", command.pos);
+                write_variable(command.words[0], command.words[1], value);
+                continue;
+            }
+            break;
+        }
+        case 0x66: {
+            if (command.kind == CmdKind::Words4) {
+                if (!execute_compare(command)) return false;
+                continue;
+            }
+            break;
+        }
         case 0x5C: {
-            MesCommand caption;
-            if (!consume_companion(&caption, "choice text")) return false;
-            if (caption.kind != CmdKind::Text)
-                return fail("expected encoded choice text", caption.pos);
-            choices_.push_back({command.str, caption.str});
+            if (command.kind == CmdKind::Str) {
+                MesCommand caption;
+                if (!consume_companion(&caption, "choice text")) return false;
+                if (caption.kind != CmdKind::Text)
+                    return fail("expected encoded choice text", caption.pos);
+                choices_.push_back({command.str, caption.str});
+                continue;
+            }
+            // ClassicDC2 Words4: 0x5C is assignment (equivalent to 0x82)
+            int32_t value = signed_word(command.words[2]);
+            const int32_t old = read_variable(command.words[0], command.words[1]);
+            if (command.words[3] == 1) value = wrap_add(old, value);
+            else if (command.words[3] == 2) value = wrap_add(old, -value);
+            else if (command.words[3] != 0)
+                return fail("unsupported assignment operator", command.pos);
+            write_variable(command.words[0], command.words[1], value);
             continue;
         }
         case 0x5F: {
-            MesCommand companion;
-            if (!consume_companion(&companion, "string companion")) return false;
-            if (companion.kind != CmdKind::Str && companion.kind != CmdKind::Text)
-                return fail("expected string companion", companion.pos);
+            if (command.kind == CmdKind::Str) {
+                MesCommand companion;
+                if (!consume_companion(&companion, "string companion")) return false;
+                if (companion.kind != CmdKind::Str && companion.kind != CmdKind::Text)
+                    return fail("expected string companion", companion.pos);
+                continue;
+            }
+            // ClassicDC2 Words4: 0x5F is variable compare
             continue;
         }
         case 0x82: {

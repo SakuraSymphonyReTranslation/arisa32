@@ -36,10 +36,11 @@ final class GameLibrary {
             Entry e = new Entry(); e.id = id;
             e.path = p.getProperty(id + ".path", "");
             e.title = p.getProperty(id + ".title", "");
-            if (e.title.isEmpty() || e.title.equals("D.C.4") || e.title.contains("ダ・カーポ") || e.title.contains("フォーチュネイト") || e.title.contains("Archives")) {
+            if (e.title.isEmpty() || e.title.startsWith("D.C.4") || e.title.contains("ダ・カーポ") || e.title.contains("フォーチュネイト") || e.title.contains("Archives")) {
                 File pFile = new File(e.path);
                 if (pFile.exists()) e.title = detectTitle(pFile);
                 else if (e.title.contains("Plus Harmony") || e.title.contains("プラスハーモニー")) e.title = "D.C.4 ~Da Capo 4~ Plus Harmony";
+                else if (e.title.contains("Sweet Harmony") || e.title.contains("スウィートハーモニー")) e.title = "D.C.4 ~Da Capo 4~ Sweet Harmony";
                 else if (e.title.contains("Platinum Partner") || e.title.contains("P.P.")) e.title = "D.C. III P.P. ~Da Capo III Platinum Partner~";
                 else if (e.title.contains("With You")) e.title = "D.C. III With You ~Da Capo III With You~";
                 else if (e.title.contains("Dream Days")) e.title = "D.C. III Dream Days ~Da Capo III Dream Days~";
@@ -99,12 +100,24 @@ final class GameLibrary {
         if (parent != null) pathStr += " " + parent.getName().toLowerCase(Locale.ROOT);
 
         // 1. Content check for Plus Harmony (separate game from standard D.C.4)
+        File exe1 = parent != null ? new File(parent, "DC4PHDL.exe") : null;
+        File exe2 = parent != null ? new File(parent, "DC4PHLauncher.exe") : null;
+        File exe3 = new File(dataRoot, "DC4PHDL.exe");
+        if ((exe1 != null && exe1.isFile()) || (exe2 != null && exe2.isFile()) || exe3.isFile() ||
+            pathStr.contains("plus harmony") || pathStr.contains("dc4ph") || pathStr.contains("dc4_ph")) {
+            return "D.C.4 ~Da Capo 4~ Plus Harmony";
+        }
+        if (pathStr.contains("sweet harmony") || pathStr.contains("dc4sh") || pathStr.contains("dc4_sh")) {
+            return "D.C.4 ~Da Capo 4~ Sweet Harmony";
+        }
         if (new File(mes, "dc4_asu20190506c.mes").isFile() ||
+            new File(mes, "dc4_asu20190511b.mes").isFile() ||
             new File(mes, "dc4_asu20190513c.mes").isFile() ||
             new File(mes, "dc4_asa20190513c.mes").isFile()) {
             return "D.C.4 ~Da Capo 4~ Plus Harmony";
         }
         File namesDat = new File(grp, "NAMES.DAT");
+        if (!namesDat.isFile()) namesDat = new File(grp, "names.dat");
         if (namesDat.isFile() && namesDat.length() > 65000) {
             return "D.C.4 ~Da Capo 4~ Plus Harmony";
         }
@@ -112,7 +125,10 @@ final class GameLibrary {
         if (mesFiles != null) {
             for (File mf : mesFiles) {
                 String mn = mf.getName().toLowerCase(Locale.ROOT);
-                if (mn.startsWith("dc4_asu")) return "D.C.4 ~Da Capo 4~ Plus Harmony";
+                if (mn.equals("dc4_asu20190506c.mes") || mn.equals("dc4_asu20190511b.mes") ||
+                    mn.equals("dc4_asu20190513c.mes") || mn.equals("dc4_asa20190513c.mes")) {
+                    return "D.C.4 ~Da Capo 4~ Plus Harmony";
+                }
                 if (mn.startsWith("dc3r")) return "D.C. III R ~Da Capo III R~";
                 if (mn.startsWith("dc3pp")) return "D.C. III P.P. ~Da Capo III Platinum Partner~";
                 if (mn.startsWith("dc3wy")) return "D.C. III With You ~Da Capo III With You~";

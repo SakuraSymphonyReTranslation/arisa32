@@ -413,6 +413,12 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     credits_entries_.clear();
     effect_pck_.clear();
     input_skip_label_.clear();
+    buttons_.erase(
+        std::remove_if(buttons_.begin(), buttons_.end(),
+                       [](const UiButton& b) { return b.y < 690; }),
+        buttons_.end());
+    pending_button_ = UiButton();
+    pending_has_button_ = false;
     // Layer/sprite state deliberately persists: the engine keeps its graphics
     // across Mes_RunScriptByName jumps (the prologue chains a1 -> a2 -> ...).
     return true;
@@ -434,12 +440,8 @@ void SceneRunner::finish_script_wait() {
         if (!vm_.jump(input_skip_label_)) last_error_ = vm_.error();
     }
     script_wait_ms_ = 0;
+    script_wait_pending_ = false;
     credits_active_ = false;
-    if (effect_pck_.active) {
-        effect_pck_.active = false;
-        effect_pck_.current_frame = -1;
-        effect_pck_.current_img = Image{};
-    }
     scene_dirty_ = true;
 }
 
@@ -509,28 +511,86 @@ bool SceneRunner::advance_to_next_text() {
             }
             continue;
         }
-        // 0x7A queues a chip blit; the attached 0x77 supplies w/h/sheet/state.
+        // 0x7A (Modern) / 0x55 (ClassicDM) / 0x53 (ClassicDC2) queues a chip blit;
+        // the attached 0x77 (Modern) / 0x57 (ClassicDM) / 0x52 (ClassicDC2) supplies w/h/sheet/state.
         // Anything else between them cancels the pending blit.
-        if (pending_scene_blit_ && !(c.kind == K::Words4 && c.op == 0x77))
+        // 0x7A (Modern) / 0x55 (ClassicDM) / 0x53 (ClassicDC2) queues a chip blit;
+        // 0x50 (ClassicDC2) / 0x73 (Modern) queues a button chip;
+        // the attached 0x77 (Modern) / 0x57 (ClassicDM) / 0x52 (ClassicDC2) supplies w/h/sheet/state.
+        // Anything else between them cancels the pending blit.
+        const bool is_button_chip_pos = (c.kind == K::Words4 && (c.op == 0x50 || c.op == 0x73));
+        const bool is_chip_pos = (c.kind == K::Words4 && (c.op == 0x7A || c.op == 0x55 || c.op == 0x53));
+        const bool is_chip_prop = (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52));
+
+        if (pending_scene_blit_ && !is_chip_prop)
             pending_scene_blit_ = false;
-        if (c.kind == K::Words4 && c.op == 0x7A) {
+        if (is_button_chip_pos) {
+            // In ClassicDC2 0x50: [dst_x, dst_y, origin_x, origin_y]
+            // src_x = dst_x - origin_x, src_y = dst_y - origin_y
+            int src_x = (c.op == 0x50) ? (int16_t(c.words[0]) - int16_t(c.words[2])) : int(c.words[2]);
+            int src_y = (c.op == 0x50) ? (int16_t(c.words[1]) - int16_t(c.words[3])) : int(c.words[3]);
+            pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
+                                         src_x, src_y, 0, 0, 0, true};
+            pending_scene_blit_ = true;
+            pending_chip_is_button_ = true;
+            continue;
+        }
+        if (is_chip_pos) {
             pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
                                          c.words[2], c.words[3], 0, 0, 0, true};
             pending_scene_blit_ = true;
+            pending_chip_is_button_ = false;
             continue;
         }
-        if (c.kind == K::Words4 && c.op == 0x77 && pending_scene_blit_) {
+        if (is_chip_prop && pending_scene_blit_) {
             pending_scene_chip_.w = c.words[0];
             pending_scene_chip_.h = c.words[1];
             pending_scene_chip_.sheet = c.words[2];
-            scene_chips_.push_back(pending_scene_chip_);
+            int state = (c.words[3] == 99 || c.words[3] == 9) ? 0 : c.words[3];
+            if (pending_chip_is_button_) {
+                if (!buttons_.empty() && state >= 0 && state < 3) {
+                    buttons_.back().state[state] = pending_scene_chip_;
+                }
+            } else {
+                scene_chips_.push_back(pending_scene_chip_);
+            }
             pending_scene_blit_ = false;
+            scene_dirty_ = true;
             if (debug_)
-                printf("  7A chip dst(%d,%d) src(%d,%d) %dx%d sheet %d\n",
+                printf("  chip dst(%d,%d) src(%d,%d) %dx%d sheet %d (button=%d)\n",
                        pending_scene_chip_.dst_x, pending_scene_chip_.dst_y,
                        pending_scene_chip_.src_x, pending_scene_chip_.src_y,
                        pending_scene_chip_.w, pending_scene_chip_.h,
-                       pending_scene_chip_.sheet);
+                       pending_scene_chip_.sheet, pending_chip_is_button_);
+            continue;
+        }
+        // Button hit rect: 0x72 (Modern), 0x54 (ClassicDM/in-game), 0x4F (ClassicDC2)
+        if (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54 || c.op == 0x4F)) {
+            pending_button_.x = c.words[0];
+            pending_button_.y = c.words[1];
+            pending_button_.w = c.words[2] - c.words[0];
+            pending_button_.h = c.words[3] - c.words[1];
+            pending_has_button_ = true;
+        }
+        // Button action target: 0x3D (ClassicDM), 0x3A (ClassicDC2), 0x54 (Modern)
+        if (c.kind == K::Str && pending_has_button_) {
+            if (c.op == 0x3D || c.op == 0x3A || c.op == 0x54 || c.op == 0x48) {
+                pending_button_.action = c.str;
+                buttons_.push_back(pending_button_);
+            }
+            pending_has_button_ = false;
+        }
+        if (c.kind == K::Param2 && (c.op == 0x0D || c.op == 0x0A)) {
+            if (!buttons_.empty() || c.p1 == 0) {
+                script_wait_pending_ = true;
+                script_wait_ms_ = -1;
+                scene_dirty_ = true;
+                return false;
+            } else if (c.p1 > 0 && animation_enabled_) {
+                script_wait_pending_ = true;
+                script_wait_ms_ = double(c.p1) * 16.6;
+                return false;
+            }
             continue;
         }
         if (c.kind == K::Param2 && c.op == 0x0F) {
@@ -541,7 +601,7 @@ bool SceneRunner::advance_to_next_text() {
             if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
             transition_type_ = c.p1;
             if (c.p1 == 32) snapshot_for_transition();
-        } else if (c.kind == K::ParamStr && c.op == 0x3C) {
+        } else if (c.kind == K::ParamStr && (c.op == 0x3C || c.op == 0x2B)) {
             // Slot 21 carries MSK\ wipe masks for the 0x0F(21,x) transition;
             // they never render as scene content.
             std::string up;
@@ -596,7 +656,13 @@ bool SceneRunner::advance_to_next_text() {
             camera_duration_ = c.words[0];
         } else if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
             apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if (c.kind == K::Str && (c.op == 0x4F || c.op == 0x50)) {
+        } else if ((c.kind == K::Str && (c.op == 0x4F || c.op == 0x50)) ||
+                   (c.kind == K::ParamStr && c.op == 0x2E)) {
+            if (c.str.empty() || c.str[0] == ':' ||
+                static_cast<unsigned char>(c.str[0]) < 0x20 ||
+                static_cast<unsigned char>(c.str[0]) >= 0x7F) {
+                continue;
+            }
             if (++transfers > 64) {
                 last_error_ = "too many script transfers without dialogue";
                 scene_end_ = true;
@@ -606,9 +672,9 @@ bool SceneRunner::advance_to_next_text() {
             std::string system_name = name;
             std::transform(system_name.begin(), system_name.end(), system_name.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
             if (system_name.size() > 4 && system_name.substr(system_name.size()-4) == ".mes") system_name.resize(system_name.size()-4);
-            if (system_name == "main" || system_name == "start" || system_name == "config" ||
+            if (use_system_menu_ && (system_name == "main" || system_name == "start" || system_name == "config" ||
                 system_name == "save" || system_name == "load" || system_name == "cgmode" ||
-                system_name == "music" || system_name == "scemode" || system_name == "sce_end") {
+                system_name == "music" || system_name == "scemode" || system_name == "sce_end")) {
                 next_script_ = c.str;
                 scene_end_ = true;
                 return false;
@@ -616,31 +682,34 @@ bool SceneRunner::advance_to_next_text() {
             if (name.size() < 4 || name.substr(name.size() - 4) != ".mes") name += ".mes";
             if (debug_) printf("scene jump -> %s\n", name.c_str());
             if (!load_script(data_ + "/MES/" + name)) { scene_end_ = true; return false; }
-        } else if (c.kind == K::Str && c.op == 0x49) {
+        } else if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30 || c.op == 0x31 || c.op == 0x32 || c.op == 0x33)) {
             if (c.str == ":n") { preserve_scene_ = true; continue; }
             if (c.str == ":r") { preserve_scene_ = false; continue; }
             if (c.str.empty() || c.str[0] == ':') continue;
-            // 0x3C prepares slot 1; 0x49 commits its background. The 0x0F
-            // selector also contains transition modes (e.g.32), not layer IDs.
             if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
-                load_slot(1, c.str);
-                // Native background commit releases old characters, then
-                // applies characters queued in this same command batch. The
-                // retained 0x7A chips (the date HUD) also go away here: the
-                // calendar shows on the eyecatch, not during dialogue.
-                scene_chips_.clear();
-                for (size_t i = 0; i < sprites_.size(); ++i)
-                    if (!pending_sprites_[i]) sprites_[i].visible = false;
+                if (c.op == 0x30 || c.op == 0x49) {
+                    load_layer(1, c.str);
+                    scene_chips_.clear();
+                    scene_dirty_ = true;
+                    for (size_t i = 0; i < sprites_.size(); ++i)
+                        if (!pending_sprites_[i]) sprites_[i].visible = false;
+                } else if (c.op == 0x31) {
+                    load_sheet(6, c.str);
+                } else if (c.op == 0x32) {
+                    load_sheet(7, c.str);
+                } else if (c.op == 0x33) {
+                    load_sheet(8, c.str);
+                }
             }
         } else if (c.kind == K::Text) {
-            // 0x6A is the speaker name shown on the plate, 0x6B.. the line.
-            if (c.op == 0x6A) {
+            // Modern: 0x6A speaker, 0x6B.. line
+            // Classic DC2: 0x4A speaker, 0x4B.. line
+            // Classic DM: 0x4D speaker, 0x4E.. line
+            if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
                 speaker_ = c.str;
                 continue;
             }
             if (c.op == 0x6D) {
-                // A chat message while a COMU group is open (0x430882 ->
-                // sub_4581D0); outside a group 0x6D is a secondary log sink.
                 if (comu_group_) comu_message(c.str);
                 continue;
             }
@@ -713,7 +782,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     buttons_.clear();
     while (stream.next(&c)) {
         using K = dc4::CmdKind;
-        if (c.kind == K::ParamStr && c.op == 0x3D) {
+        if (c.kind == K::ParamStr && (c.op == 0x3D || c.op == 0x2A || c.op == 0x2B || c.op == 0x2E)) {
             Image img;
             std::string lower = c.str;
             for (char& ch : lower) ch = char(std::tolower((unsigned char)ch));
@@ -721,7 +790,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
                 sheets_[c.p1 + 37] = std::move(img);
             continue;
         }
-        if (c.kind == K::Words4 && c.op == 0x72) {
+        if (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54)) {
             // Hit rect: only widgets in the bottom bar band are always on.
             saw_rect = int16_t(c.words[1]) >= 690 && int16_t(c.words[1]) < kScreenH;
             if (saw_rect) {
@@ -735,18 +804,18 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
             pending = UiChip();
             continue;
         }
-        if (c.kind == K::Str && c.op == 0x54) {
+        if (c.kind == K::Str && (c.op == 0x54 || c.op == 0x3D || c.op == 0x3A || c.op == 0x48)) {
             if (saw_rect && !buttons_.empty() && buttons_.back().action.empty())
                 buttons_.back().action = c.str;
             continue;
         }
-        if (c.kind == K::Words4 && (c.op == 0x73 || c.op == 0x7A)) {
+        if (c.kind == K::Words4 && (c.op == 0x73 || c.op == 0x7A || c.op == 0x55 || c.op == 0x53)) {
             pending = UiChip{int16_t(c.words[0]), int16_t(c.words[1]), c.words[2], c.words[3],
                              0, 0, 0, true};
-            from_widget = c.op == 0x73;
+            from_widget = (c.op == 0x73 || c.op == 0x55 || c.op == 0x53);
             continue;
         }
-        if (c.kind == K::Words4 && c.op == 0x77 && pending.valid) {
+        if (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52) && pending.valid) {
             pending.w = c.words[0];
             pending.h = c.words[1];
             pending.sheet = c.words[2];
@@ -779,11 +848,12 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
 
 bool SceneRunner::show_message_window(const std::string& path) {
     std::string err;
-    if (!load_grp_crx(path, &meswin_, &err)) {
-        printf("meswin: %s\n", err.c_str());
-        return false;
+    if (load_grp_crx(path, &meswin_, &err)) return true;
+    for (const char* alt : {"SYSTEM/Messwin.CRX", "SYSTEM/Wintype.CRX", "SYSTEM/meswin.crx", "SYSTEM/messwin.crx"}) {
+        if (load_grp_crx(alt, &meswin_, &err)) return true;
     }
-    return true;
+    printf("meswin: %s\n", err.c_str());
+    return false;
 }
 
 void SceneRunner::load_layer(int layer, const std::string& path) {
@@ -801,7 +871,7 @@ void SceneRunner::load_layer(int layer, const std::string& path) {
 }
 
 void SceneRunner::load_slot(int slot, const std::string& raw) {
-    if (raw.empty() || slot == 0) return;
+    if (raw.empty()) return;
     bool is_dash = raw.size() >= 2 && raw[0] == '-' && raw[1] == '-';
     int idx = -1;
     if (slot >= 4 && slot <= 8) idx = slot - 4;
@@ -820,6 +890,9 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     }
 
     std::string name = raw;
+    while (!name.empty() && ((unsigned char)name.front() < 0x20 || name.front() == '!')) {
+        name.erase(name.begin());
+    }
     if (is_dash) {
         if (preload) {
             auto it = sheets_.find(slot);
@@ -849,20 +922,17 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     // The :n/:r flag governs background preparation, not commit cleanup.
     // Native MES case 60 resets camera state when preparing slot 1 unless :n
     // is active; case 73 still releases old, unqueued character resources.
-    if (slot == 1 && !preserve_scene_) {
+    if (slot <= 1 && !preserve_scene_) {
         reset_camera();
         effect_pck_.clear();
     }
-    if (slot != 1) {
+    if (slot > 1) {
         // Non-background images load into the sheet registry under their raw
-        // slot id (the native sheet-handle table at VM+0x634): slot 19
-        // SYSTEM\EYECATCH_CHIP is the source of the calendar's 0x7A blits,
-        // not a full-screen layer. Visible layers are built only by the 0x49
-        // commit of slot 1.
+        // slot id (the native sheet-handle table at VM+0x634).
         load_sheet(slot, name);
         return;
     }
-    load_layer(slot, name);
+    load_layer(1, name);
 }
 
 // Decodes an image and registers it for 0x77 chip blits under the raw id.
@@ -877,6 +947,10 @@ void SceneRunner::load_sheet(int id, const std::string& path) {
         return;
     }
     img.name = path;
+    scene_chips_.erase(
+        std::remove_if(scene_chips_.begin(), scene_chips_.end(),
+                       [id](const UiChip& c) { return c.sheet == id; }),
+        scene_chips_.end());
     sheets_[id] = std::move(img);
 }
 
@@ -1404,12 +1478,6 @@ void SceneRunner::finish_animations() {
             s.fade = BstSprite::Fade{};
         }
     }
-    if (effect_pck_.active) {
-        effect_pck_.active = false;
-        effect_pck_.current_frame = -1;
-        effect_pck_.current_img = Image{};
-        scene_dirty_ = true;
-    }
     if (transition_active_ || transition_pending_) {
         transition_active_ = false;
         transition_pending_ = false;
@@ -1495,10 +1563,22 @@ void SceneRunner::draw(int reveal_chars) {
         draw_message_window(reveal_chars);
         for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
         for (const UiButton& b : buttons_) {
-            bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
-            int state = hover ? (pointer_down_ ? 2 : 1) : 0;
-            const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
-            if (ch->valid) blit_chip(*ch, 255);
+            if (b.y >= 690) {
+                bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+                int state = hover ? (pointer_down_ ? 2 : 1) : 0;
+                const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
+                if (ch && ch->valid) blit_chip(*ch, 255);
+            }
+        }
+    }
+    if (!message_visible_) {
+        for (const UiButton& b : buttons_) {
+            if (b.y < 690) {
+                bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+                int state = hover ? (pointer_down_ ? 2 : 1) : 0;
+                const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
+                if (ch && ch->valid) blit_chip(*ch, 255);
+            }
         }
     }
     if (vm_.waiting_for_choice()) {
@@ -2066,8 +2146,10 @@ void SceneRunner::draw_choices() {
 }
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
-    if (!message_visible_ || vm_.waiting_for_choice()) return nullptr;
+    if (vm_.waiting_for_choice()) return nullptr;
     for (const UiButton& b : buttons_) {
+        if (b.y >= 690 && !message_visible_) continue;
+        if (b.y < 690 && message_visible_) continue;
         if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h &&
             !b.action.empty())
             return &b.action;

@@ -63,6 +63,7 @@ public:
     void draw(int mouse_x, int mouse_y, bool down,
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;
+    std::string system_voice(int event_id) const;
     // Raw native variable access supports platform settings and progression.
     int variable(int bank, int index) const;
     void set_variable(int bank, int index, int value);

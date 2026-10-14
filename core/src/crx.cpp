@@ -196,11 +196,17 @@ bool crx_decode_raw(const uint8_t* data, size_t size, std::vector<uint8_t>* pixe
         for (int k = 0; k < n; ++k) {
             uint8_t r = s.u8(), g = s.u8(), b = s.u8();
             if (csz == 4) s.u8();
-            if (r == 0xFF && g == 0 && b == 0xFF) g = 0xFF;  // magenta transparency quirk
-            palette[k * 4] = r;
-            palette[k * 4 + 1] = g;
-            palette[k * 4 + 2] = b;
-            palette[k * 4 + 3] = 0xFF;
+            if (r == 0xFF && g == 0 && b == 0xFF) {
+                palette[k * 4] = 0;
+                palette[k * 4 + 1] = 0;
+                palette[k * 4 + 2] = 0;
+                palette[k * 4 + 3] = 0;
+            } else {
+                palette[k * 4] = r;
+                palette[k * 4 + 1] = g;
+                palette[k * 4 + 2] = b;
+                palette[k * 4 + 3] = 0xFF;
+            }
         }
     }
     if (i.compression >= 3) {
@@ -237,7 +243,11 @@ void crx_to_rgba(const CrxInfo& info, int stride, const std::vector<uint8_t>& pi
                 memcpy(o, &palette[size_t(idx) * 4], 4);
             } else if (info.bpp == 24) {
                 const uint8_t* p = &pixels[size_t(y) * stride + x * 3];
-                o[0] = p[2]; o[1] = p[1]; o[2] = p[0]; o[3] = 0xFF;  // BGR -> RGBA
+                if (p[2] == 0xFF && p[1] == 0 && p[0] == 0xFF) {
+                    o[0] = o[1] = o[2] = o[3] = 0;
+                } else {
+                    o[0] = p[2]; o[1] = p[1]; o[2] = p[0]; o[3] = 0xFF;  // BGR -> RGBA
+                }
             } else {
                 const uint8_t* p = &pixels[size_t(y) * stride + x * 4];
                 if (info.mode != 1) {

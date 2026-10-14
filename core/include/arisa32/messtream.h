@@ -32,11 +32,10 @@ std::string mes_decode_text(const uint8_t* data, size_t len);
 
 class MesStream {
 public:
-    explicit MesStream(const MesFile& mes) : code_(mes.code) {
-        // code_ includes the 3-byte B6 AA 00 header; command offsets are
-        // relative to its start (label offsets already account for it).
+    explicit MesStream(const MesFile& mes)
+        : code_(mes.code), dialect_(mes.dialect) {
         base_ = 0;
-        pos_ = 3;  // first command after the B6 AA 00 header
+        pos_ = (dialect_ == MesDialect::ClassicDC2) ? 2 : 3;
     }
 
     // Reads the next command. Returns false at end of code.
@@ -44,9 +43,11 @@ public:
 
     uint32_t pos() const { return pos_; }
     void seek(uint32_t label_offset) { pos_ = label_offset; }
+    MesDialect dialect() const { return dialect_; }
 
 private:
     const std::vector<uint8_t>& code_;
+    MesDialect dialect_ = MesDialect::Modern;
     size_t base_ = 0;
     size_t pos_ = 0;
 };

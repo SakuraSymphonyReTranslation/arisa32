@@ -75,5 +75,8 @@ mcp-server/
 mirror.bat
 scene-test-data/
 /MSGOTHIC.TTC
+build_vs/
+stats
+
 
 

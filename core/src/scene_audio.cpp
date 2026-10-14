@@ -92,7 +92,9 @@ int se_channel(const std::string& name, bool loop, int free_channel) {
 bool safe_resource_name(const std::string& name) {
     if (name.empty() || name.size() > 260 || name.find('\0') != std::string::npos) return false;
     std::string normal = lower(name);
-    if (normal.front() == '/' || normal.find(':') != std::string::npos) return false;
+    while (!normal.empty() && (normal.front() == '/' || normal.front() == '\\')) normal.erase(normal.begin());
+    if (normal.find(':') != std::string::npos) return false;
+    for (char& c : normal) if (c == '\\') c = '/';
     for (const auto& part : std::filesystem::path(normal))
         if (part == "..") return false;
     return true;
@@ -115,13 +117,21 @@ void SceneAudio::apply_character_volume(const std::string& name) {
     // Original charv_set slots 0..11. ASU/ASA share Arisu's control;
     // HYR/HIY share Hiyori's. Unmapped guest voices use the 'other' group.
     static const char* actors[] = {"asa","nin","sor","hyr","sii","miu","tiy","sgn","kan","izu","ktr","che"};
-    std::string actor = lower(name.substr(name.find_last_of('_') + 1, 3));
+    std::string actor;
+    size_t last_underscore = name.find_last_of('_');
+    if (last_underscore != std::string::npos && last_underscore + 4 <= name.size()) {
+        actor = lower(name.substr(last_underscore + 1, 3));
+    }
     if (actor == "asu") actor = "asa";
     if (actor == "hiy") actor = "hyr";
     voice_character_ = 15;
     for (size_t i = 0; i < 12; ++i) if (actor == actors[i]) voice_character_ = i;
-    if (audio_) for (int channel = 8; channel < 12; ++channel)
-        audio_->set_channel_user_volume(channel, character_volume_[voice_character_]);
+    if (audio_) {
+        int vol = character_volume_[voice_character_];
+        if (vol <= 0) vol = 100;
+        for (int channel = 8; channel < 12; ++channel)
+            audio_->set_channel_user_volume(channel, vol);
+    }
 }
 void SceneAudio::stop_for_movie() {
     if (audio_) for (auto group : {AudioGroup::Bgm, AudioGroup::Se, AudioGroup::Voice})
@@ -386,7 +396,21 @@ bool SceneAudio::dispatch(const MesCommand& c) {
             extension && c.words[0] ? ticks_ms(c.words[0]) : 500);
         if (extension) return true;
     }
-    if (c.kind == CmdKind::Str && (c.op == 0x4C || c.op == 0x4D || c.op == 0x4E)) {
+    bool is_voice_cmd = false;
+    if (c.kind == CmdKind::Str) {
+        if (c.op == 0x4C || c.op == 0x4D || c.op == 0x4E ||
+            c.op == 0x35 || c.op == 0x36 || c.op == 0x3D) {
+            std::string low = lower(c.str);
+            if (c.op == 0x4C || c.op == 0x4D || c.op == 0x4E ||
+                low.rfind("voice\\", 0) == 0 || low.rfind("voice/", 0) == 0 ||
+                low.rfind("lvoice\\", 0) == 0 || low.rfind("lvoice/", 0) == 0 ||
+                low.rfind("svoice\\", 0) == 0 || low.rfind("svoice/", 0) == 0 ||
+                low.rfind("mvoice\\", 0) == 0 || low.rfind("mvoice/", 0) == 0) {
+                is_voice_cmd = true;
+            }
+        }
+    }
+    if (is_voice_cmd) {
         play_voice(c.str);
         return true;
     }
