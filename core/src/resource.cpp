@@ -210,12 +210,21 @@ std::string resolve_asset(const std::string& requested) {
     if (!relative.empty() && *relative.begin() != "..") {
         const std::string category = folded(relative.begin()->u8string());
         if (!overlay_root.empty() && (category == "grp" || category == "mes" || category == "movie")) {
-            const auto translated = case_path(overlay_root, relative);
-            std::error_code error;
-            if (!translated.empty() && fs::is_regular_file(translated, error)) {
-                const auto text = translated.u8string();
-                resolutions[requested] = text;
-                return text;
+            bool skip_overlay = false;
+            if (category == "movie") {
+                const auto rel_str = folded(relative.u8string());
+                if (rel_str.find("op") != std::string::npos || rel_str.find("opening") != std::string::npos) {
+                    skip_overlay = true;
+                }
+            }
+            if (!skip_overlay) {
+                const auto translated = case_path(overlay_root, relative);
+                std::error_code error;
+                if (!translated.empty() && fs::is_regular_file(translated, error)) {
+                    const auto text = translated.u8string();
+                    resolutions[requested] = text;
+                    return text;
+                }
             }
         }
         const auto original = case_path(base_root, relative);

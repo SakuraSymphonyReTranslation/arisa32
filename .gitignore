@@ -88,3 +88,6 @@ stats
 /DC4PHDL*.dat
 /saves_tmp/
 /scratch_*
+*.rar
+*.db
+

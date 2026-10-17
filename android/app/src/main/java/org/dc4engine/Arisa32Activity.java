@@ -267,9 +267,102 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private File savesDir() {
         return savesDir(selected, selected != null ? selected.language : "jp");
     }
+    private static final String[] SAVE_SUBDIR_NAMES = {
+        "savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"
+    };
+
+    private static File resolveGameRoot(File gamePath, File advData) {
+        if (gamePath != null && gamePath.getName().equalsIgnoreCase("AdvData") && gamePath.getParentFile() != null) {
+            return gamePath.getParentFile();
+        }
+        if (advData != null && !advData.equals(gamePath) && advData.getParentFile() != null) {
+            return advData.getParentFile();
+        }
+        return gamePath;
+    }
+
+    private static void collectSaveCandidates(File baseDir, List<File> out) {
+        if (baseDir == null || !baseDir.isDirectory()) return;
+        File[] children = baseDir.listFiles();
+        if (children == null) return;
+        for (File child : children) {
+            if (!child.isDirectory()) continue;
+            String name = child.getName();
+            for (String sub : SAVE_SUBDIR_NAMES) {
+                if (name.equalsIgnoreCase(sub) && !out.contains(child)) {
+                    out.add(child);
+                    break;
+                }
+            }
+        }
+    }
+
+    private static long scoreSaveDirectory(File dir) {
+        if (dir == null || !dir.isDirectory()) return -1;
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        long score = 0;
+        for (File f : files) {
+            if (!f.isFile()) continue;
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (name.equals("system.dat")) {
+                score += 1000000L + f.lastModified();
+            } else if (name.equals("system-profile.dat")) {
+                score += 500000L;
+            } else if (name.matches("^(save|dc4|dc3|dc2|ds|quick|auto|qsave).*\\.dat$")) {
+                score += 100000L;
+            } else if (name.endsWith(".dc4sav")) {
+                score += 50000L;
+            }
+        }
+        return score;
+    }
+
+    private static File findTargetSaveDir(File gameRoot, File gamePath, File advData) {
+        List<File> candidates = new ArrayList<>();
+        // Priority 1: Inside AdvData (e.g. AdvData/SAVEDATA, AdvData/savedata)
+        if (advData != null) {
+            collectSaveCandidates(advData, candidates);
+        }
+        // Priority 2: Outer directory (fallback only if existing saves are already there)
+        if (gameRoot != null && !gameRoot.equals(advData)) {
+            collectSaveCandidates(gameRoot, candidates);
+        }
+        if (gamePath != null && !gamePath.equals(gameRoot) && !gamePath.equals(advData)) {
+            collectSaveCandidates(gamePath, candidates);
+        }
+
+        File bestDir = null;
+        long bestScore = -1;
+        for (File dir : candidates) {
+            long score = scoreSaveDirectory(dir);
+            if (score > bestScore) {
+                bestScore = score;
+                bestDir = dir;
+            }
+        }
+
+        if (bestDir != null && bestScore > 0) return bestDir;
+        if (bestDir != null) return bestDir;
+
+        // Default: Create inside AdvData
+        if (advData != null) {
+            File prefInside = new File(advData, "SAVEDATA");
+            if (prefInside.isDirectory() || prefInside.mkdirs()) return prefInside;
+            prefInside = new File(advData, "savedata");
+            if (prefInside.isDirectory() || prefInside.mkdirs()) return prefInside;
+        }
+
+        File preferred = new File(gameRoot, "savedata");
+        if (preferred.isDirectory() || preferred.mkdirs()) return preferred;
+
+        return null;
+    }
+
     private File savesDir(GameLibrary.Entry game, String language) {
         if (game == null) return new File(getFilesDir(), "saves");
         File internalDir = new File(getFilesDir(), "games/" + game.id + "/saves/" + (language != null ? language : "jp"));
+        if (!internalDir.exists()) internalDir.mkdirs();
         if (game.path == null || game.path.isEmpty()) return internalDir;
 
         File gamePath = new File(game.path);
@@ -294,62 +387,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         if (advData == null) advData = gamePath;
 
-        List<File> candidates = new ArrayList<>();
-        for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
-            File c = new File(advData, sub);
-            if (c.isDirectory()) candidates.add(c);
-        }
-        candidates.add(advData);
-        if (advData.getParentFile() != null) {
-            for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
-                File c = new File(advData.getParentFile(), sub);
-                if (c.isDirectory()) candidates.add(c);
-            }
-        }
-
-        File targetSaveDir = null;
-        long bestScore = -1;
-        for (File dir : candidates) {
-            if (!dir.isDirectory()) continue;
-            long score = 0;
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    if (!f.isFile()) continue;
-                    String name = f.getName().toLowerCase(Locale.ROOT);
-                    if (name.equals("system.dat")) {
-                        score += 1000000L + f.lastModified();
-                    } else if (name.endsWith(".dat") && !name.startsWith("uinst")) {
-                        score += 100000L;
-                    } else if (name.endsWith(".dc4sav")) {
-                        score += 50000L;
-                    }
-                }
-            }
-            if (score > bestScore) {
-                bestScore = score;
-                targetSaveDir = dir;
-            }
-        }
-
-        if (targetSaveDir == null || bestScore <= 0) {
-            for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
-                File candidate = new File(advData, sub);
-                if (candidate.isDirectory()) { targetSaveDir = candidate; break; }
-            }
-            if (targetSaveDir == null && advData.getParentFile() != null) {
-                for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
-                    File candidate = new File(advData.getParentFile(), sub);
-                    if (candidate.isDirectory()) { targetSaveDir = candidate; break; }
-                }
-            }
-            if (targetSaveDir == null) {
-                File candidate = new File(advData, "savedata");
-                if (candidate.mkdirs() || candidate.isDirectory()) {
-                    targetSaveDir = candidate;
-                }
-            }
-        }
+        File gameRoot = resolveGameRoot(gamePath, advData);
+        File targetSaveDir = findTargetSaveDir(gameRoot, gamePath, advData);
 
         if (targetSaveDir != null && targetSaveDir.isDirectory() && isDirectoryWritable(targetSaveDir)) {
             migrateInternalSaves(internalDir, targetSaveDir);
@@ -1086,6 +1125,33 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     // ------------------------------------------------------------ save / load
 
+    private static int extractSlotNumber(String filename) {
+        if (filename == null) return -1;
+        String lower = filename.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("system") || lower.startsWith("uinst") || lower.contains("profile")) {
+            return -1;
+        }
+        if (lower.startsWith("slot") && lower.endsWith(".dc4sav")) {
+            try {
+                return Integer.parseInt(lower.substring(4, lower.length() - 7));
+            } catch (NumberFormatException ignored) {}
+        }
+        String stem = lower.replaceAll("^(dc4phdl|dc4ph|dc4|dc3|dc2|dc|ds2|ds|save|qsave|quick|slot)", "");
+        if (stem.endsWith(".dat")) {
+            String numStr = stem.substring(0, stem.length() - 4);
+            try {
+                return Integer.parseInt(numStr);
+            } catch (NumberFormatException ignored) {}
+        }
+        if (lower.endsWith(".dat") && lower.length() >= 6) {
+            String lastTwo = lower.substring(lower.length() - 6, lower.length() - 4);
+            try {
+                return Integer.parseInt(lastTwo);
+            } catch (NumberFormatException ignored) {}
+        }
+        return -1;
+    }
+
     private File resolveSlotSaveFile(File dir, int slotIndex) {
         if (dir == null) return null;
         int slotNum = slotIndex + 1;
@@ -1094,15 +1160,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
         File[] files = dir.listFiles();
         if (files == null) return dc4File;
-        String p2 = String.format(Locale.ROOT, "%02d.dat", slotNum);
-        String p3 = String.format(Locale.ROOT, "%03d.dat", slotNum);
-        String p1 = slotNum + ".dat";
 
         for (File f : files) {
             if (!f.isFile()) continue;
-            String name = f.getName().toLowerCase(Locale.ROOT);
-            if (name.startsWith("system") || name.startsWith("uinst")) continue;
-            if (name.endsWith(p2) || name.endsWith(p3) || name.endsWith(p1)) {
+            if (extractSlotNumber(f.getName()) == slotNum) {
                 return f;
             }
         }
@@ -1110,7 +1171,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private File resolveQuickSaveFile(File dir) {
-        if (dir == null) return new File(dir, "quicksave.dc4sav");
+        if (dir == null) return null;
         File dc4File = new File(dir, "quicksave.dc4sav");
         if (dc4File.isFile()) return dc4File;
         File[] files = dir.listFiles();
@@ -1119,38 +1180,51 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 if (!f.isFile()) continue;
                 String name = f.getName().toLowerCase(Locale.ROOT);
                 if (name.startsWith("system") || name.startsWith("uinst")) continue;
-                if (name.endsWith("00.dat") || name.contains("quick")) return f;
+                if (name.contains("quick") || extractSlotNumber(name) == 0) return f;
             }
         }
         return dc4File;
     }
 
-    private Bitmap resolveSlotThumbnail(File saveFile) {
+    private static File findThumbnailImage(File saveFile) {
         if (saveFile == null || !saveFile.isFile()) return null;
-        File img1 = new File(saveFile.getAbsolutePath() + ".png");
         String path = saveFile.getAbsolutePath();
         int dot = path.lastIndexOf('.');
-        File img2 = dot > 0 ? new File(path.substring(0, dot) + ".png") : null;
+        String baseWithoutExt = dot > 0 ? path.substring(0, dot) : path;
 
-        File targetImg = (img1.isFile() && img1.length() > 0) ? img1 :
-                         (img2 != null && img2.isFile() && img2.length() > 0) ? img2 : null;
+        for (String ext : new String[]{".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"}) {
+            File f1 = new File(path + ext);
+            if (f1.isFile() && f1.length() > 0) return f1;
+            File f2 = new File(baseWithoutExt + ext);
+            if (f2.isFile() && f2.length() > 0) return f2;
+        }
+        return null;
+    }
+
+    private Bitmap resolveSlotThumbnail(File saveFile) {
+        if (saveFile == null || !saveFile.isFile()) return null;
+        File targetImg = findThumbnailImage(saveFile);
         if (targetImg == null) return null;
 
         try {
             BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
-            if (options.outWidth > 0 && options.outHeight > 0) {
-                options.inJustDecodeBounds = false;
-                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                Bitmap orig = BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
-                if (orig != null && (orig.getWidth() != 128 || orig.getHeight() != 72)) {
-                    Bitmap scaled = Bitmap.createScaledBitmap(orig, 128, 72, true);
-                    orig.recycle();
-                    return scaled;
-                }
-                return orig;
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap orig = BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
+            if (orig == null) return null;
+
+            Bitmap argb = orig;
+            if (orig.getConfig() != Bitmap.Config.ARGB_8888) {
+                argb = orig.copy(Bitmap.Config.ARGB_8888, false);
+                orig.recycle();
             }
+            if (argb == null) return null;
+
+            if (argb.getWidth() != 128 || argb.getHeight() != 72) {
+                Bitmap scaled = Bitmap.createScaledBitmap(argb, 128, 72, true);
+                argb.recycle();
+                return scaled;
+            }
+            return argb;
         } catch (Throwable ignored) {}
         return null;
     }

@@ -538,33 +538,142 @@ void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
     }
 }
 
+static std::string to_lower_str(std::string s) {
+    for (char& c : s) {
+        if (c == '\\') c = '/';
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    }
+    return s;
+}
+
+static bool has_suffix_ci(const std::string& str, const std::string& suffix) {
+    if (str.size() < suffix.size()) return false;
+    return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin(),
+                      [](char a, char b) {
+                          return std::tolower(static_cast<unsigned char>(a)) ==
+                                 std::tolower(static_cast<unsigned char>(b));
+                      });
+}
+
+static bool is_opening_movie(const std::string& name) {
+    std::string lower = to_lower_str(name);
+    const auto pos = lower.find_last_of("/\\");
+    if (pos != std::string::npos) lower = lower.substr(pos + 1);
+    return lower.find("op") != std::string::npos ||
+           lower.find("opening") != std::string::npos ||
+           lower.find("mv001") != std::string::npos ||
+           lower.find("mv01") != std::string::npos;
+}
+
+static bool is_op3_movie(const std::string& name) {
+    const std::string lower = to_lower_str(name);
+    return lower.find("op3") != std::string::npos ||
+           lower.find("op_3") != std::string::npos ||
+           lower.find("op03") != std::string::npos ||
+           lower.find("opening3") != std::string::npos ||
+           lower.find("opening_3") != std::string::npos;
+}
+
+static bool has_op_identifier(const std::string& name_lower, char op_num) {
+    const bool is_op_name = name_lower.find("op") != std::string::npos ||
+                            name_lower.find("opening") != std::string::npos;
+    if (!is_op_name) return false;
+    return op_num == 0 || name_lower.find(op_num) != std::string::npos;
+}
+
+std::string get_base_movie_dir(const std::string& data_dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* adv : {"", "/Advdata", "/AdvData", "/advdata", "/ADVDATA"}) {
+        for (const char* mov : {"/MOVIE", "/movie", "/Movie"}) {
+            std::string candidate = data_dir + adv + mov;
+            if (fs::is_directory(candidate, ec)) return candidate;
+        }
+    }
+    fs::path p(data_dir);
+    if (p.has_parent_path()) {
+        std::string parent = p.parent_path().string();
+        for (const char* adv : {"", "/Advdata", "/AdvData", "/advdata", "/ADVDATA"}) {
+            for (const char* mov : {"/MOVIE", "/movie", "/Movie"}) {
+                std::string candidate = parent + adv + mov;
+                if (fs::is_directory(candidate, ec)) return candidate;
+            }
+        }
+    }
+    return data_dir + "/MOVIE";
+}
+
 std::string resolve_movie_file(const std::string& data_dir, const std::string& asset) {
     std::string rel = asset;
     std::replace(rel.begin(), rel.end(), '\\', '/');
-    if (rel.size() > 6 && rel.rfind("MOVIE/", 0) == 0) rel = rel.substr(6);
-    else if (rel.size() > 6 && rel.rfind("movie/", 0) == 0) rel = rel.substr(6);
+    if (rel.rfind("MOVIE/", 0) == 0 || rel.rfind("movie/", 0) == 0) {
+        rel = rel.substr(6);
+    }
+
+    const std::filesystem::path p(rel);
+    const std::string stem = p.stem().string();
+    const bool is_op = is_opening_movie(rel);
+    const bool prefer_mp4 = is_op3_movie(stem);
+
+    // Prioritize mpg over mp4 by default; prefer mp4 for OP3 (mpeg2video in OP3 mpg is unsupported on Android).
+    static const char* kExtsDefault[] = {".mpg", ".MPG", ".mp4", ".MP4", ".ogv", ".mkv", ".avi"};
+    static const char* kExtsOp3[]     = {".mp4", ".MP4", ".mpg", ".MPG", ".ogv", ".mkv", ".avi"};
+    const auto& exts = prefer_mp4 ? kExtsOp3 : kExtsDefault;
 
     std::vector<std::string> names;
-    if (std::filesystem::path(rel).has_extension()) {
-        std::filesystem::path p(rel);
-        std::string stem = p.stem().string();
-        names.push_back(stem + ".mp4");
-        names.push_back(rel);
-    } else {
-        names.push_back(rel + ".mp4");
-        names.push_back(rel + ".mpg");
-        names.push_back(rel + ".ogv");
-        names.push_back(rel + ".mkv");
-        names.push_back(rel + ".avi");
+    for (const char* ext : exts) {
+        names.push_back(stem + ext);
+    }
+    if (p.has_extension()) {
         names.push_back(rel);
     }
+
+    const std::string base_movie = get_base_movie_dir(data_dir);
+
+    // 1. Direct stem match in base movie directory (<gameRoot>/Advdata/MOVIE)
     for (const auto& name : names) {
-        std::string p = dc4::resolve_asset(data_dir + "/MOVIE/" + name);
+        std::string candidate = base_movie + "/" + name;
         std::error_code ec;
-        if (std::filesystem::exists(p, ec) && std::filesystem::file_size(p, ec) > 0) return p;
-        p = dc4::resolve_asset(data_dir + "/movie/" + name);
-        if (std::filesystem::exists(p, ec) && std::filesystem::file_size(p, ec) > 0) return p;
+        if (std::filesystem::is_regular_file(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0) {
+            LOGI("Resolved movie: %s", candidate.c_str());
+            return candidate;
+        }
     }
+
+    // 2. Fuzzy match in base movie directory for opening videos
+    if (is_op) {
+        char op_num = 0;
+        for (char c : to_lower_str(stem)) {
+            if (c >= '1' && c <= '9') { op_num = c; break; }
+        }
+        std::error_code ec;
+        if (std::filesystem::is_directory(base_movie, ec)) {
+            for (const char* ext : exts) {
+                for (const auto& entry : std::filesystem::directory_iterator(base_movie, ec)) {
+                    if (!entry.is_regular_file()) continue;
+                    const std::string flower = to_lower_str(entry.path().filename().string());
+                    if (has_op_identifier(flower, op_num) && has_suffix_ci(flower, ext)) {
+                        LOGI("Fuzzy resolved opening movie: %s", entry.path().string().c_str());
+                        return entry.path().string();
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback through dc4::resolve_asset (only for non-opening movies)
+    if (!is_op) {
+        for (const auto& name : names) {
+            for (const char* sub : {"/MOVIE/", "/movie/"}) {
+                std::string candidate = dc4::resolve_asset(data_dir + sub + name);
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0) {
+                    return candidate;
+                }
+            }
+        }
+    }
+
     return {};
 }
 
@@ -1344,10 +1453,55 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(JNIEnv* env, jobject, jboolean loadi
 
 // Java owns emulator save paths and PNG decoding; only bounded metadata and
 // thumbnail pixels cross into the shared renderer, never native game saves.
+static bool copy_thumbnail_bitmap(JNIEnv* env, jobject thumbnail, dc4scene::Image* out_thumb) {
+    if (!env || !thumbnail || !out_thumb) return false;
+    AndroidBitmapInfo info{};
+    if (AndroidBitmap_getInfo(env, thumbnail, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        info.width == 0 || info.height == 0) return false;
+    void* pixels = nullptr;
+    if (AndroidBitmap_lockPixels(env, thumbnail, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) return false;
+
+    out_thumb->w = 128;
+    out_thumb->h = 72;
+    out_thumb->rgba.resize(128 * 72 * 4, 255);
+    uint8_t* dst = out_thumb->rgba.data();
+
+    if (info.format == ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        for (int y = 0; y < 72; ++y) {
+            const uint32_t sy = uint32_t(y * info.height / 72);
+            const uint8_t* src_row = static_cast<const uint8_t*>(pixels) + size_t(sy) * info.stride;
+            for (int x = 0; x < 128; ++x) {
+                const uint32_t sx = uint32_t(x * info.width / 128);
+                const uint8_t* p = src_row + sx * 4;
+                uint8_t* d = dst + (y * 128 + x) * 4;
+                d[0] = p[0]; d[1] = p[1]; d[2] = p[2]; d[3] = p[3];
+            }
+        }
+    } else if (info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
+        for (int y = 0; y < 72; ++y) {
+            const uint32_t sy = uint32_t(y * info.height / 72);
+            const uint16_t* src_row = reinterpret_cast<const uint16_t*>(
+                static_cast<const uint8_t*>(pixels) + size_t(sy) * info.stride);
+            for (int x = 0; x < 128; ++x) {
+                const uint32_t sx = uint32_t(x * info.width / 128);
+                const uint16_t p = src_row[sx];
+                uint8_t* d = dst + (y * 128 + x) * 4;
+                d[0] = uint8_t(((p >> 11) & 0x1F) * 255 / 31);
+                d[1] = uint8_t(((p >> 5) & 0x3F) * 255 / 63);
+                d[2] = uint8_t((p & 0x1F) * 255 / 31);
+                d[3] = 255;
+            }
+        }
+    }
+
+    AndroidBitmap_unlockPixels(env, thumbnail);
+    return true;
+}
+
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4SlotInfo(JNIEnv* env, jobject, jint index,
-                                         jboolean occupied, jstring timestamp,
-                                         jstring excerpt, jobject thumbnail) {
+                                          jboolean occupied, jstring timestamp,
+                                          jstring excerpt, jobject thumbnail) {
     Engine* e = g_engine;
     if (!e || index < 0 || index >= dc4ui::SaveScreen::kSlotCount) return;
     dc4ui::SaveSlot slot;
@@ -1355,22 +1509,7 @@ Java_org_dc4engine_Dc4Activity_dc4SlotInfo(JNIEnv* env, jobject, jint index,
     slot.timestamp = jstr_to_utf16(env, timestamp, 64);
     slot.excerpt = jstr_to_utf16(env, excerpt, 256);
     if (occupied && thumbnail) {
-        AndroidBitmapInfo info{};
-        if (AndroidBitmap_getInfo(env, thumbnail, &info) == ANDROID_BITMAP_RESULT_SUCCESS &&
-            info.width == 128 && info.height == 72 &&
-            info.format == ANDROID_BITMAP_FORMAT_RGBA_8888 && info.stride >= info.width * 4) {
-            slot.thumbnail.rgba.resize(size_t(info.width) * info.height * 4);
-            void* pixels = nullptr;
-            if (AndroidBitmap_lockPixels(env, thumbnail, &pixels) == ANDROID_BITMAP_RESULT_SUCCESS) {
-                slot.thumbnail.w = int(info.width);
-                slot.thumbnail.h = int(info.height);
-                for (uint32_t row = 0; row < info.height; ++row)
-                    std::memcpy(slot.thumbnail.rgba.data() + size_t(row) * info.width * 4,
-                                static_cast<uint8_t*>(pixels) + size_t(row) * info.stride,
-                                size_t(info.width) * 4);
-                AndroidBitmap_unlockPixels(env, thumbnail);
-            }
-        }
+        copy_thumbnail_bitmap(env, thumbnail, &slot.thumbnail);
     }
     e->save_screen.set_slot_occupied(index, occupied);
     e->save_slots[size_t(index)] = std::move(slot);
