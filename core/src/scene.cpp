@@ -1,5 +1,6 @@
 #include "arisa32/scene.h"
 #include "arisa32/resource.h"
+#include "arisa32/mem_safe.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -21,6 +22,9 @@
 #endif
 #ifdef __ANDROID__
 #include <android/log.h>
+#define SCENE_LOG(...) __android_log_print(ANDROID_LOG_INFO, "dc4", __VA_ARGS__)
+#else
+#define SCENE_LOG(...) do {} while(0)
 #endif
 
 namespace dc4scene {
@@ -445,6 +449,356 @@ void SceneRunner::finish_script_wait() {
     scene_dirty_ = true;
 }
 
+bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    if (c.kind == K::Param2 && c.op == 0x15 && animation_enabled_) {
+        // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
+        if (c.p1 == 254) {
+            if (effect_pck_.active) {
+                double rem = effect_pck_.duration_ms - effect_pck_.elapsed_ms;
+                if (rem > 0) {
+                    script_wait_ms_ = rem;
+                    script_wait_pending_ = true;
+                    return true;
+                }
+            }
+            if (transition_active_) {
+                double rem = transition_duration_ms_ - transition_elapsed_ms_;
+                if (rem > 0) {
+                    script_wait_ms_ = rem;
+                    script_wait_pending_ = true;
+                    return true;
+                }
+            }
+            return true; // effect/audio wait is already host-driven
+        }
+        // Opcode 0x15(72) is the introductory wait before Kotori's song performance
+        // (EFF\KTR.PCK / KotoRI_uta01.mpg). BGM 43's acapella intro lasts exactly 12.58s
+        // (72 eighth-notes at 171.7 BPM), after which the chorus beat drops.
+        script_wait_ms_ = (c.p1 == 72) ? 12580.0 : (c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1);
+        if (script_wait_ms_ != 0) {
+            script_wait_pending_ = true;
+        }
+        return true;
+    }
+    if (c.kind == K::Param2 && c.op == 0x1E && c.p1 == 9 && animation_enabled_) {
+        // MED sets bank3[0]=125 seconds before the native ED.PCK scroller.
+        const int seconds = vm_.read_variable(3, 0);
+        if (seconds > 0 && seconds <= 3600 && start_credits(uint32_t(seconds) * 1000)) {
+            script_wait_pending_ = true;
+            script_wait_ms_ = credits_duration_ms_;
+        }
+        return true;
+    }
+    if (c.kind == K::Param2 && (c.op == 0x0D || c.op == 0x0A)) {
+        if (!buttons_.empty() || c.p1 == 0) {
+            script_wait_pending_ = true;
+            script_wait_ms_ = -1;
+            scene_dirty_ = true;
+        } else if (c.p1 > 0 && animation_enabled_) {
+            script_wait_pending_ = true;
+            script_wait_ms_ = double(c.p1) * 16.6;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers) {
+    using K = dc4::CmdKind;
+    if (c.kind == K::Str && c.op == 0x52) {
+        scene_audio_.stop_for_movie();
+        pending_movie_ = c.str;
+        return true;
+    }
+    if (c.kind == K::ParamStr && c.op == 0x43 && (c.p1 == 2 || c.p1 == 3)) {
+        input_skip_label_ = c.str;
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0xAB) {
+        // COMU phone chat manager (MesVM case 171 at 0x430710).
+        comu_command(c.words[0], c.words[1], c.words[2], c.words[3]);
+        return true;
+    }
+    if ((c.kind == K::Str && (c.op == 0x4F || c.op == 0x50)) ||
+        (c.kind == K::ParamStr && c.op == 0x2E)) {
+        if (c.str.empty() || c.str[0] == ':' ||
+            static_cast<unsigned char>(c.str[0]) < 0x20 ||
+            static_cast<unsigned char>(c.str[0]) >= 0x7F) {
+            return true;
+        }
+        if (++transfers > 64) {
+            last_error_ = "too many script transfers without dialogue";
+            scene_end_ = true;
+            return true;
+        }
+        std::string name = c.str;
+        std::string system_name = name;
+        std::transform(system_name.begin(), system_name.end(), system_name.begin(),
+                       [](unsigned char ch) { return char(std::tolower(ch)); });
+        if (system_name.size() > 4 && system_name.substr(system_name.size() - 4) == ".mes") {
+            system_name.resize(system_name.size() - 4);
+        }
+        if (use_system_menu_ && (system_name == "main" || system_name == "start" ||
+            system_name == "config" || system_name == "save" || system_name == "load" ||
+            system_name == "cgmode" || system_name == "music" || system_name == "scemode" ||
+            system_name == "sce_end")) {
+            next_script_ = c.str;
+            scene_end_ = true;
+            return true;
+        }
+        if (name.size() < 4 || name.substr(name.size() - 4) != ".mes") name += ".mes";
+        if (debug_) printf("scene jump -> %s\n", name.c_str());
+        if (!load_script(data_ + "/MES/" + name)) {
+            scene_end_ = true;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    const bool is_button_chip_pos = (c.kind == K::Words4 && (c.op == 0x50 || c.op == 0x73));
+    const bool is_chip_pos = (c.kind == K::Words4 && (c.op == 0x7A || c.op == 0x55 || c.op == 0x53));
+    const bool is_chip_prop = (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52));
+    const bool is_button_rect = (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54 || c.op == 0x4F));
+    const bool is_button_target = (c.kind == K::Str && pending_has_button_ &&
+                                   (c.op == 0x3D || c.op == 0x3A || c.op == 0x54 || c.op == 0x48));
+
+    if (pending_scene_blit_ && !is_chip_prop) {
+        pending_scene_blit_ = false;
+    }
+
+    if (is_button_chip_pos) {
+        int src_x = (c.op == 0x50) ? (int16_t(c.words[0]) - int16_t(c.words[2])) : int(c.words[2]);
+        int src_y = (c.op == 0x50) ? (int16_t(c.words[1]) - int16_t(c.words[3])) : int(c.words[3]);
+        pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
+                                     src_x, src_y, 0, 0, 0, true};
+        pending_scene_blit_ = true;
+        pending_chip_is_button_ = true;
+        return true;
+    }
+    if (is_chip_pos) {
+        pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
+                                     c.words[2], c.words[3], 0, 0, 0, true};
+        pending_scene_blit_ = true;
+        pending_chip_is_button_ = false;
+        return true;
+    }
+    if (is_chip_prop && pending_scene_blit_) {
+        pending_scene_chip_.w = c.words[0];
+        pending_scene_chip_.h = c.words[1];
+        pending_scene_chip_.sheet = c.words[2];
+        int state = (c.words[3] == 99 || c.words[3] == 9) ? 0 : c.words[3];
+        if (pending_chip_is_button_) {
+            if (!buttons_.empty() && state >= 0 && state < 3) {
+                buttons_.back().state[state] = pending_scene_chip_;
+            }
+        } else {
+            scene_chips_.push_back(pending_scene_chip_);
+        }
+        pending_scene_blit_ = false;
+        scene_dirty_ = true;
+        return true;
+    }
+    if (is_button_rect) {
+        pending_button_.x = c.words[0];
+        pending_button_.y = c.words[1];
+        pending_button_.w = c.words[2] - c.words[0];
+        pending_button_.h = c.words[3] - c.words[1];
+        pending_has_button_ = true;
+        return true;
+    }
+    if (is_button_target) {
+        pending_button_.action = c.str;
+        buttons_.push_back(pending_button_);
+        pending_has_button_ = false;
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    if (c.kind == K::Param2 && c.op == 0x0F) {
+        if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
+        if (c.p1 == 21) {
+            if (!transition_pending_ || transition_snap_.empty()) {
+                snapshot_for_transition();
+            }
+            const int frames = c.p2 ? std::max(24, int(c.p2) * 12) : 30;
+            start_transition(frames);
+        }
+        transition_type_ = c.p1;
+        if (c.p1 == 32) snapshot_for_transition();
+        return true;
+    }
+    if (c.kind == K::ParamStr && (c.op == 0x3C || c.op == 0x2B)) {
+        std::string up;
+        up.reserve(c.str.size());
+        for (char ch : c.str) up.push_back(char(std::toupper((unsigned char)ch)));
+        if (c.p1 == 21 && up.rfind("MSK\\", 0) == 0) {
+            Image img;
+            std::string err;
+            if (load_grp_crx(c.str, &img, &err)) mask_ = std::move(img);
+        } else if ((c.p1 == 22 || c.p1 == 21) && up.find("EFFCHANGESCREEN") != std::string::npos) {
+            Image img;
+            std::string err;
+            if (load_grp_crx(c.str, &img, &err)) transition_overlay_ = std::move(img);
+        } else {
+            if (up.find("KTR.PCK") != std::string::npos || up.find("KTR01") != std::string::npos) {
+                effect_movie_ = "KotoRI_uta01.mpg";
+            } else if (up.find("KTR02.PCK") != std::string::npos || up.find("KTR02") != std::string::npos) {
+                effect_movie_ = "KotoRI_uta02.mpg";
+            }
+            load_slot(c.p1, c.str);
+        }
+        return true;
+    }
+    if (c.kind == K::Param2 && c.op == 0x36) {
+        mark_transition_frame(0x36);
+        return true;
+    }
+    if (c.kind == K::Param2 && c.op == 0x37) {
+        mark_transition_frame(0x37);
+        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0xB4) {
+        mark_transition_frame(0xB4);
+        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+        return true;
+    }
+    if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30 || c.op == 0x31 || c.op == 0x32 || c.op == 0x33)) {
+        if (c.str == ":n") { preserve_scene_ = true; return true; }
+        if (c.str == ":r") { preserve_scene_ = false; return true; }
+        if (c.str.empty() || c.str[0] == ':') return true;
+        if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
+            if (c.op == 0x30 || c.op == 0x49) {
+                load_layer(1, c.str);
+                scene_chips_.clear();
+                scene_dirty_ = true;
+                if (!preserve_scene_) {
+                    for (size_t i = 0; i < sprites_.size(); ++i) {
+                        if (!pending_sprites_[i]) {
+                            sprites_[i].visible = false;
+                            sprites_[i].fade = BstSprite::Fade{};
+                        }
+                    }
+                }
+            } else if (c.op == 0x31) {
+                load_sheet(6, c.str);
+            } else if (c.op == 0x32) {
+                load_sheet(7, c.str);
+            } else if (c.op == 0x33) {
+                load_sheet(8, c.str);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    if (c.kind == K::ParamStr && (c.op == 0x3F || c.op == 0x40 || c.op == 0x41)) {
+        // Native Circus ADV32 opcode mapping:
+        // 0x3F: Character layer index 0..4 (mapped to slots 4..8 -> sprite index 0..4)
+        // 0x40: Cut-in / Effect layer (slot 25 -> sprite index 12 in Arisa32)
+        // 0x41: Face/expression sub-layer 0..4
+        int idx = -1;
+        if (c.op == 0x3F) {
+            if (c.p1 < 5) idx = int(c.p1);
+        } else if (c.op == 0x40) {
+            idx = (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
+        } else if (c.op == 0x41) {
+            if (c.p1 < 5) idx = int(c.p1);
+        }
+        if (idx >= 0 && size_t(idx) < sprites_.size()) {
+            if (c.str == "-" || c.str == "-n") {
+                sprites_[size_t(idx)].visible = false;
+                sprites_[size_t(idx)].fade = BstSprite::Fade{};
+                pending_sprites_[size_t(idx)] = false;
+                scene_dirty_ = true;
+            } else if (c.str == ".") {
+                sprites_[size_t(idx)].visible = true;
+                pending_sprites_[size_t(idx)] = true;
+                scene_dirty_ = true;
+            } else if (c.str == "--") {
+                if (!sprites_[size_t(idx)].name.empty()) {
+                    sprites_[size_t(idx)].visible = true;
+                    pending_sprites_[size_t(idx)] = true;
+                } else {
+                    sprites_[size_t(idx)].visible = false;
+                    pending_sprites_[size_t(idx)] = false;
+                }
+                scene_dirty_ = true;
+            }
+        }
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0x8B) {
+        set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0x8E) {
+        queue_sprite_slide(c.words[0], c.words[1], c.words[2], c.words[3]);
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0x8C) {
+        queue_sprite_effect(c.words[0], c.words[1], c.words[2], c.words[3]);
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0x95) {
+        if (!effect_movie_.empty()) {
+            pending_movie_ = effect_movie_;
+            effect_movie_.clear();
+            return true;
+        }
+        if (c.words[3] == 4 && effect_pck_.valid()) {
+            start_pck_effect(c.words[0], c.words[1], c.words[2]);
+        }
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_camera_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    if (c.kind == K::Words4 && c.op == 0x99) {
+        camera_duration_ = c.words[0];
+        return true;
+    }
+    if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
+        apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
+        return true;
+    }
+    return false;
+}
+
+bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
+    using K = dc4::CmdKind;
+    if (c.kind != K::Text) return false;
+    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+    // Modern: 0x6A speaker, 0x6B.. line
+    // Classic DC2: 0x4A speaker, 0x4B.. line
+    // Classic DM: 0x4D speaker, 0x4E.. line
+    if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+        speaker_ = c.str;
+        return true;
+    }
+    if (c.op == 0x6D) {
+        if (comu_group_) comu_message(c.str);
+        current_line_.clear();
+        speaker_.clear();
+        scene_dirty_ = true;
+        return true;
+    }
+    current_line_ = c.str;
+    return true;
+}
+
 bool SceneRunner::advance_to_next_text() {
     if (scene_end_ || vm_.waiting_for_choice() || !pending_movie_.empty() || waiting_for_time()) return false;
     last_error_.clear();
@@ -465,256 +819,23 @@ bool SceneRunner::advance_to_next_text() {
             scene_end_ = true;
             return false;
         }
-        using K = CmdKind;
         if (observer_) observer_(c, script_name_);
         if (scene_audio_.dispatch(c)) continue;
-        if (c.kind == K::Str && c.op == 0x52) {
-            scene_audio_.stop_for_movie();
-            pending_movie_ = c.str;
-            if (!pending_movie_.empty()) return false;
+        if (dispatch_timing_command(c)) {
+            if (script_wait_pending_) return false;
             continue;
         }
-        if (c.kind == K::ParamStr && c.op == 0x43 && (c.p1 == 2 || c.p1 == 3)) {
-            input_skip_label_ = c.str;
+        if (dispatch_flow_command(c, transfers)) {
+            if (scene_end_ || !pending_movie_.empty()) return false;
             continue;
         }
-        if (c.kind == K::Param2 && c.op == 0x15 && animation_enabled_) {
-            // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
-            if (c.p1 == 254) {
-                if (effect_pck_.active) {
-                    double rem = effect_pck_.duration_ms - effect_pck_.elapsed_ms;
-                    if (rem > 0) {
-                        script_wait_ms_ = rem;
-                        script_wait_pending_ = true;
-                        return false;
-                    }
-                }
-                continue; // effect/audio wait is already host-driven
-            }
-            // Opcode 0x15(72) is the introductory wait before Kotori's song performance
-            // (EFF\KTR.PCK / KotoRI_uta01.mpg). BGM 43's acapella intro lasts exactly 12.58s
-            // (72 eighth-notes at 171.7 BPM), after which the chorus beat drops.
-            // Using 200ms*72 = 14.4s caused a 1.82s overshoot into the chorus.
-            script_wait_ms_ = (c.p1 == 72) ? 12580.0 : (c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1);
-            if (script_wait_ms_ != 0) {
-                script_wait_pending_ = true;
-                return false;
-            }
-        }
-        if (c.kind == K::Param2 && c.op == 0x1E && c.p1 == 9 && animation_enabled_) {
-            // MED sets bank3[0]=125 seconds before the native ED.PCK scroller.
-            const int seconds = vm_.read_variable(3, 0);
-            if (seconds > 0 && seconds <= 3600 && start_credits(uint32_t(seconds) * 1000)) {
-                script_wait_pending_ = true;
-                script_wait_ms_ = credits_duration_ms_;
-                return false;
-            }
+        if (dispatch_ui_chip_command(c)) continue;
+        if (dispatch_layer_command(c)) continue;
+        if (dispatch_sprite_command(c)) continue;
+        if (dispatch_camera_command(c)) continue;
+        if (dispatch_text_command(c)) {
+            if (!current_line_.empty()) return true;
             continue;
-        }
-        // 0x7A (Modern) / 0x55 (ClassicDM) / 0x53 (ClassicDC2) queues a chip blit;
-        // the attached 0x77 (Modern) / 0x57 (ClassicDM) / 0x52 (ClassicDC2) supplies w/h/sheet/state.
-        // Anything else between them cancels the pending blit.
-        // 0x7A (Modern) / 0x55 (ClassicDM) / 0x53 (ClassicDC2) queues a chip blit;
-        // 0x50 (ClassicDC2) / 0x73 (Modern) queues a button chip;
-        // the attached 0x77 (Modern) / 0x57 (ClassicDM) / 0x52 (ClassicDC2) supplies w/h/sheet/state.
-        // Anything else between them cancels the pending blit.
-        const bool is_button_chip_pos = (c.kind == K::Words4 && (c.op == 0x50 || c.op == 0x73));
-        const bool is_chip_pos = (c.kind == K::Words4 && (c.op == 0x7A || c.op == 0x55 || c.op == 0x53));
-        const bool is_chip_prop = (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52));
-
-        if (pending_scene_blit_ && !is_chip_prop)
-            pending_scene_blit_ = false;
-        if (is_button_chip_pos) {
-            // In ClassicDC2 0x50: [dst_x, dst_y, origin_x, origin_y]
-            // src_x = dst_x - origin_x, src_y = dst_y - origin_y
-            int src_x = (c.op == 0x50) ? (int16_t(c.words[0]) - int16_t(c.words[2])) : int(c.words[2]);
-            int src_y = (c.op == 0x50) ? (int16_t(c.words[1]) - int16_t(c.words[3])) : int(c.words[3]);
-            pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
-                                         src_x, src_y, 0, 0, 0, true};
-            pending_scene_blit_ = true;
-            pending_chip_is_button_ = true;
-            continue;
-        }
-        if (is_chip_pos) {
-            pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
-                                         c.words[2], c.words[3], 0, 0, 0, true};
-            pending_scene_blit_ = true;
-            pending_chip_is_button_ = false;
-            continue;
-        }
-        if (is_chip_prop && pending_scene_blit_) {
-            pending_scene_chip_.w = c.words[0];
-            pending_scene_chip_.h = c.words[1];
-            pending_scene_chip_.sheet = c.words[2];
-            int state = (c.words[3] == 99 || c.words[3] == 9) ? 0 : c.words[3];
-            if (pending_chip_is_button_) {
-                if (!buttons_.empty() && state >= 0 && state < 3) {
-                    buttons_.back().state[state] = pending_scene_chip_;
-                }
-            } else {
-                scene_chips_.push_back(pending_scene_chip_);
-            }
-            pending_scene_blit_ = false;
-            scene_dirty_ = true;
-            if (debug_)
-                printf("  chip dst(%d,%d) src(%d,%d) %dx%d sheet %d (button=%d)\n",
-                       pending_scene_chip_.dst_x, pending_scene_chip_.dst_y,
-                       pending_scene_chip_.src_x, pending_scene_chip_.src_y,
-                       pending_scene_chip_.w, pending_scene_chip_.h,
-                       pending_scene_chip_.sheet, pending_chip_is_button_);
-            continue;
-        }
-        // Button hit rect: 0x72 (Modern), 0x54 (ClassicDM/in-game), 0x4F (ClassicDC2)
-        if (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54 || c.op == 0x4F)) {
-            pending_button_.x = c.words[0];
-            pending_button_.y = c.words[1];
-            pending_button_.w = c.words[2] - c.words[0];
-            pending_button_.h = c.words[3] - c.words[1];
-            pending_has_button_ = true;
-        }
-        // Button action target: 0x3D (ClassicDM), 0x3A (ClassicDC2), 0x54 (Modern)
-        if (c.kind == K::Str && pending_has_button_) {
-            if (c.op == 0x3D || c.op == 0x3A || c.op == 0x54 || c.op == 0x48) {
-                pending_button_.action = c.str;
-                buttons_.push_back(pending_button_);
-            }
-            pending_has_button_ = false;
-        }
-        if (c.kind == K::Param2 && (c.op == 0x0D || c.op == 0x0A)) {
-            if (!buttons_.empty() || c.p1 == 0) {
-                script_wait_pending_ = true;
-                script_wait_ms_ = -1;
-                scene_dirty_ = true;
-                return false;
-            } else if (c.p1 > 0 && animation_enabled_) {
-                script_wait_pending_ = true;
-                script_wait_ms_ = double(c.p1) * 16.6;
-                return false;
-            }
-            continue;
-        }
-        if (c.kind == K::Param2 && c.op == 0x0F) {
-            // 0x0F(32) before a background load selects a crossfade; the old
-            // composed frame is the fade source. Other values select
-            // instant-cut families; 0x0F(0) after 0xB4 ends the sequence.
-            // Route ending cards commit with 0x0F(0,3), without 0xB4.
-            if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
-            transition_type_ = c.p1;
-            if (c.p1 == 32) snapshot_for_transition();
-        } else if (c.kind == K::ParamStr && (c.op == 0x3C || c.op == 0x2B)) {
-            // Slot 21 carries MSK\ wipe masks for the 0x0F(21,x) transition;
-            // they never render as scene content.
-            std::string up;
-            up.reserve(c.str.size());
-            for (char ch : c.str) up.push_back(char(std::toupper((unsigned char)ch)));
-            if (c.p1 == 21 && up.rfind("MSK\\", 0) == 0) {
-                Image img;
-                std::string err;
-                if (load_grp_crx(c.str, &img, &err)) mask_ = std::move(img);
-            } else {
-                if (up.find("KTR.PCK") != std::string::npos || up.find("KTR01") != std::string::npos) {
-                    effect_movie_ = "KotoRI_uta01.mpg";
-                } else if (up.find("KTR02.PCK") != std::string::npos || up.find("KTR02") != std::string::npos) {
-                    effect_movie_ = "KotoRI_uta02.mpg";
-                }
-                load_slot(c.p1, c.str);
-            }
-        } else if (c.kind == K::Words4 && c.op == 0x95) {
-            if (!effect_movie_.empty()) {
-                // Cutscene effect video (e.g. KotoRI_uta01.mpg).
-                // Do not wipe BGM; movie audio will suspend other channels during playback
-                // so the song seamlessly continues when the video finishes.
-                pending_movie_ = effect_movie_;
-                effect_movie_.clear();
-                return false;
-            }
-            if (c.words[3] == 4 && effect_pck_.valid()) {
-                start_pck_effect(c.words[0], c.words[1], c.words[2]);
-            }
-        } else if (c.kind == K::Words4 && c.op == 0x8B) {
-            set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if (c.kind == K::Words4 && c.op == 0x8E) {
-            // Sprite slide-in/out (MesVM 0x42DA46 -> sub_447620/447700).
-            queue_sprite_slide(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if (c.kind == K::Words4 && c.op == 0x8C) {
-            // Effect-layer fade (MesVM case 140 at 0x42D6CF -> sub_447B00):
-            // the BST\CUT* cut-in fades out through its wipe mask.
-            queue_sprite_effect(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if (c.kind == K::Words4 && c.op == 0xAB) {
-            // COMU phone chat manager (MesVM case 171 at 0x430710).
-            comu_command(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if (c.kind == K::Words4 && c.op == 0xB4) {
-            // Crossfade trigger after the layer commit (0x42B28E -> 0x40EF50
-            // enables the effect engine for the next update pass).
-            mark_transition_frame(0xB4);
-        } else if (c.kind == K::Param2 && c.op == 0x36) {
-            mark_transition_frame(0x36);
-        } else if (c.kind == K::Param2 && c.op == 0x37) {
-            // Commit queued slot-1 layer (MesVM 0x430379 -> 0x4227E0).
-            mark_transition_frame(0x37);
-        } else if (c.kind == K::Words4 && c.op == 0x99) {
-            camera_duration_ = c.words[0];
-        } else if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
-            apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
-        } else if ((c.kind == K::Str && (c.op == 0x4F || c.op == 0x50)) ||
-                   (c.kind == K::ParamStr && c.op == 0x2E)) {
-            if (c.str.empty() || c.str[0] == ':' ||
-                static_cast<unsigned char>(c.str[0]) < 0x20 ||
-                static_cast<unsigned char>(c.str[0]) >= 0x7F) {
-                continue;
-            }
-            if (++transfers > 64) {
-                last_error_ = "too many script transfers without dialogue";
-                scene_end_ = true;
-                return false;
-            }
-            std::string name = c.str;
-            std::string system_name = name;
-            std::transform(system_name.begin(), system_name.end(), system_name.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
-            if (system_name.size() > 4 && system_name.substr(system_name.size()-4) == ".mes") system_name.resize(system_name.size()-4);
-            if (use_system_menu_ && (system_name == "main" || system_name == "start" || system_name == "config" ||
-                system_name == "save" || system_name == "load" || system_name == "cgmode" ||
-                system_name == "music" || system_name == "scemode" || system_name == "sce_end")) {
-                next_script_ = c.str;
-                scene_end_ = true;
-                return false;
-            }
-            if (name.size() < 4 || name.substr(name.size() - 4) != ".mes") name += ".mes";
-            if (debug_) printf("scene jump -> %s\n", name.c_str());
-            if (!load_script(data_ + "/MES/" + name)) { scene_end_ = true; return false; }
-        } else if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30 || c.op == 0x31 || c.op == 0x32 || c.op == 0x33)) {
-            if (c.str == ":n") { preserve_scene_ = true; continue; }
-            if (c.str == ":r") { preserve_scene_ = false; continue; }
-            if (c.str.empty() || c.str[0] == ':') continue;
-            if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
-                if (c.op == 0x30 || c.op == 0x49) {
-                    load_layer(1, c.str);
-                    scene_chips_.clear();
-                    scene_dirty_ = true;
-                    for (size_t i = 0; i < sprites_.size(); ++i)
-                        if (!pending_sprites_[i]) sprites_[i].visible = false;
-                } else if (c.op == 0x31) {
-                    load_sheet(6, c.str);
-                } else if (c.op == 0x32) {
-                    load_sheet(7, c.str);
-                } else if (c.op == 0x33) {
-                    load_sheet(8, c.str);
-                }
-            }
-        } else if (c.kind == K::Text) {
-            // Modern: 0x6A speaker, 0x6B.. line
-            // Classic DC2: 0x4A speaker, 0x4B.. line
-            // Classic DM: 0x4D speaker, 0x4E.. line
-            if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
-                speaker_ = c.str;
-                continue;
-            }
-            if (c.op == 0x6D) {
-                if (comu_group_) comu_message(c.str);
-                continue;
-            }
-            current_line_ = c.str;
-            return true;
         }
     }
     if (vm_.waiting_for_choice()) {
@@ -832,15 +953,33 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         }
     }
     // Conditional branches contain repeated definitions of disabled buttons.
-    // Retain one active rectangle per action, and the closed bar's :n button.
+    // In win_size.mes, the first :n button is the "Open" button (shown when taskbar is collapsed),
+    // and the second :n button is the "Close" button on the taskbar.
+    open_button_ = UiButton();
     std::vector<UiButton> unique;
     for (const auto& button : buttons_) {
         if (button.action.empty()) continue;
+        if (button.action == ":n" && open_button_.action.empty()) {
+            open_button_ = button;
+            if (open_button_.w < 47) open_button_.w = 47;
+            if (open_button_.h < 25) open_button_.h = 25;
+            continue;
+        }
         auto old = std::find_if(unique.begin(), unique.end(), [&](const UiButton& b) { return b.action == button.action; });
         if (old == unique.end()) unique.push_back(button);
-        else if (button.action == ":n") *old = button;
+        else *old = button;
     }
     buttons_ = std::move(unique);
+    if (open_button_.action.empty()) {
+        open_button_.x = 1233;
+        open_button_.y = 695;
+        open_button_.w = 47;
+        open_button_.h = 25;
+        open_button_.action = ":n";
+        open_button_.state[0] = UiChip{1233, 695, 1186, 367, 47, 25, 37, true};
+        open_button_.state[1] = UiChip{1233, 695, 1233, 367, 47, 25, 37, true};
+        open_button_.state[2] = UiChip{1233, 695, 1233, 367, 47, 25, 37, true};
+    }
     printf("ui: %zu buttons, %zu static chips, %zu sheets\n", buttons_.size(),
            static_chips_.size(), sheets_.size());
     return true;
@@ -848,9 +987,15 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
 
 bool SceneRunner::show_message_window(const std::string& path) {
     std::string err;
-    if (load_grp_crx(path, &meswin_, &err)) return true;
+    if (load_grp_crx(path, &meswin_, &err)) {
+        if (sheets_.find(37) == sheets_.end()) sheets_[37] = meswin_;
+        return true;
+    }
     for (const char* alt : {"SYSTEM/Messwin.CRX", "SYSTEM/Wintype.CRX", "SYSTEM/meswin.crx", "SYSTEM/messwin.crx"}) {
-        if (load_grp_crx(alt, &meswin_, &err)) return true;
+        if (load_grp_crx(alt, &meswin_, &err)) {
+            if (sheets_.find(37) == sheets_.end()) sheets_[37] = meswin_;
+            return true;
+        }
     }
     printf("meswin: %s\n", err.c_str());
     return false;
@@ -912,6 +1057,9 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
         }
         return;
     }
+    if (up.find("EFFCHANGESCREEN") != std::string::npos) {
+        return;
+    }
     if (up.rfind("BST\\", 0) == 0 || up.rfind("CUT", 0) == 0) {
         if (preload) load_preload(slot, name);
         else if (idx >= 0) { load_bst(idx, name, slot); pending_sprites_[idx] = true; }
@@ -925,6 +1073,12 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     if (slot <= 1 && !preserve_scene_) {
         reset_camera();
         effect_pck_.clear();
+        for (size_t i = 0; i < sprites_.size(); ++i) {
+            if (!pending_sprites_[i]) {
+                sprites_[i].visible = false;
+                sprites_[i].fade = BstSprite::Fade{};
+            }
+        }
     }
     if (slot > 1) {
         // Non-background images load into the sheet registry under their raw
@@ -1069,12 +1223,24 @@ void SceneRunner::mark_transition_frame(int kind) {
         auto it = layers_.find(1);
         if (it != layers_.end() && it->second.valid()) {
             load_layer(1, it->second.name);
-            for (size_t i = 0; i < sprites_.size(); ++i)
-                if (!pending_sprites_[i]) sprites_[i].visible = false;
+            for (size_t i = 0; i < sprites_.size(); ++i) {
+                if (!pending_sprites_[i]) {
+                    sprites_[i].visible = false;
+                    sprites_[i].fade = BstSprite::Fade{};
+                }
+            }
         }
         return;
     }
     if (kind == 0xB4) {
+        if (!preserve_scene_) {
+            for (size_t i = 0; i < sprites_.size(); ++i) {
+                if (!pending_sprites_[i]) {
+                    sprites_[i].visible = false;
+                    sprites_[i].fade = BstSprite::Fade{};
+                }
+            }
+        }
         start_transition();
         return;
     }
@@ -1099,14 +1265,70 @@ void SceneRunner::start_transition(int frames) {
 
 void SceneRunner::draw_transition(uint8_t* dst) {
     if (!transition_active_ || !dst || transition_snap_.size() != frame_.size()) return;
-    const double t = std::min(1.0, transition_elapsed_ms_ /
-                                      std::max(1.0, transition_duration_ms_));
-    const int level = int(std::lround(255.0 * t));  // 0 = old frame, 255 = new
+    const double t = std::clamp(transition_elapsed_ms_ / std::max(1.0, transition_duration_ms_), 0.0, 1.0);
     const uint8_t* src = transition_snap_.data();
-    for (size_t i = 0; i < frame_.size(); i += 4) {
-        uint8_t* d = dst + i;
-        for (int k = 0; k < 3; ++k)
-            d[k] = uint8_t((src[i + k] * (255 - level) + d[k] * level) / 255);
+
+    if (!mask_.valid()) {
+        const int level = int(std::lround(255.0 * t));  // 0 = old frame, 255 = new
+        for (size_t i = 0; i < frame_.size(); i += 4) {
+            uint8_t* d = dst + i;
+            for (int k = 0; k < 3; ++k)
+                d[k] = uint8_t((src[i + k] * (255 - level) + d[k] * level) / 255);
+        }
+        return;
+    }
+
+    constexpr int kFeather = 48;
+    const double threshold = (255.0 + kFeather) - t * (255.0 + 2.0 * kFeather);
+
+    const int mw = mask_.w;
+    const int mh = mask_.h;
+    const bool has_overlay = transition_overlay_.valid();
+    const int ow = has_overlay ? transition_overlay_.w : 1;
+    const int oh = has_overlay ? transition_overlay_.h : 1;
+
+    for (int y = 0; y < kScreenH; ++y) {
+        const int my = (y * mh) / kScreenH;
+        const int oy = has_overlay ? ((y * oh) / kScreenH) : 0;
+        const size_t row_dst = size_t(y) * kScreenW * 4;
+        const size_t row_mask = size_t(my) * mw * 4;
+        const size_t row_ov = has_overlay ? (size_t(oy) * ow * 4) : 0;
+
+        for (int x = 0; x < kScreenW; ++x) {
+            const int mx = (x * mw) / kScreenW;
+            const size_t mi = row_mask + mx * 4;
+            double m = double(mask_.rgba[mi]);
+
+            int ov_alpha = 0;
+            if (has_overlay) {
+                const int ox = (x * ow) / kScreenW;
+                ov_alpha = transition_overlay_.rgba[row_ov + ox * 4 + 3];
+                m += (double(ov_alpha) * kFeather) / 255.0;
+            }
+
+            const double val = m - threshold;
+            int alpha = 0;
+            if (val <= 0.0) {
+                alpha = 0;
+            } else if (val >= double(kFeather)) {
+                alpha = 255;
+            } else {
+                alpha = int(std::lround((val * 255.0) / double(kFeather)));
+            }
+
+            const size_t di = row_dst + x * 4;
+            uint8_t* d = dst + di;
+            const uint8_t* s = src + di;
+
+            for (int k = 0; k < 3; ++k) {
+                int col = (s[k] * (255 - alpha) + d[k] * alpha) / 255;
+                if (has_overlay && ov_alpha > 0 && alpha > 0 && alpha < 255) {
+                    const double edge = std::sin(3.14159265 * double(alpha) / 255.0) * (double(ov_alpha) / 255.0);
+                    col = std::min(255, col + int(std::lround((255 - col) * edge * 0.4)));
+                }
+                d[k] = uint8_t(col);
+            }
+        }
     }
 }
 
@@ -1200,48 +1422,24 @@ Image crop_image(const Image& src, int rx, int ry, int rw, int rh) {
     return out;
 }
 
-// Blends one chat text line: dark-gray fill with a 1px white outline, like
-// the in-game bubbles.
+// Blends one chat text line: white text with dark outline matching textbox style and PC in-game COMU bubbles.
 void blend_chat_text(const FontRenderer& font, const std::u16string& text,
                      int x, int baseline, std::vector<uint8_t>* frame) {
     if (text.empty()) return;
-    const int size = 17;
+    const int size = 16;
     int width = 8;
     for (char16_t ch : text)
         width += ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size;
     width = std::min(width, kScreenW - x + 2);
     const int height = size + 16;
     if (width <= 0) return;
-    std::vector<uint8_t> pixels(size_t(width) * height * 4, 0);
-    font.rasterize_line(text, 2, size + 8, &pixels, width, height, float(size));
+    Image img;
+    img.w = width;
+    img.h = height;
+    img.rgba.assign(size_t(width) * height * 4, 0);
+    font.rasterize_line(text, 2, size + 8, &img.rgba, width, height, float(size), 0xFFFFFF, false, 0x000000);
     const int top = baseline - size - 8;
-    // The in-game text is white-filled glyphs with a thin (~1px) black
-    // contour: the black ring is a one-pixel dilation of the coverage and the
-    // white fill is the glyph itself, untouched.
-    const int cw = width, chh = height;
-    std::vector<uint8_t> ink(size_t(cw) * chh, 0);
-    for (int py = 0; py < chh; ++py)
-        for (int px = 0; px < cw; ++px)
-            ink[size_t(py) * cw + px] = pixels[(size_t(py) * cw + px) * 4 + 3];
-    const auto blend = [&](int dx, int dy, int fill, int coverage) {
-        if (dx < 0 || dy < 0 || dx >= kScreenW || dy >= kScreenH || coverage <= 0) return;
-        uint8_t* dst = &(*frame)[(size_t(dy) * kScreenW + dx) * 4];
-        for (int channel = 0; channel < 3; ++channel)
-            dst[channel] = uint8_t((fill * coverage + int(dst[channel]) * (255 - coverage)) / 255);
-    };
-    for (int py = 0; py < chh; ++py)
-        for (int px = 0; px < cw; ++px) {
-            if (!ink[size_t(py) * cw + px]) continue;
-            const int dx = x - 2 + px, dy = top + py;
-            for (int oy = -1; oy <= 1; ++oy)
-                for (int ox = -1; ox <= 1; ++ox)
-                    if (ox || oy) blend(dx + ox, dy + oy, 48, ink[size_t(py) * cw + px]);
-        }
-    for (int py = 0; py < chh; ++py)
-        for (int px = 0; px < cw; ++px) {
-            const int coverage = ink[size_t(py) * cw + px];
-            if (coverage) blend(x - 2 + px, top + py, 255, coverage);
-        }
+    blit(frame, kScreenW, kScreenH, x - 2, top, img, 1.0f, 255);
 }
 
 }  // namespace
@@ -1336,25 +1534,81 @@ void SceneRunner::draw_comu() {
         const Image row = crop_image(comu_chips_, 420, 81 * item.contact, 320, 81);
         if (row.valid()) blit(&frame_, kScreenW, kScreenH, 468, y, row, 1.0f, 255);
         if (item.text.empty() || !font_) continue;
-        // The native splits queued strings at 28 SJIS bytes (14 characters);
-        // wrap at the bubble's inner pixel width instead, two lines max, and
-        // center the text block vertically in the bubble (chip rows 16..78).
         const std::u16string text = sjis_to_utf16(item.text);
         std::u16string lines[2];
-        int width = 0, line = 0;
+        const int max_line_w = 210;
+
+        auto get_ch_width = [](char16_t ch) -> int {
+            if (ch < 0x80) {
+                if (ch == u' ' || ch == u'i' || ch == u'l' || ch == u'!' || ch == u'.' || ch == u',') return 4;
+                if (ch == u'm' || ch == u'w' || ch == u'M' || ch == u'W') return 12;
+                if (ch >= u'A' && ch <= u'Z') return 9;
+                return 7;
+            }
+            if (ch >= 0xFF61 && ch <= 0xFF9F) return 8;
+            return 16;
+        };
+
+        std::vector<std::u16string> paragraphs;
+        std::u16string cur;
         for (char16_t ch : text) {
             if (ch == u'\r') continue;
-            const int cell = ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? 8 : 17;
-            if (ch == u'\n' || (line == 0 && width + cell > 240)) {
-                line = 1;
-                if (ch == u'\n') continue;
+            if (ch == u'\n') {
+                paragraphs.push_back(cur);
+                cur.clear();
+            } else {
+                cur.push_back(ch);
             }
-            if (line < 2) { lines[line].push_back(ch); width += cell; }
         }
+        paragraphs.push_back(cur);
+
+        std::vector<std::u16string> wrapped;
+        for (const auto& p : paragraphs) {
+            std::u16string line_buf;
+            int cur_w = 0;
+            size_t i = 0;
+            while (i < p.size()) {
+                if (p[i] == u' ') {
+                    if (!line_buf.empty()) {
+                        line_buf.push_back(u' ');
+                        cur_w += get_ch_width(u' ');
+                    }
+                    ++i;
+                    continue;
+                }
+                size_t word_start = i;
+                int word_w = 0;
+                if (p[i] >= 0x3000 || (p[i] >= 0x4E00 && p[i] <= 0x9FFF)) {
+                    word_w = get_ch_width(p[i]);
+                    ++i;
+                } else {
+                    while (i < p.size() && p[i] != u' ' && p[i] < 0x3000) {
+                        word_w += get_ch_width(p[i]);
+                        ++i;
+                    }
+                }
+                std::u16string word = p.substr(word_start, i - word_start);
+                if (!line_buf.empty() && cur_w + word_w > max_line_w) {
+                    wrapped.push_back(line_buf);
+                    line_buf = word;
+                    cur_w = word_w;
+                } else {
+                    line_buf += word;
+                    cur_w += word_w;
+                }
+            }
+            if (!line_buf.empty()) wrapped.push_back(line_buf);
+        }
+        if (wrapped.size() > 0) lines[0] = wrapped[0];
+        if (wrapped.size() > 1) {
+            lines[1] = wrapped[1];
+            for (size_t k = 2; k < wrapped.size(); ++k) lines[1] += u" " + wrapped[k];
+        }
+
         const int line_count = lines[1].empty() ? 1 : 2;
-        const int base = y + 14 + (62 - 24 * line_count) / 2 + 17;
+        const int base = y + 14 + (62 - 22 * line_count) / 2 + 16;
         blend_chat_text(*font_, lines[0], 545, base, &frame_);
-        blend_chat_text(*font_, lines[1], 545, base + 24, &frame_);
+        if (!lines[1].empty()) blend_chat_text(*font_, lines[1], 545, base + 22, &frame_);
     }
 }
 
@@ -1443,6 +1697,8 @@ void SceneRunner::update(uint32_t elapsed_ms) {
             transition_elapsed_ms_ = transition_duration_ms_ = 0;
             transition_snap_.clear();
             transition_snap_.shrink_to_fit();
+            mask_ = Image{};
+            transition_overlay_ = Image{};
         }
         scene_dirty_ = true;
     }
@@ -1461,7 +1717,7 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         if (!remaining) break;
     }
     if (effect_pck_.active) {
-        update_pck_effect(remaining);
+        update_pck_effect(double(elapsed_ms));
     }
 }
 
@@ -1484,6 +1740,8 @@ void SceneRunner::finish_animations() {
         transition_elapsed_ms_ = transition_duration_ms_ = 0;
         transition_snap_.clear();
         transition_snap_.shrink_to_fit();
+        mask_ = Image{};
+        transition_overlay_ = Image{};
     }
     if (camera_motion_.empty()) return;
     const auto& motion = camera_motion_.back();
@@ -1543,11 +1801,6 @@ void SceneRunner::draw(int reveal_chars) {
                  s.scale * camera_scale_, s.alpha);
         }
     }
-    // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
-    if (effect_pck_.active && effect_pck_.current_img.valid()) {
-        blit(&frame_, kScreenW, kScreenH, effect_pck_.x, effect_pck_.y,
-             effect_pck_.current_img, 1.0f, 255);
-    }
     // Retained 0x7A chip blits (the script-driven date HUD). The native draws
     // them top-left anchored at dst + the 0x88 offset, 1:1 from the sheet.
     for (const UiChip& ch : scene_chips_) blit_chip(ch, 255);
@@ -1559,15 +1812,47 @@ void SceneRunner::draw(int reveal_chars) {
         frame_ = scene_frame_;
     }
     if (transition_active_) draw_transition(frame_.data());
-    if (message_visible_ && !script_wait_pending_ && pending_movie_.empty()) {
+    // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
+    if (effect_pck_.active && effect_pck_.current_img.valid()) {
+        blit(&frame_, kScreenW, kScreenH, effect_pck_.x, effect_pck_.y,
+             effect_pck_.current_img, 1.0f, 255);
+    }
+    static int s_log_count = 0;
+    if (++s_log_count % 60 == 1) {
+        SCENE_LOG("SceneRunner::draw: msg_vis=%d wait=%d eff=%d movie=%d sheets=%zu buttons=%zu static_chips=%zu win37=%d",
+            message_visible_, script_wait_pending_, effect_pck_.active, !pending_movie_.empty(),
+            sheets_.size(), buttons_.size(), static_chips_.size(), int(sheets_.find(37) != sheets_.end()));
+    }
+    if (message_visible_ && !script_wait_pending_ && !effect_pck_.active && pending_movie_.empty()) {
         draw_message_window(reveal_chars);
-        for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
-        for (const UiButton& b : buttons_) {
-            if (b.y >= 690) {
-                bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
-                int state = hover ? (pointer_down_ ? 2 : 1) : 0;
-                const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
-                if (ch && ch->valid) blit_chip(*ch, 255);
+        if (taskbar_visible_) {
+            for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
+            for (const UiButton& b : buttons_) {
+                if (b.y >= 690) {
+                    bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+                    int state = hover ? (pointer_down_ ? 2 : 1) : 0;
+                    const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
+                    if (ch && ch->valid) blit_chip(*ch, 255);
+                }
+            }
+        } else {
+            const UiButton& b = open_button_;
+            bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+            int state = hover ? (pointer_down_ ? 2 : 1) : 0;
+            const UiChip* ch = b.state[state].valid ? &b.state[state] : (b.state[0].valid ? &b.state[0] : nullptr);
+            if (ch && ch->valid) {
+                blit_chip(*ch, 255);
+            } else if (sheets_.find(37) != sheets_.end()) {
+                UiChip fallback_chip;
+                fallback_chip.dst_x = 1233;
+                fallback_chip.dst_y = 695;
+                fallback_chip.src_x = (state > 0) ? 1233 : 1186;
+                fallback_chip.src_y = 367;
+                fallback_chip.w = 47;
+                fallback_chip.h = 25;
+                fallback_chip.sheet = 37;
+                fallback_chip.valid = true;
+                blit_chip(fallback_chip, 255);
             }
         }
     }
@@ -1869,8 +2154,15 @@ void SceneRunner::blit_chip(const UiChip& ch, int alpha) {
 void SceneRunner::draw_message_window(int reveal_chars) {
     auto win = sheets_.find(37);
     if (win == sheets_.end()) win = sheets_.find(0);
-    if (win != sheets_.end()) {
-        const Image& s = win->second;
+    const Image* img = (win != sheets_.end()) ? &win->second : (meswin_.valid() ? &meswin_ : nullptr);
+    static int s_win_log = 0;
+    if (++s_win_log % 60 == 1) {
+        SCENE_LOG("draw_message_window: win37=%d img=%p opacity=%d bg_w=%d bg_h=%d bg_x=%d bg_y=%d s_w=%d s_h=%d",
+            int(sheets_.find(37) != sheets_.end()), img, window_opacity_, layout_.bg_w, layout_.bg_h, layout_.bg_x, layout_.bg_y,
+            img ? img->w : 0, img ? img->h : 0);
+    }
+    if (img) {
+        const Image& s = *img;
         Image piece;
         piece.w = layout_.bg_w;
         piece.h = layout_.bg_h;
@@ -2116,43 +2408,106 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
 int SceneRunner::choice_at(int x, int y) const {
     if (!vm_.waiting_for_choice()) return -1;
     const int count = int(vm_.choices().size());
+    if (count <= 0) return -1;
     const int area_h = message_visible_ ? 480 : kScreenH;
     const int top = (area_h - count * 74) / 2;
-    for (int i = 0; i < count; ++i)
-        if (x >= 312 && x < 950 && y >= top + i * 74 && y < top + i * 74 + 68) return i;
+    for (int i = 0; i < count; ++i) {
+        if (x >= 260 && x < 1020 && y >= top + i * 74 - 4 && y < top + i * 74 + 72) return i;
+    }
     return -1;
 }
 
 void SceneRunner::draw_choices() {
     const auto& choices = vm_.choices();
     const int count = int(choices.size());
+    if (count <= 0) return;
     const int area_h = message_visible_ ? 480 : kScreenH;
     const int top = (area_h - count * 74) / 2;
+
+    if (sheets_.find(37) == sheets_.end() && meswin_.valid()) {
+        sheets_[37] = meswin_;
+    }
+
     for (size_t i = 0; i < choices.size(); ++i) {
         const bool hover = choice_at(pointer_x_, pointer_y_) == int(i);
-        UiChip chip{312, top + int(i) * 74, 312, hover ? 245 : 171, 638, 68, 37, true};
-        blit_chip(chip, 255);
+        const int bx = 312, by = top + int(i) * 74, bw = 638, bh = 68;
+
+        // Try blitting the button chip from sheet 37 (MESWIN)
+        bool drawn_chip = false;
+        auto it = sheets_.find(37);
+        if (it != sheets_.end() && it->second.valid()) {
+            UiChip chip{bx, by, 312, hover ? 245 : 171, bw, bh, 37, true};
+            blit_chip(chip, 255);
+            drawn_chip = true;
+        }
+
+        // Draw fallback styled button box if sheet 37 was not available
+        if (!drawn_chip) {
+            for (int dy = 0; dy < bh; ++dy) {
+                int py = by + dy;
+                if (py < 0 || py >= kScreenH) continue;
+                for (int dx = 0; dx < bw; ++dx) {
+                    int px = bx + dx;
+                    if (px < 0 || px >= kScreenW) continue;
+                    bool border = (dx < 2 || dx >= bw - 2 || dy < 2 || dy >= bh - 2);
+                    uint8_t* d = &frame_[(size_t(py) * kScreenW + px) * 4];
+                    int r = hover ? (border ? 255 : 45) : (border ? 180 : 25);
+                    int g = hover ? (border ? 220 : 50) : (border ? 200 : 30);
+                    int b = hover ? (border ? 120 : 75) : (border ? 240 : 55);
+                    int a = border ? 240 : 200;
+                    for (int c = 0; c < 3; ++c) {
+                        int comp = (c == 0 ? r : c == 1 ? g : b);
+                        d[c] = uint8_t((comp * a + d[c] * (255 - a)) / 255);
+                    }
+                    d[3] = 255;
+                }
+            }
+        }
+
         if (font_) {
             const auto text = display_text(choices[i].text).text;
             const int font_size = dc4::is_latin() ? 20 : 22;
             Image label;
-            label.w = 638; label.h = 68; label.rgba.assign(size_t(label.w) * label.h * 4, 0);
+            label.w = bw; label.h = bh; label.rgba.assign(size_t(label.w) * label.h * 4, 0);
             const int tw = text_width(text, font_size);
             font_->rasterize_line(text, std::max(8, (label.w - tw) / 2),
-                43, &label.rgba, label.w, label.h, float(font_size));
-            blit(&frame_, kScreenW, kScreenH, 312, top + int(i) * 74, label, 1.0f, 255);
+                43, &label.rgba, label.w, label.h, float(font_size),
+                hover ? 0xFFEE88 : 0xFFFFFF, false, 0x000000);
+            blit(&frame_, kScreenW, kScreenH, bx, by, label, 1.0f, 255);
         }
     }
 }
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
     if (vm_.waiting_for_choice()) return nullptr;
+    if (!message_visible_) {
+        for (const UiButton& b : buttons_) {
+            if (b.y < 690 && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
+                return &b.action;
+        }
+        return nullptr;
+    }
+    if (!taskbar_visible_) {
+        if (!open_button_.action.empty()) {
+            if ((x >= open_button_.x && x < open_button_.x + open_button_.w &&
+                 y >= open_button_.y && y < open_button_.y + open_button_.h) ||
+                (x >= 1220 && x <= kScreenW && y >= 685 && y <= kScreenH)) {
+                return &open_button_.action;
+            }
+        } else if (x >= 1220 && x <= kScreenW && y >= 685 && y <= kScreenH) {
+            static const std::string s_n = ":n";
+            return &s_n;
+        }
+        return nullptr;
+    }
     for (const UiButton& b : buttons_) {
-        if (b.y >= 690 && !message_visible_) continue;
-        if (b.y < 690 && message_visible_) continue;
-        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h &&
-            !b.action.empty())
+        if (b.y < 690) continue;
+        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
             return &b.action;
+    }
+    if (x >= 1234 && x <= kScreenW && y >= 690 && y <= kScreenH) {
+        static const std::string s_n = ":n";
+        return &s_n;
     }
     return nullptr;
 }

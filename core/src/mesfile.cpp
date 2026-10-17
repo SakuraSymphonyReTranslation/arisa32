@@ -17,6 +17,39 @@ static uint16_t rd_u16(const uint8_t* p) {
     return v;
 }
 
+static bool is_valid_modern_stream(const uint8_t* code, size_t len) {
+    if (len < 4) return false;
+    size_t p = 3;
+    size_t valid_cmds = 0;
+    while (p < len) {
+        uint8_t op = code[p];
+        if (op == 0) { p++; continue; }
+        if (op == 0x2E) {
+            if (p + 2 > len) return false;
+            const void* f = memchr(code + p + 2, 0, len - (p + 2));
+            if (!f) return false;
+            p = (static_cast<const uint8_t*>(f) - code) + 1;
+        } else if (op < 0x3B) {
+            if (p + 3 > len) return false;
+            p += 3;
+        } else if (op < 0x48) {
+            if (p + 2 > len) return false;
+            const void* f = memchr(code + p + 2, 0, len - (p + 2));
+            if (!f) return false;
+            p = (static_cast<const uint8_t*>(f) - code) + 1;
+        } else if (op < 0x6E) {
+            const void* f = memchr(code + p + 1, 0, len - (p + 1));
+            if (!f) return false;
+            p = (static_cast<const uint8_t*>(f) - code) + 1;
+        } else {
+            if (p + 9 > len) return false;
+            p += 9;
+        }
+        valid_cmds++;
+    }
+    return (p == len && valid_cmds > 0);
+}
+
 bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
     if (size < 8) {
         if (err) *err = "file too small";
@@ -33,6 +66,8 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
     bool is_4byte = false;
     if (count == 0) {
         is_4byte = true;
+    } else if (te6 + 4 <= size && is_valid_modern_stream(data + te6, size - te6)) {
+        is_4byte = false;
     } else if (te6 + 4 > size) {
         is_4byte = true;
     } else if (te4 < size && (data[te4] == 0x69 || data[te4] == 0x63)) {

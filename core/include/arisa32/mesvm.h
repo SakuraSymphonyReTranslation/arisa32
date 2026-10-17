@@ -48,6 +48,8 @@ public:
     // 0x4F/0x50 are yielded once, then next() waits for the host to bind a file.
     bool next(MesCommand* out);
     uint32_t pos() const;
+    void seek(uint32_t offset) { if (stream_) stream_->seek(offset); }
+    void seek_to_pc(uint32_t offset);
     bool ended() const { return ended_; }
     bool transferring() const { return transferring_; }
     const std::string& error() const { return error_; }

@@ -241,8 +241,11 @@ public:
     std::u16string visible_text() const;
     size_t visible_text_length() const;
     void set_pointer(int x, int y, bool down) { pointer_x_ = x; pointer_y_ = y; pointer_down_ = down; }
-    void set_message_visible(bool visible) { message_visible_ = visible; }
+    void set_message_visible(bool visible) { message_visible_ = visible; scene_dirty_ = true; }
     bool message_visible() const { return message_visible_; }
+    void set_taskbar_visible(bool visible) { taskbar_visible_ = visible; scene_dirty_ = true; }
+    bool taskbar_visible() const { return taskbar_visible_; }
+    void toggle_taskbar() { taskbar_visible_ = !taskbar_visible_; scene_dirty_ = true; }
     bool replay_voice();
     bool voice_playing() const;
     // Voice file attached to the current line ("" when silent), for backlog rows.
@@ -259,6 +262,7 @@ public:
     bool load_state(const std::string& path);
     bool capture_state(std::vector<uint8_t>* bytes, std::string* error = nullptr);
     bool restore_state(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
+    bool restore_pc_save(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
     int variable(uint16_t bank, uint16_t index) const { return vm_.read_variable(bank, index); }
     uint32_t script_position() const { return vm_.pos(); }
     void set_variable(uint16_t bank, uint16_t index, int value) { vm_.write_variable(bank, index, value); }
@@ -323,6 +327,15 @@ private:
     void snapshot_for_transition();
     void draw_transition(uint8_t* dst);
 
+    // Modular opcode dispatchers (decoupled from advance_to_next_text to maintain clean architecture)
+    bool dispatch_timing_command(const dc4::MesCommand& c);
+    bool dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers);
+    bool dispatch_ui_chip_command(const dc4::MesCommand& c);
+    bool dispatch_layer_command(const dc4::MesCommand& c);
+    bool dispatch_sprite_command(const dc4::MesCommand& c);
+    bool dispatch_camera_command(const dc4::MesCommand& c);
+    bool dispatch_text_command(const dc4::MesCommand& c);
+
     EffectPck effect_pck_;
     std::string data_;
     std::string script_name_;
@@ -360,6 +373,7 @@ private:
     MesWinLayout layout_;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
+    Image transition_overlay_; // 0x3C slot 22 pattern overlay (SYSTEM\EFFCHANGESCREEN*.crx)
     std::vector<uint8_t> frame_;
     std::vector<uint8_t> scene_frame_;
     bool scene_dirty_ = true;
@@ -400,6 +414,8 @@ private:
     int pointer_x_ = -1, pointer_y_ = -1;
     bool pointer_down_ = false;
     bool message_visible_ = true;
+    bool taskbar_visible_ = true;
+    UiButton open_button_;
     int window_opacity_ = 50;
     bool latin_mode_ = false;
     bool use_system_menu_ = true;

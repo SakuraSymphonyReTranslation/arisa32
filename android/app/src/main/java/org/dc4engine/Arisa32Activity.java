@@ -2,9 +2,13 @@ package org.dc4engine;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -43,16 +47,21 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.RandomAccessFile;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /** Android presentation/input shell; scene execution stays in arisa32core. */
@@ -104,10 +113,123 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native boolean dc4CancelConfirmation();
     private native void dc4ConfirmFrame(Bitmap bitmap);
     private native String dc4ConfirmTouch(int action, int x, int y);
+    private native void dc4MovieCompleted();
 
     private SurfaceView surface;
     private FrameLayout gameLayout;
     private TextView bubble;
+    private android.widget.VideoView videoView;
+    private volatile boolean moviePlaying = false;
+    private long movieStartTime = 0;
+
+    public void playMovie(final String path) {
+        runOnUiThread(() -> {
+            if (destroyed || gameLayout == null) {
+                dc4MovieCompleted();
+                return;
+            }
+            if (videoView == null) {
+                videoView = new android.widget.VideoView(this);
+                videoView.setZOrderMediaOverlay(true);
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        Gravity.CENTER);
+                gameLayout.addView(videoView, lp);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                AudioAttributes aa = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build();
+                videoView.setAudioAttributes(aa);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                videoView.setAudioFocusRequest(AudioManager.AUDIOFOCUS_GAIN);
+            }
+            try {
+                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        AudioAttributes aa = new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                .build();
+                        AudioFocusRequest afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                                .setAudioAttributes(aa)
+                                .build();
+                        am.requestAudioFocus(afr);
+                    } else {
+                        am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+                    }
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Cannot request audio focus", t);
+            }
+            moviePlaying = true;
+            movieStartTime = SystemClock.uptimeMillis();
+            videoView.setVisibility(View.VISIBLE);
+            videoView.bringToFront();
+            videoView.setOnPreparedListener(mp -> {
+                try {
+                    mp.setVolume(1.0f, 1.0f);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Cannot set video volume", t);
+                }
+                try {
+                    videoView.start();
+                } catch (Throwable t) {
+                    Log.e(TAG, "Cannot start videoView", t);
+                }
+            });
+            videoView.setOnInfoListener((mp, what, extra) -> {
+                Log.i(TAG, "VideoView info: what=" + what + ", extra=" + extra);
+                return false;
+            });
+            videoView.setOnCompletionListener(mp -> onMovieFinished());
+            videoView.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "VideoView playback error: " + what + ", " + extra);
+                onMovieFinished();
+                return true;
+            });
+            videoView.setOnTouchListener((v, event) -> {
+                if (event.getAction() == MotionEvent.ACTION_UP) {
+                    if (SystemClock.uptimeMillis() - movieStartTime > 1000) {
+                        onMovieFinished();
+                        return true;
+                    }
+                }
+                return true;
+            });
+            try {
+                videoView.setVideoPath(path);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to start movie: " + path, t);
+                onMovieFinished();
+            }
+        });
+    }
+
+    public void stopMovie() {
+        runOnUiThread(this::onMovieFinished);
+    }
+
+    private void onMovieFinished() {
+        if (!moviePlaying) return;
+        moviePlaying = false;
+        if (videoView != null) {
+            try { videoView.stopPlayback(); } catch (Throwable ignored) {}
+            videoView.setVisibility(View.GONE);
+            try { gameLayout.removeView(videoView); } catch (Throwable ignored) {}
+            videoView = null;
+        }
+        if (renderThread != null) {
+            menuCommands.offer(this::dc4MovieCompleted);
+        } else {
+            dc4MovieCompleted();
+        }
+    }
+
     private GameLibrary library;
     private GameLibrary.Entry selected;
     private SharedPreferences preferences;
@@ -126,13 +248,139 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private String pendingOverlayLanguage;
     private String pendingTitleHint;
     private String pendingPresetId;
-    private static final int PICK_GAME = 20, PICK_OVERLAY = 21, PICK_FONT = 22, EXPORT_SAVES = 23, IMPORT_SAVES = 24, PICK_WALLPAPER = 25;
+    private static final int PICK_GAME = 20, PICK_OVERLAY = 21, PICK_FONT = 22, EXPORT_SAVES = 23, IMPORT_SAVES = 24, PICK_WALLPAPER = 25, IMPORT_SAVES_TREE = 26;
     private static final int TEXT = ArisaUi.TEXT, MUTED = ArisaUi.MUTED;
+
+    private static boolean isDirectoryWritable(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        if (dir.canWrite()) return true;
+        File test = new File(dir, ".wtest_" + System.currentTimeMillis());
+        try {
+            if (test.createNewFile()) {
+                test.delete();
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     private File savesDir() {
-        return new File(getFilesDir(), "games/" + selected.id + "/saves/" + selected.language);
+        return savesDir(selected, selected != null ? selected.language : "jp");
     }
     private File savesDir(GameLibrary.Entry game, String language) {
-        return new File(getFilesDir(), "games/" + game.id + "/saves/" + language);
+        if (game == null) return new File(getFilesDir(), "saves");
+        File internalDir = new File(getFilesDir(), "games/" + game.id + "/saves/" + (language != null ? language : "jp"));
+        if (game.path == null || game.path.isEmpty()) return internalDir;
+
+        File gamePath = new File(game.path);
+        File advData = null;
+        if (new File(gamePath, "MES").isDirectory() || new File(gamePath, "mes").isDirectory()) {
+            advData = gamePath;
+        } else {
+            for (String sub : new String[]{"AdvData", "Advdata", "advdata", "ADVDATA"}) {
+                File candidate = new File(gamePath, sub);
+                if (candidate.isDirectory()) { advData = candidate; break; }
+            }
+            if (advData == null) {
+                File[] children = gamePath.listFiles();
+                if (children != null) {
+                    for (File c : children) {
+                        if (c.isDirectory() && c.getName().equalsIgnoreCase("AdvData")) {
+                            advData = c; break;
+                        }
+                    }
+                }
+            }
+        }
+        if (advData == null) advData = gamePath;
+
+        List<File> candidates = new ArrayList<>();
+        for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
+            File c = new File(advData, sub);
+            if (c.isDirectory()) candidates.add(c);
+        }
+        candidates.add(advData);
+        if (advData.getParentFile() != null) {
+            for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
+                File c = new File(advData.getParentFile(), sub);
+                if (c.isDirectory()) candidates.add(c);
+            }
+        }
+
+        File targetSaveDir = null;
+        long bestScore = -1;
+        for (File dir : candidates) {
+            if (!dir.isDirectory()) continue;
+            long score = 0;
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    if (!f.isFile()) continue;
+                    String name = f.getName().toLowerCase(Locale.ROOT);
+                    if (name.equals("system.dat")) {
+                        score += 1000000L + f.lastModified();
+                    } else if (name.endsWith(".dat") && !name.startsWith("uinst")) {
+                        score += 100000L;
+                    } else if (name.endsWith(".dc4sav")) {
+                        score += 50000L;
+                    }
+                }
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                targetSaveDir = dir;
+            }
+        }
+
+        if (targetSaveDir == null || bestScore <= 0) {
+            for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
+                File candidate = new File(advData, sub);
+                if (candidate.isDirectory()) { targetSaveDir = candidate; break; }
+            }
+            if (targetSaveDir == null && advData.getParentFile() != null) {
+                for (String sub : new String[]{"savedata", "Savedata", "SAVEDATA", "savegame", "Savegame", "SAVEGAME"}) {
+                    File candidate = new File(advData.getParentFile(), sub);
+                    if (candidate.isDirectory()) { targetSaveDir = candidate; break; }
+                }
+            }
+            if (targetSaveDir == null) {
+                File candidate = new File(advData, "savedata");
+                if (candidate.mkdirs() || candidate.isDirectory()) {
+                    targetSaveDir = candidate;
+                }
+            }
+        }
+
+        if (targetSaveDir != null && targetSaveDir.isDirectory() && isDirectoryWritable(targetSaveDir)) {
+            migrateInternalSaves(internalDir, targetSaveDir);
+            return targetSaveDir;
+        }
+
+        return internalDir;
+    }
+
+    private void migrateInternalSaves(File srcDir, File dstDir) {
+        if (srcDir == null || dstDir == null || !srcDir.isDirectory() || !dstDir.isDirectory()) return;
+        File[] files = srcDir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isFile() && SaveArchive.isSaveFile(f.getName())) {
+                File target = new File(dstDir, f.getName());
+                if (!target.exists()) {
+                    copyFileSafely(f, target);
+                }
+            }
+        }
+    }
+
+    private void copyFileSafely(File src, File dst) {
+        try (java.io.InputStream in = new FileInputStream(src); java.io.OutputStream out = new FileOutputStream(dst)) {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } catch (Exception ignored) {}
     }
     private String tr(String en, String id, String jp) { return uiLanguage.equals("id") ? id : uiLanguage.equals("jp") ? jp : en; }
     private int dp(float value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
@@ -232,6 +480,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         ensureDefaultFont();
         preferences = getSharedPreferences("launcher", MODE_PRIVATE);
         uiLanguage = preferences.getString("uiLanguage", "en");
+        if (!storageAccessGranted()) {
+            ensureStorageAccess();
+        }
         try { library = new GameLibrary(getFilesDir()); }
         catch (IOException error) { notifyUser(error.getMessage()); finish(); return; }
         frame = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
@@ -588,8 +839,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (!initialized) {
             dataDir = selected.path;
             pauseCheckpoint = new File(getFilesDir(), "games/" + selected.id + "/pause-" + selected.language + ".dc4save").getAbsolutePath();
-            try { SaveArchive.recover(savesDir()); }
-            catch (IOException error) { initializationFailed = true; showLaunchOverlay(error.getMessage()); return; }
+            SaveArchive.recover(savesDir());
             savesDir().mkdirs();
             dc4Configure(savesDir().getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
             Log.i(TAG, "data dir: " + dataDir);
@@ -713,6 +963,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 break;
             case ":rapid":
             case ":skip":
+            case ":aaskip":
                 skipMode = !stChoice && !skipMode;
                 autoMode = false;
                 break;
@@ -720,15 +971,19 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 openBacklog();
                 break;
             case ":qs":
+            case ":aaqsave":
                 autoMode=skipMode=false;handleOriginalAction(dc4RequestConfirm("quick-save"));
                 break;
             case ":ql":
+            case ":aaqload":
                 autoMode=skipMode=false;handleOriginalAction(dc4RequestConfirm("quick-load"));
                 break;
             case ":ds":
+            case ":aasave":
                 openSlots(false);
                 break;
             case ":dl":
+            case ":aaload":
                 openSlots(true);
                 break;
             case ":option":
@@ -825,23 +1080,311 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         ++saveRequestToken;
         refreshSlots();
         notifyUser(dc4SlotsOpen(loading, latestSlot >= 0,
-                new File(savesDir(), "quicksave.dc4sav").isFile()));
+                resolveQuickSaveFile(savesDir()).isFile()));
         slotMenuOpen = true;
     }
 
     // ------------------------------------------------------------ save / load
+
+    private File resolveSlotSaveFile(File dir, int slotIndex) {
+        if (dir == null) return null;
+        int slotNum = slotIndex + 1;
+        File dc4File = new File(dir, "slot" + slotNum + ".dc4sav");
+        if (dc4File.isFile()) return dc4File;
+
+        File[] files = dir.listFiles();
+        if (files == null) return dc4File;
+        String p2 = String.format(Locale.ROOT, "%02d.dat", slotNum);
+        String p3 = String.format(Locale.ROOT, "%03d.dat", slotNum);
+        String p1 = slotNum + ".dat";
+
+        for (File f : files) {
+            if (!f.isFile()) continue;
+            String name = f.getName().toLowerCase(Locale.ROOT);
+            if (name.startsWith("system") || name.startsWith("uinst")) continue;
+            if (name.endsWith(p2) || name.endsWith(p3) || name.endsWith(p1)) {
+                return f;
+            }
+        }
+        return dc4File;
+    }
+
+    private File resolveQuickSaveFile(File dir) {
+        if (dir == null) return new File(dir, "quicksave.dc4sav");
+        File dc4File = new File(dir, "quicksave.dc4sav");
+        if (dc4File.isFile()) return dc4File;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (!f.isFile()) continue;
+                String name = f.getName().toLowerCase(Locale.ROOT);
+                if (name.startsWith("system") || name.startsWith("uinst")) continue;
+                if (name.endsWith("00.dat") || name.contains("quick")) return f;
+            }
+        }
+        return dc4File;
+    }
+
+    private Bitmap resolveSlotThumbnail(File saveFile) {
+        if (saveFile == null || !saveFile.isFile()) return null;
+        File img1 = new File(saveFile.getAbsolutePath() + ".png");
+        String path = saveFile.getAbsolutePath();
+        int dot = path.lastIndexOf('.');
+        File img2 = dot > 0 ? new File(path.substring(0, dot) + ".png") : null;
+
+        File targetImg = (img1.isFile() && img1.length() > 0) ? img1 :
+                         (img2 != null && img2.isFile() && img2.length() > 0) ? img2 : null;
+        if (targetImg == null) return null;
+
+        try {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
+            if (options.outWidth > 0 && options.outHeight > 0) {
+                options.inJustDecodeBounds = false;
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                Bitmap orig = BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
+                if (orig != null && (orig.getWidth() != 128 || orig.getHeight() != 72)) {
+                    Bitmap scaled = Bitmap.createScaledBitmap(orig, 128, 72, true);
+                    orig.recycle();
+                    return scaled;
+                }
+                return orig;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private final Map<String, String> scriptTitles = new HashMap<>();
+    private final Map<String, String> jpToIdTitles = new HashMap<>();
+    private String currentTitleGamePath = null;
+
+    private void loadScenarioTitles(GameLibrary.Entry game) {
+        if (game == null || game.path == null) return;
+        if (game.path.equals(currentTitleGamePath) && !scriptTitles.isEmpty()) return;
+        currentTitleGamePath = game.path;
+        scriptTitles.clear();
+        jpToIdTitles.clear();
+
+        File base = new File(game.path);
+        File parent = base.getParentFile();
+
+        // 1. Scan for scenario.ini
+        File[] iniCandidates = new File[]{
+            new File(base, "scenario.ini"),
+            parent != null ? new File(parent, "scenario.ini") : null,
+            new File(base, "id_Data/scenario.ini"),
+            parent != null ? new File(parent, "id_Data/scenario.ini") : null,
+            new File(base, "id_data/scenario.ini"),
+            parent != null ? new File(parent, "id_data/scenario.ini") : null
+        };
+        for (File iniFile : iniCandidates) {
+            if (iniFile != null && iniFile.isFile()) {
+                parseScenarioIni(iniFile);
+                break;
+            }
+        }
+
+        // 2. Scan for game executable (*.exe)
+        List<File> exeCandidates = new ArrayList<>();
+        if (parent != null) {
+            File[] list = parent.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".exe"));
+            if (list != null) Collections.addAll(exeCandidates, list);
+        }
+        File[] listBase = base.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".exe"));
+        if (listBase != null) Collections.addAll(exeCandidates, listBase);
+
+        for (File exe : exeCandidates) {
+            if (extractTitlesFromExe(exe)) break;
+        }
+    }
+
+    private void parseScenarioIni(File iniFile) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(iniFile), StandardCharsets.UTF_8))) {
+            String line;
+            String curJp = null;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.startsWith("[title:")) {
+                    curJp = null;
+                } else if (line.startsWith("jp=")) {
+                    curJp = line.substring(3).trim();
+                } else if (line.startsWith("id=") && curJp != null) {
+                    jpToIdTitles.put(curJp, line.substring(3).trim());
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private boolean extractTitlesFromExe(File exe) {
+        if (!exe.isFile() || exe.length() > 32 * 1024 * 1024) return false;
+        try (RandomAccessFile raf = new RandomAccessFile(exe, "r")) {
+            int len = (int) Math.min(raf.length(), 4 * 1024 * 1024);
+            byte[] buf = new byte[len];
+            raf.readFully(buf);
+
+            if (len < 0x200 || buf[0] != 'M' || buf[1] != 'Z') return false;
+            int peOff = (buf[0x3C] & 0xFF) | ((buf[0x3D] & 0xFF) << 8) | ((buf[0x3E] & 0xFF) << 16) | ((buf[0x3F] & 0xFF) << 24);
+            if (peOff <= 0 || peOff + 0x100 >= len) return false;
+
+            int numSections = (buf[peOff + 6] & 0xFF) | ((buf[peOff + 7] & 0xFF) << 8);
+            int optSize = (buf[peOff + 0x14] & 0xFF) | ((buf[peOff + 0x15] & 0xFF) << 8);
+            int sectOff = peOff + 0x18 + optSize;
+            if (sectOff + numSections * 40 > len) return false;
+
+            int[] vAddrs = new int[numSections];
+            int[] rawOffs = new int[numSections];
+            int[] rawSizes = new int[numSections];
+
+            for (int i = 0; i < numSections; ++i) {
+                int s = sectOff + i * 40;
+                vAddrs[i] = (buf[s + 12] & 0xFF) | ((buf[s + 13] & 0xFF) << 8) | ((buf[s + 14] & 0xFF) << 16) | ((buf[s + 15] & 0xFF) << 24);
+                rawSizes[i] = (buf[s + 16] & 0xFF) | ((buf[s + 17] & 0xFF) << 8) | ((buf[s + 18] & 0xFF) << 16) | ((buf[s + 19] & 0xFF) << 24);
+                rawOffs[i] = (buf[s + 20] & 0xFF) | ((buf[s + 21] & 0xFF) << 8) | ((buf[s + 22] & 0xFF) << 16) | ((buf[s + 23] & 0xFF) << 24);
+            }
+
+            byte[] pat = "dc4_mid20190301a1".getBytes(StandardCharsets.ISO_8859_1);
+            int patOff = -1;
+            for (int i = 0; i <= len - pat.length; ++i) {
+                boolean match = true;
+                for (int j = 0; j < pat.length; ++j) {
+                    if (Character.toLowerCase((char) (buf[i + j] & 0xFF)) != pat[j]) {
+                        match = false; break;
+                    }
+                }
+                if (match) { patOff = i; break; }
+            }
+            if (patOff < 0) return false;
+
+            int vaStr = -1;
+            for (int i = 0; i < numSections; ++i) {
+                if (patOff >= rawOffs[i] && patOff < rawOffs[i] + rawSizes[i]) {
+                    vaStr = 0x400000 + vAddrs[i] + (patOff - rawOffs[i]);
+                    break;
+                }
+            }
+            if (vaStr < 0) return false;
+
+            byte b0 = (byte) (vaStr & 0xFF);
+            byte b1 = (byte) ((vaStr >> 8) & 0xFF);
+            byte b2 = (byte) ((vaStr >> 16) & 0xFF);
+            byte b3 = (byte) ((vaStr >> 24) & 0xFF);
+            int tableOff = -1;
+            for (int i = 0; i <= len - 4; ++i) {
+                if (buf[i] == b0 && buf[i+1] == b1 && buf[i+2] == b2 && buf[i+3] == b3) {
+                    tableOff = i; break;
+                }
+            }
+            if (tableOff < 0) return false;
+
+            Charset sjis = Charset.forName("windows-31j");
+            int curr = tableOff;
+            int count = 0;
+            while (curr + 8 <= len) {
+                int pScript = (buf[curr] & 0xFF) | ((buf[curr+1] & 0xFF) << 8) | ((buf[curr+2] & 0xFF) << 16) | ((buf[curr+3] & 0xFF) << 24);
+                int pTitle = (buf[curr+4] & 0xFF) | ((buf[curr+5] & 0xFF) << 8) | ((buf[curr+6] & 0xFF) << 16) | ((buf[curr+7] & 0xFF) << 24);
+                if (pScript == 0 || pTitle == 0) break;
+
+                int rScript = vaToRaw(pScript, numSections, vAddrs, rawOffs, rawSizes);
+                int rTitle = vaToRaw(pTitle, numSections, vAddrs, rawOffs, rawSizes);
+                if (rScript < 0 || rScript >= len || rTitle < 0 || rTitle >= len) break;
+
+                int endS = rScript;
+                while (endS < len && endS - rScript < 64 && buf[endS] != 0) endS++;
+                if (endS == rScript) break;
+
+                int endT = rTitle;
+                while (endT < len && endT - rTitle < 128 && buf[endT] != 0) endT++;
+                if (endT == rTitle) break;
+
+                String sScript = new String(buf, rScript, endS - rScript, StandardCharsets.ISO_8859_1).trim().toLowerCase(Locale.ROOT);
+                String sTitle = new String(buf, rTitle, endT - rTitle, sjis).trim();
+
+                if (!sScript.isEmpty() && !sTitle.isEmpty()) {
+                    scriptTitles.put(sScript, sTitle);
+                    count++;
+                }
+                curr += 8;
+            }
+            return count > 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private int vaToRaw(int va, int numSections, int[] vAddrs, int[] rawOffs, int[] rawSizes) {
+        for (int i = 0; i < numSections; ++i) {
+            int vStart = 0x400000 + vAddrs[i];
+            int vEnd = vStart + rawSizes[i];
+            if (va >= vStart && va < vEnd) {
+                return rawOffs[i] + (va - vStart);
+            }
+        }
+        return -1;
+    }
+
+    private String readScriptFromDat(File saveFile) {
+        try (FileInputStream in = new FileInputStream(saveFile)) {
+            byte[] hdr = new byte[72];
+            int n = in.read(hdr);
+            if (n >= 16) {
+                int len = 0;
+                while (8 + len < n && hdr[8 + len] != 0 && len < 64) len++;
+                if (len > 0) {
+                    return new String(hdr, 8, len, StandardCharsets.ISO_8859_1).trim();
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private String resolveSlotExcerpt(File saveFile, int slotNum) {
+        if (saveFile == null || !saveFile.isFile()) return "";
+        File txt1 = new File(saveFile.getAbsolutePath() + ".txt");
+        if (txt1.isFile()) {
+            String s = readSmallFile(txt1.getAbsolutePath());
+            if (!s.isEmpty()) return s;
+        }
+        String path = saveFile.getAbsolutePath();
+        int dot = path.lastIndexOf('.');
+        if (dot > 0) {
+            File txt2 = new File(path.substring(0, dot) + ".txt");
+            if (txt2.isFile()) {
+                String s = readSmallFile(txt2.getAbsolutePath());
+                if (!s.isEmpty()) return s;
+            }
+        }
+        if (saveFile.getName().toLowerCase(Locale.ROOT).endsWith(".dat")) {
+            String script = readScriptFromDat(saveFile);
+            if (script != null && !script.isEmpty()) {
+                loadScenarioTitles(selected);
+                String jpTitle = scriptTitles.get(script.toLowerCase(Locale.ROOT));
+                if (jpTitle != null) {
+                    if (selected != null && "id".equalsIgnoreCase(selected.language)) {
+                        String idTitle = jpToIdTitles.get(jpTitle);
+                        if (idTitle != null && !idTitle.isEmpty()) return idTitle;
+                    }
+                    return jpTitle;
+                }
+                return script;
+            }
+            return saveFile.getName().substring(0, saveFile.getName().length() - 4);
+        }
+        return "";
+    }
 
     private void persistState(boolean load, int slot) {
         if (slot < -1 || slot >= SLOT_COUNT) return;
         autoMode = false;
         skipMode = false;
         final File dir = savesDir();
-        final File file = slot < 0 ? new File(dir, "quicksave.dc4sav")
-                : new File(dir, "slot" + (slot + 1) + ".dc4sav");
+        final File file = slot < 0
+                ? (load ? resolveQuickSaveFile(dir) : new File(dir, "quicksave.dc4sav"))
+                : (load ? resolveSlotSaveFile(dir, slot) : new File(dir, "slot" + (slot + 1) + ".dc4sav"));
         final String what = slot < 0 ? (load ? tr("Quick load", "Muat cepat", "クイックロード") : tr("Quick save", "Simpan cepat", "クイックセーブ"))
                 : (load ? tr("Load", "Muat", "ロード") : tr("Save", "Simpan", "セーブ")) + " · " + (slot + 1);
         if (load) {
-            if (!file.isFile()) { notifyUser(what + tr(": empty slot", ": slot kosong", "：空きスロット")); return; }
+            if (file == null || !file.isFile()) { notifyUser(what + tr(": empty slot", ": slot kosong", "：空きスロット")); return; }
             final String error = dc4Load(file.getAbsolutePath());
             if (!error.isEmpty()) { notifyUser(error); return; }
             dc4LogClear();
@@ -854,8 +1397,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             writePreview(file);
             if (slot >= 0 && slotMenuOpen) {
                 refreshSlots();
+                File quick = resolveQuickSaveFile(dir);
                 notifyUser(dc4SlotsOpen(false, latestSlot >= 0,
-                        new File(dir, "quicksave.dc4sav").isFile()));
+                        quick != null && quick.isFile()));
             } else closeMenus();
             notifyUser(what + tr(" written", " tersimpan", "を保存しました"));
         }
@@ -889,24 +1433,16 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         latestSlot = -1;
         long newest = Long.MIN_VALUE;
         for (int i = 0; i < SLOT_COUNT; ++i) {
-            final File file = new File(dir, "slot" + (i + 1) + ".dc4sav");
-            final boolean occupied = file.isFile();
+            final File file = resolveSlotSaveFile(dir, i);
+            final boolean occupied = file != null && file.isFile();
             String timestamp = "", excerpt = "";
             Bitmap thumbnail = null;
             if (occupied) {
                 final long modified = file.lastModified();
                 if (modified > newest) { newest = modified; latestSlot = i; }
                 timestamp = dateFormat.format(new Date(modified));
-                excerpt = readSmallFile(file.getAbsolutePath() + ".txt");
-                final String image = file.getAbsolutePath() + ".png";
-                BitmapFactory.Options options = new BitmapFactory.Options();
-                options.inJustDecodeBounds = true;
-                BitmapFactory.decodeFile(image, options);
-                if (options.outWidth == 128 && options.outHeight == 72 && new File(image).length() <= 100000) {
-                    options.inJustDecodeBounds = false;
-                    options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                    thumbnail = BitmapFactory.decodeFile(image, options);
-                }
+                excerpt = resolveSlotExcerpt(file, i + 1);
+                thumbnail = resolveSlotThumbnail(file);
             }
             dc4SlotInfo(i, occupied, timestamp, excerpt, thumbnail);
             if (thumbnail != null) thumbnail.recycle();
@@ -1850,8 +2386,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (action == null || action.isEmpty()) return;
         if (action.startsWith(":")) action = action.substring(1);
         switch (action) {
-            case "save": openSlots(false); break;
-            case "load": openSlots(true); break;
+            case "save":
+            case "aasave":
+            case "ds":
+                openSlots(false); break;
+            case "load":
+            case "aaload":
+            case "dl":
+                openSlots(true); break;
             case "backlog": openBacklog(); break;
             case "start": closeMenus(); lastLineSerial = -1; break;
             case "jump": closeMenus(); lastLineSerial = -1; break;
@@ -1881,7 +2423,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         case 2: chooseFont(game); break;
                         case 3: documentGame = game; pickDocument(PICK_FONT, "*/*", null); break;
                         case 4: documentGame = game; documentLanguage = game.language;
-                            pickDocument(EXPORT_SAVES, "application/zip", "Arisa32-" + game.language + "-saves.zip"); break;
+                            String safeTitle = (game.title != null && !game.title.isEmpty())
+                                    ? game.title.replaceAll("[^a-zA-Z0-9_.-]", "_") : "Arisa32";
+                            pickDocument(EXPORT_SAVES, "application/zip", safeTitle + "_" + game.language + "_saves.zip"); break;
                         case 5: confirmImport(game); break;
                         case 6: renameGame(game); break;
                         case 7: removeGame(game); break;
@@ -2094,14 +2638,23 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         notifyUser(tr("Removed from library.", "Dihapus dari koleksi.", "ライブラリから削除しました。"));
     }
     private void confirmImport(GameLibrary.Entry game) {
-        settingsDialog = dialog().setTitle(tr("Import saves?", "Impor simpanan?", "セーブをインポートしますか？"))
-                .setMessage(tr("Import returns to the library and replaces this language's save slots and any progress included in the archive. Export a backup first; unsaved progress is lost. Game scripts and language pack must match.",
-                        "Impor kembali ke koleksi dan mengganti slot simpanan bahasa ini beserta progres dalam arsip. Ekspor cadangan dulu; progres yang belum disimpan hilang. Skrip game dan paket bahasa harus cocok.",
-                        "インポートでライブラリに戻り、この言語のセーブとアーカイブ内の進行情報を置き換えます。先にバックアップしてください。未保存の進行状況は失われます。スクリプトと翻訳パックの一致が必要です。"))
-                .setPositiveButton(tr("Choose archive", "Pilih arsip", "アーカイブを選択"), (d,w) -> {
+        String[] options = new String[]{
+            tr("Choose Folder / Directory (Folder Picker)", "Pilih Folder / Direktori (Folder Picker)", "フォルダーを選択（SAF）"),
+            tr("Choose ZIP Archive (.zip)", "Pilih Berkas Arsip ZIP (.zip)", "ZIPアーカイブを選択 (.zip)")
+        };
+        settingsDialog = dialog().setTitle(tr("Import saves", "Impor simpanan", "セーブをインポート"))
+                .setItems(options, (d, which) -> {
                     if (!inLibrary) leaveGame(true);
-                    documentGame = game; documentLanguage = game.language; pickDocument(IMPORT_SAVES, "*/*", null);
-                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+                    documentGame = game;
+                    documentLanguage = game.language;
+                    if (which == 0) {
+                        pickTree(IMPORT_SAVES_TREE);
+                    } else {
+                        pickDocument(IMPORT_SAVES, "application/zip", null);
+                    }
+                })
+                .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null)
+                .show();
     }
     private void pickTree(int request) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -2303,23 +2856,31 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         else if (request == PICK_FONT) {
             runFileTask(tr("Importing font", "Mengimpor font", "フォントを追加中"), () -> importFont(uri, game),
                     () -> notifyUser(tr("Font imported. Reopen the game to apply it.", "Font diimpor. Buka ulang game untuk menerapkannya.", "フォントを追加しました。ゲームを再起動すると適用されます。")), true);
-        } else if (request == EXPORT_SAVES || request == IMPORT_SAVES) {
-            final File saves = savesDir(game, documentLanguage); final String content = game.contentId();
+        } else if (request == EXPORT_SAVES || request == IMPORT_SAVES || request == IMPORT_SAVES_TREE) {
+            final File saves = savesDir(game, documentLanguage);
+            final String content = game.contentId();
             runFileTask(tr("Transferring saves", "Memindahkan simpanan", "セーブを転送中"), () -> {
                 if (request == EXPORT_SAVES) {
                     try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
-                        if(out == null)throw new IOException("Cannot create archive."); SaveArchive.write(out,saves,game.id,content);
+                        if (out == null) throw new IOException("Cannot create archive.");
+                        SaveArchive.write(out, saves, game.id, content);
                     }
+                } else if (request == IMPORT_SAVES_TREE) {
+                    File direct = resolveUriToDirectPath(uri);
+                    int count = SaveArchive.importTree(getContentResolver(), uri, direct, saves);
                 } else {
                     try (InputStream in = getContentResolver().openInputStream(uri)) {
-                        if(in == null)throw new IOException("Cannot read archive.");
-                        SaveArchive.read(in, saves, game.id, content, file -> {
-                            String error = dc4ValidateSaveFile(game.path, game.overlay(), game.encoding(), file.getAbsolutePath());
-                            if (error != null && !error.isEmpty()) throw new IOException(error);
-                        });
+                        if (in == null) throw new IOException("Cannot read archive.");
+                        int count = SaveArchive.read(in, saves, game.id, content);
                     }
                 }
-            }, () -> notifyUser(tr("Save transfer complete.", "Pemindahan simpanan selesai.", "セーブの転送が完了しました。")));
+            }, () -> {
+                refreshSlots();
+                if (initialized && !inLibrary && selected != null) {
+                    dc4Configure(savesDir().getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
+                }
+                notifyUser(tr("Save transfer complete.", "Pemindahan simpanan selesai.", "セーブの転送が完了しました。"));
+            });
         }
     }
     private void importFont(Uri uri, GameLibrary.Entry game) throws IOException {
@@ -2366,11 +2927,18 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (moviePlaying && videoView != null) {
+            try { videoView.start(); } catch (Throwable ignored) {}
+        }
         startRendering();
     }
 
     @Override public void onBackPressed() {
         if (ioBusy) return;
+        if (moviePlaying) {
+            stopMovie();
+            return;
+        }
         if (inLibrary) super.onBackPressed();
         else menuCommands.add(() -> {if(!dc4CancelConfirmation())runOnUiThread(this::showExtras);});
     }
@@ -2381,6 +2949,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         skipMode = false;
         backlogOpen = false;
         slotMenuOpen = false;
+        if (moviePlaying && videoView != null) {
+            try { videoView.pause(); } catch (Throwable ignored) {}
+        }
         stopRendering();
         if (saveDialog != null) { saveDialog.dismiss(); saveDialog = null; }
         super.onPause();
@@ -2397,6 +2968,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override protected void onDestroy() {
         stopRendering();
+        if (videoView != null) {
+            try { videoView.stopPlayback(); } catch (Throwable ignored) {}
+            videoView = null;
+        }
         if (initialized) dc4Quit();
         initialized = false;
         destroyed = true;

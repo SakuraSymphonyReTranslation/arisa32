@@ -222,6 +222,30 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     return true;
 }
 
+void MesVm::seek_to_pc(uint32_t target_pc) {
+    if (!mes_ || !stream_) return;
+    if (target_pc >= mes_->code.size()) {
+        stream_->seek(uint32_t(mes_->code.size()));
+        ended_ = true;
+        return;
+    }
+    MesStream scanner(*mes_);
+    MesCommand cmd;
+    uint32_t best_pos = 0;
+    while (scanner.next(&cmd)) {
+        if (cmd.pos <= target_pc && target_pc < cmd.pos + cmd.size) {
+            best_pos = cmd.pos;
+            break;
+        }
+        if (cmd.pos > target_pc) break;
+        best_pos = cmd.pos;
+    }
+    stream_->seek(best_pos);
+    ended_ = false;
+    waiting_for_choice_ = false;
+    error_.clear();
+}
+
 bool MesVm::fail(const std::string& message, uint32_t at) {
     std::ostringstream text;
     text << message << " at MES offset 0x" << std::hex << at;
@@ -257,6 +281,10 @@ bool MesVm::jump(const std::string& label) {
     }
     if (it == labels_.end() && !label.empty() && label[0] == ':') {
         it = labels_.find(label.substr(1));
+    }
+    if (it == labels_.end()) {
+        std::string lower = to_lower(label);
+        it = labels_.find(lower);
     }
     if (it == labels_.end()) {
         char* end = nullptr;
@@ -295,6 +323,12 @@ bool MesVm::choose(size_t index) {
 }
 
 int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
+    // Route unlock flags (100..119) default to 1 so choices are never skipped or locked out.
+    if (bank == 100 && index >= 100 && index <= 119) {
+        const auto found = variables_.find({bank, index});
+        if (found == variables_.end() || found->second == 0) return 1;
+        return found->second;
+    }
     const int size = byte_bank_size(bank);
     if (size && index >= size) return 0;
     if (!size && bank != 93 && bank != 94 && bank != 95 && bank != 99)
@@ -442,7 +476,8 @@ bool MesVm::next(MesCommand* out) {
             choices_.clear();
             break;  // host may set up the choice window here
         case 0x0A:
-            if (command.p1 == 0 && !choices_.empty()) {
+        case 0x0D:
+            if (!choices_.empty()) {
                 waiting_for_choice_ = true;
                 return false;
             }
@@ -483,11 +518,9 @@ bool MesVm::next(MesCommand* out) {
         case 0x3A:
         case 0x54:
         case 0x3D:
-            if (command.kind == CmdKind::Str) {
-                if (!command.str.empty() && command.str[0] != ':') {
-                    if (!jump(command.str)) return false;
-                    continue;
-                }
+            if (command.kind == CmdKind::Str && !command.str.empty()) {
+                if (!jump(command.str)) return false;
+                continue;
             }
             break;
         case 0x62: {
@@ -514,8 +547,8 @@ bool MesVm::next(MesCommand* out) {
             if (command.kind == CmdKind::Str) {
                 MesCommand caption;
                 if (!consume_companion(&caption, "choice text")) return false;
-                if (caption.kind != CmdKind::Text)
-                    return fail("expected encoded choice text", caption.pos);
+                if (caption.kind != CmdKind::Text && caption.kind != CmdKind::Str && caption.kind != CmdKind::ParamStr)
+                    return fail("expected choice text", caption.pos);
                 choices_.push_back({command.str, caption.str});
                 continue;
             }

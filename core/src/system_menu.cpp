@@ -1,5 +1,6 @@
 #include "arisa32/system_menu.h"
 #include "arisa32/resource.h"
+#include "arisa32/mem_safe.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -53,7 +54,8 @@ bool read_bytes(const std::string& path, std::vector<uint8_t>* out) {
     return true;
 }
 uint32_t u32(const std::vector<uint8_t>& b, size_t p) {
-    return uint32_t(b[p]) | uint32_t(b[p + 1]) << 8 | uint32_t(b[p + 2]) << 16 | uint32_t(b[p + 3]) << 24;
+    if (!dc4::check_bounds(p, 4, b.size())) return 0;
+    return dc4::read_u32_le(b.data() + p);
 }
 struct Rect {
     int x = 0, y = 0, w = 0, h = 0;
@@ -129,6 +131,7 @@ struct SystemMenu::Impl {
         for (auto v : defaults) vars[{99, v.first}] = v.second;
         vars[{100,49}] = 80;
         for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
+        for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
     }
     int get(int b, int i) const {
         if (b == 99 && i == 4) return get(99,1);
@@ -196,26 +199,23 @@ struct SystemMenu::Impl {
             size_t p = 228;
             auto table = [&](size_t stride, std::vector<std::string>* target) {
                 if (p + 4 > b.size()) return false;
-                uint32_t n = u32(b,p); p += 4;
+                uint32_t n = u32(b, p); p += 4;
                 if (n > 2000 || n > (b.size() - p) / stride) return false;
                 if (target) target->clear();
                 for (uint32_t i = 0; i < n; ++i, p += stride) {
-                    const char* s = reinterpret_cast<const char*>(b.data() + p);
-                    const char* end = static_cast<const char*>(std::memchr(s,0,32));
-                    if (!end) return false;
-                    if (target) target->emplace_back(s,end);
+                    if (p + stride > b.size()) return false;
+                    std::string item = dc4::safe_string(b.data(), b.size(), p, 32);
+                    if (target) target->push_back(std::move(item));
                 }
                 return true;
             };
-            return table(48,&bgm_names) && table(36,nullptr) && table(32,&cg_names) && table(32,&scene_names);
+            return table(48, &bgm_names) && table(36, nullptr) && table(32, &cg_names) && table(32, &scene_names);
         }
         if (ver == 6) {
             bgm_names.clear(); cg_names.clear(); scene_names.clear();
             for (size_t p = 4; p + 128 <= b.size(); p += 128) {
-                const char* s = reinterpret_cast<const char*>(b.data() + p);
-                const char* end = static_cast<const char*>(std::memchr(s, 0, 64));
-                if (end && end > s) {
-                    std::string str(s, end);
+                std::string str = dc4::safe_string(b.data(), b.size(), p, 64);
+                if (!str.empty()) {
                     if (str.rfind("music", 0) == 0) bgm_names.push_back(str);
                     else if (str.rfind("cg", 0) == 0) cg_names.push_back(str);
                     else scene_names.push_back(str);
@@ -776,13 +776,86 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
 #endif
     if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
 }
+bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        if (error) *error = "Cannot open system.dat";
+        return false;
+    }
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (data.size() < 0x4B80) {
+        if (error) *error = "system.dat too small";
+        return false;
+    }
+    // Bank 100: offset 0x00D8, size 150
+    if (data.size() >= 0x00D8 + 150) {
+        for (int i = 0; i < 150; ++i) {
+            uint8_t val = data[0x00D8 + i];
+            if (val > p_->vars[{100, i}]) p_->vars[{100, i}] = val;
+        }
+    }
+    // Bank 96 (BGM): offset 0x0180, size 400
+    if (data.size() >= 0x0180 + 400) {
+        for (int i = 0; i < 400; ++i) {
+            uint8_t val = data[0x0180 + i];
+            if (val > p_->vars[{96, i}]) p_->vars[{96, i}] = val;
+            if (val > 0 && size_t(i) < p_->bgm_names.size()) {
+                p_->seen_music.insert(key(p_->bgm_names[i]));
+            }
+        }
+    }
+    // Bank 97 (CG gallery): offset 0x0310, size 1200
+    if (data.size() >= 0x0310 + 1200) {
+        for (int i = 0; i < 1200; ++i) {
+            uint8_t val = data[0x0310 + i];
+            if (val > p_->vars[{97, i}]) p_->vars[{97, i}] = val;
+            if (val > 0 && size_t(i) < p_->cg_names.size()) {
+                p_->seen_cg.insert(key(p_->cg_names[i]));
+            }
+        }
+    }
+    // Bank 98 (Scenario mode): offset 0x07C0, size 650
+    if (data.size() >= 0x07C0 + 650) {
+        for (int i = 0; i < 650; ++i) {
+            uint8_t val = data[0x07C0 + i];
+            if (val > p_->vars[{98, i}]) p_->vars[{98, i}] = val;
+            if (val > 0 && size_t(i) < p_->scene_names.size()) {
+                p_->seen_scene.insert(key(p_->scene_names[i]));
+            }
+        }
+    }
+    // Bank 93: offset 0x44E8, 20 32-bit ints
+    if (data.size() >= 0x44E8 + 20 * 4) {
+        for (int i = 0; i < 20; ++i) {
+            uint32_t val = uint32_t(data[0x44E8 + i*4]) |
+                          (uint32_t(data[0x44E8 + i*4 + 1]) << 8) |
+                          (uint32_t(data[0x44E8 + i*4 + 2]) << 16) |
+                          (uint32_t(data[0x44E8 + i*4 + 3]) << 24);
+            p_->vars[{93, i}] = int32_t(val);
+        }
+    }
+    for (int i = 0; i < 51; ++i) {
+        if (p_->vars.find({94, i}) == p_->vars.end()) p_->vars[{94, i}] = 100;
+        if (p_->vars.find({95, i}) == p_->vars.end() || p_->vars[{95, i}] == 0) p_->vars[{95, i}] = 1;
+    }
+    p_->rebuild();
+    if (error) error->clear();
+    return true;
+}
+
 bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     std::error_code size_error;
     const auto bytes=std::filesystem::file_size(path,size_error);
     if(!size_error && bytes>32*1024*1024){if(error)*error="Emulator profile exceeds byte limit";return false;}
     std::ifstream in(path,std::ios::binary);if(!in){if(error)*error="Cannot open emulator profile";return false;}
-    std::string header;std::getline(in,header);if(header!="DC4ENGINE_PROFILE 1"){if(error)*error="Unsupported emulator profile";return false;}
-    auto vars=p_->vars;std::set<std::string> cg,music,scene;std::set<int> playlist;
+    std::string header;std::getline(in,header);
+    if(header!="DC4ENGINE_PROFILE 1"){
+        in.close();
+        if (load_system_dat(path, error)) return true;
+        if(error)*error="Unsupported emulator profile";
+        return false;
+    }
+    auto vars=p_->vars;std::set<std::string> cg=p_->seen_cg,music=p_->seen_music,scene=p_->seen_scene;std::set<int> playlist=p_->playlist;
     std::string line;size_t lines=0;
     while(std::getline(in,line)) {
         if(++lines>120000||line.size()>4096){if(error)*error="Emulator profile exceeds limits";return false;}
@@ -795,6 +868,9 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     for (int i = 0; i < 51; ++i) {
         if (vars.find({94, i}) == vars.end()) vars[{94, i}] = 100;
         if (vars.find({95, i}) == vars.end() || vars[{95, i}] == 0) vars[{95, i}] = 1;
+    }
+    for (int i = 100; i <= 119; ++i) {
+        if (vars.find({100, i}) == vars.end() || vars[{100, i}] == 0) vars[{100, i}] = 1;
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);
     p_->progress_vars();p_->rebuild();if(error)error->clear();return true;

@@ -71,6 +71,7 @@ public:
     void initialize_scene(dc4scene::SceneRunner& scene, bool replay = false) const;
     // Only emulator-owned profile files may be passed here.
     bool load_profile(const std::string& path, std::string* error = nullptr);
+    bool load_system_dat(const std::string& path, std::string* error = nullptr);
     bool save_profile(const std::string& path, std::string* error = nullptr) const;
     void mark_cg_seen(const std::string& asset);
     void mark_music_seen(const std::string& asset);

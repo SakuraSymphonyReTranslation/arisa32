@@ -1,5 +1,6 @@
 #include "arisa32/crm.h"
 #include "arisa32/resource.h"
+#include "arisa32/mem_safe.h"
 
 #include <algorithm>
 #include <cctype>
@@ -65,14 +66,13 @@ bool CrmArchive::open(const std::string& path, std::string* err) {
     }
     entries_.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
-        const uint8_t* e = data_.data() + 0x10 + 32 * i;
+        const size_t entry_off = 0x10 + 32 * i;
+        if (!check_bounds(entry_off, 32, data_.size())) break;
+        const uint8_t* e = data_.data() + entry_off;
         Entry en;
-        memcpy(&en.offset, e, 4);
-        memcpy(&en.id, e + 4, 4);
-        const char* n = reinterpret_cast<const char*>(e + 8);
-        size_t len = 0;
-        while (len < 24 && n[len]) ++len;
-        en.name.assign(n, len);
+        en.offset = read_u32_le(e);
+        en.id = read_u32_le(e + 4);
+        en.name = safe_string(data_.data(), data_.size(), entry_off + 8, 24);
         if (upper(en.name).size() > 4 &&
             upper(en.name).compare(upper(en.name).size() - 4, 4, ".CRX") == 0)
             en.name.resize(en.name.size() - 4);

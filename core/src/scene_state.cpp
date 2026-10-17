@@ -1,4 +1,7 @@
 #include "arisa32/scene.h"
+#include "arisa32/resource.h"
+#include "arisa32/bgm.h"
+#include "arisa32/mem_safe.h"
 
 #include <cmath>
 #include <cstring>
@@ -184,15 +187,308 @@ bool SceneRunner::load_state(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary | std::ios::ate);
         if (!file) throw std::runtime_error("save not found: " + filename);
         const auto size = file.tellg();
-        if (size < 24 || size > std::streamoff(kMaxSave + 24)) throw std::runtime_error("invalid save size");
+        if (size < 24) throw std::runtime_error("invalid save size");
         file.seekg(0);
         std::vector<uint8_t> bytes(size_t(size), 0);
         if (!file.read(reinterpret_cast<char*>(bytes.data()), size)) throw std::runtime_error("cannot read complete save");
         std::string error;
-        if (!restore_state(bytes, &error)) throw std::runtime_error(error);
+        bool ok = false;
+        if (bytes.size() >= 8 && !std::memcmp(bytes.data(), kMagic, 8)) {
+            ok = restore_state(bytes, &error);
+        } else {
+            ok = restore_pc_save(bytes, &error);
+        }
+        if (!ok) throw std::runtime_error(error);
         last_error_.clear();
         return true;
     } catch (const std::exception& error) { last_error_ = error.what(); return false; }
+}
+
+bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
+    try {
+        if (bytes.size() < 0x1000) throw std::runtime_error("save file too small to be a PC save");
+
+        std::string script;
+        for (size_t i = 8; i < 8 + 64 && i < bytes.size(); ++i) {
+            if (bytes[i] == 0) break;
+            script.push_back(char(bytes[i]));
+        }
+        if (script.empty()) throw std::runtime_error("no scenario name in PC save");
+        if (script.find('.') == std::string::npos) script += ".mes";
+
+        std::string resolved = dc4::find_file_ci(data_ + "/MES", script);
+        if (resolved.empty()) resolved = script;
+
+        uint32_t pc = 0;
+        if (bytes.size() >= 0xb04) {
+            std::memcpy(&pc, bytes.data() + 0xb00, 4);
+        }
+
+        std::string bg;
+        if (bytes.size() >= 0xd8 + 64) {
+            for (size_t i = 0xd8; i < 0xd8 + 64; ++i) {
+                if (bytes[i] == 0) break;
+                char c = char(bytes[i]);
+                if (c == '\\') c = '/';
+                bg.push_back(c);
+            }
+        }
+
+        vm_.reset();
+        if (!load_script(data_ + "/MES/" + resolved)) {
+            throw std::runtime_error("cannot load script: " + resolved + " (" + last_error_ + ")");
+        }
+
+        if (bytes.size() >= 0x184ec + 1100) {
+            for (uint16_t b = 0; b <= 10; ++b) {
+                for (uint16_t idx = 0; idx < 100; ++idx) {
+                    uint8_t val = bytes[0x184ec + b * 100 + idx];
+                    set_variable(b, idx, val);
+                }
+            }
+        }
+        // Force ReplayMode / Scenario Mode flag to 0 for story saves so branch doesn't exit to SCE_END
+        set_variable(9, 7, 0);
+
+        // Ensure all route clear / branch flags in Bank 100 are active so choices are NEVER skipped
+        for (uint16_t i = 100; i <= 119; ++i) {
+            set_variable(100, i, 1);
+        }
+
+        layers_.clear();
+        for (auto& s : sprites_) s = BstSprite{};
+        // Only clear character / scene scratch sheets (< 37). Keep UI sheets (>= 37) intact!
+        for (auto it = sheets_.begin(); it != sheets_.end(); ) {
+            if (it->first < 37) {
+                it = sheets_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (sheets_.find(37) == sheets_.end()) {
+            std::string start_mes = dc4::find_file_ci(data_ + "/MES", "start.mes");
+            if (!start_mes.empty()) load_sheets(data_ + "/MES/" + start_mes);
+            std::string win_size = dc4::find_file_ci(data_ + "/MES", "win_size.mes");
+            if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
+            if (sheets_.find(37) == sheets_.end()) {
+                show_message_window("SYSTEM/MESWIN.CRX");
+            }
+        }
+        if (buttons_.empty()) {
+            std::string win_size = dc4::find_file_ci(data_ + "/MES", "win_size.mes");
+            if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
+        }
+        scene_chips_.clear();
+        camera_scale_ = 1.0f;
+        camera_x_ = 0.0f;
+        camera_y_ = 0.0f;
+        camera_duration_ = 5;
+        camera_motion_.clear();
+        current_line_.clear();
+        speaker_.clear();
+        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+
+        uint32_t final_seek_pc = pc;
+        if (pc >= 3 && pc < mes_.code.size()) {
+            bool prev_anim = animation_enabled_;
+            animation_enabled_ = false;
+
+            std::string target_bg;
+            std::vector<std::string> target_slots(sprites_.size());
+            std::vector<int> target_slot_ids(sprites_.size(), 0);
+
+            dc4::MesStream scan(mes_);
+            dc4::MesCommand c;
+            while (scan.next(&c)) {
+                if (c.pos > pc) break;
+                if (c.pos == pc) {
+                    if (c.kind == dc4::CmdKind::Text) {
+                        if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+                            speaker_ = c.str;
+                        } else {
+                            current_line_ = c.str;
+                            final_seek_pc = scan.pos();
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if (c.op == 0) continue;
+
+                using K = dc4::CmdKind;
+                if (c.kind == K::Words4 && c.op == 0x8B) {
+                    set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
+                } else if (c.kind == K::Words4 && c.op == 0x8E) {
+                    queue_sprite_slide(c.words[0], c.words[1], c.words[2], c.words[3]);
+                } else if (c.kind == K::Words4 && c.op == 0x8C) {
+                    queue_sprite_effect(c.words[0], c.words[1], c.words[2], c.words[3]);
+                } else if (c.kind == K::Words4 && c.op == 0x99) {
+                    camera_duration_ = c.words[0];
+                } else if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
+                    apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
+                } else if (c.kind == K::ParamStr && c.op == 0x3C) {
+                    int slot = c.p1;
+                    int idx = -1;
+                    if (slot >= 4 && slot <= 8) idx = slot - 4;
+                    else if (slot >= 25 && slot <= 27) idx = 12 + (slot - 25);
+                    if (c.str == "-") {
+                        if (idx >= 0 && size_t(idx) < sprites_.size()) {
+                            sprites_[idx].visible = false;
+                            pending_sprites_[idx] = true;
+                            target_slots[idx].clear();
+                        } else if (slot <= 1) {
+                            target_bg.clear();
+                        }
+                    } else if (slot <= 1) {
+                        target_bg = c.str;
+                    } else if (idx >= 0 && size_t(idx) < sprites_.size()) {
+                        std::string name = c.str;
+                        while (!name.empty() && ((unsigned char)name.front() < 0x20 || name.front() == '!')) {
+                            name.erase(name.begin());
+                        }
+                        bool is_dash = name.size() >= 2 && name[0] == '-' && name[1] == '-';
+                        if (!is_dash) {
+                            sprites_[idx].name = name;
+                        }
+                        sprites_[idx].visible = true;
+                        sprites_[idx].z = (slot >= 25) ? 2 : (slot >= 19 ? 1 : 0);
+                        target_slots[idx] = sprites_[idx].name;
+                        target_slot_ids[idx] = slot;
+                        if (slot >= 4 && slot <= 8) pending_sprites_[slot - 4] = true;
+                    }
+                } else if (c.kind == K::ParamStr && (c.op == 0x3F || c.op == 0x40 || c.op == 0x41)) {
+                    int idx = -1;
+                    if (c.op == 0x3F) {
+                        if (c.p1 < 5) idx = int(c.p1);
+                    } else if (c.op == 0x40) {
+                        idx = (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
+                    } else if (c.op == 0x41) {
+                        if (c.p1 < 5) idx = int(c.p1);
+                    }
+                    if (idx >= 0 && size_t(idx) < sprites_.size()) {
+                        if (c.str == "-" || c.str == "-n") {
+                            sprites_[size_t(idx)].visible = false;
+                            target_slots[size_t(idx)].clear();
+                            pending_sprites_[size_t(idx)] = false;
+                        } else if (c.str == ".") {
+                            if (!target_slots[size_t(idx)].empty()) {
+                                sprites_[size_t(idx)].visible = true;
+                                pending_sprites_[size_t(idx)] = true;
+                            }
+                        } else if (c.str == "--") {
+                            if (!target_slots[size_t(idx)].empty()) {
+                                sprites_[size_t(idx)].visible = true;
+                                pending_sprites_[size_t(idx)] = true;
+                            } else {
+                                sprites_[size_t(idx)].visible = false;
+                                pending_sprites_[size_t(idx)] = false;
+                            }
+                        }
+                    }
+                } else if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30)) {
+                    if (c.str == ":n") { preserve_scene_ = true; continue; }
+                    if (c.str == ":r") { preserve_scene_ = false; continue; }
+                    if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
+                        target_bg = c.str;
+                        scene_chips_.clear();
+                        if (!preserve_scene_) {
+                            for (size_t i = 0; i < sprites_.size(); ++i) {
+                                if (!pending_sprites_[i]) {
+                                    sprites_[i].visible = false;
+                                    target_slots[i].clear();
+                                }
+                            }
+                        }
+                        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+                    }
+                } else if (c.kind == K::Param2 && c.op == 0x37) {
+                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+                } else if (c.kind == K::Words4 && c.op == 0xB4) {
+                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+                } else if (c.kind == K::Text) {
+                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+                    if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+                        speaker_ = c.str;
+                    } else if (c.op == 0x6B || c.op == 0x4B || c.op == 0x4E) {
+                        current_line_ = c.str;
+                    }
+                }
+            }
+
+            if (!target_bg.empty()) {
+                load_layer(1, target_bg);
+            }
+            for (size_t i = 0; i < sprites_.size(); ++i) {
+                if (sprites_[i].visible && !target_slots[i].empty()) {
+                    load_bst(int(i), target_slots[i], target_slot_ids[i]);
+                    sprites_[i].visible = true;
+                }
+            }
+
+            finish_animations();
+            animation_enabled_ = prev_anim;
+            vm_.seek_to_pc(final_seek_pc);
+        }
+
+        if (layers_.find(1) == layers_.end() && !bg.empty()) {
+            load_layer(1, bg);
+        }
+
+        if (audio_) {
+            std::string bgm;
+            if (bytes.size() >= 0xa38 + 64) {
+                for (size_t i = 0xa38; i < 0xa38 + 64; ++i) {
+                    if (bytes[i] == 0) break;
+                    char c = char(bytes[i]);
+                    if (c == '\\') c = '/';
+                    bgm.push_back(c);
+                }
+            }
+            if (!bgm.empty()) {
+                if (std::filesystem::path(bgm).extension().empty()) bgm += ".pcm";
+                int first = 0, last = 0;
+                std::string stem = std::filesystem::path(bgm).filename().string();
+                dc4::bgm_loop_for(stem, &first, &last);
+                audio_->set_group_volume(dc4::AudioGroup::Bgm, 100);
+                std::string resolved_bgm = dc4::resolve_asset(data_ + "/" + bgm);
+                if (!audio_->play_bgm_file(resolved_bgm, size_t(std::max(0, first)), size_t(std::max(0, last)), true)) {
+                    audio_->stop_bgm();
+                }
+            } else {
+                audio_->stop_bgm();
+            }
+        }
+
+        frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
+        scene_frame_.clear();
+
+        scene_dirty_ = true;
+        script_name_ = resolved;
+        scene_end_ = false;
+        message_visible_ = true;
+        taskbar_visible_ = true;
+        preserve_scene_ = false;
+        next_script_.clear();
+        last_error_.clear();
+        pointer_x_ = pointer_y_ = -1;
+        pointer_down_ = false;
+        pending_movie_.clear();
+        input_skip_label_.clear();
+        script_wait_pending_ = false;
+        script_wait_ms_ = 0;
+        credits_active_ = false;
+        effect_pck_.clear();
+        transition_active_ = transition_pending_ = false;
+        transition_snap_.clear();
+        scene_chips_.clear();
+        pending_scene_blit_ = false;
+        if (restore_error) restore_error->clear();
+        return true;
+    } catch (const std::exception& error) {
+        if (restore_error) *restore_error = error.what();
+        return false;
+    }
 }
 
 bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* restore_error) {

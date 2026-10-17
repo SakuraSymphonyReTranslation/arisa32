@@ -80,3 +80,11 @@ stats
 
 
 
+
+/.gradle/
+/.workbuddy-ai/
+/DC4*.dat
+/DC4*.mes
+/DC4PHDL*.dat
+/saves_tmp/
+/scratch_*

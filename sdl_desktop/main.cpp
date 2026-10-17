@@ -260,8 +260,37 @@ bool load_font(dc4scene::FontRenderer* font, const std::string& requested) {
     return false;
 }
 
-fs::path save_directory() {
+fs::path save_directory(const std::string& data = "") {
     if (const char* env = std::getenv("DC4_SAVE_DIR")) if (*env) return fs::absolute(env);
+    if (!data.empty()) {
+        const fs::path data_path(data);
+        const std::vector<fs::path> candidates = {
+            data_path / "savegame",
+            data_path / "Savegame",
+            data_path / "SAVEGAME",
+            data_path / "savedata",
+            data_path / "Savedata",
+            data_path / "SAVEDATA",
+            data_path.parent_path() / "savegame",
+            data_path.parent_path() / "Savegame",
+            data_path.parent_path() / "SAVEGAME",
+            data_path.parent_path() / "savedata",
+            data_path.parent_path() / "Savedata",
+            data_path.parent_path() / "SAVEDATA",
+            data_path / "AdvData" / "savegame",
+            data_path / "AdvData" / "Savegame",
+            data_path / "AdvData" / "SAVEGAME",
+        };
+        for (const auto& c : candidates) {
+            std::error_code ec;
+            if (fs::is_directory(c, ec)) return c;
+        }
+        std::error_code ec;
+        fs::path created = data_path / "savegame";
+        if (fs::create_directories(created, ec) || fs::is_directory(created, ec)) {
+            return created;
+        }
+    }
     if (char* base = SDL_GetBasePath()) {
         fs::path path = fs::path(base) / "saves";
         SDL_free(base);
@@ -577,7 +606,7 @@ int run(const Options& o) {
         fprintf(stderr, "A Japanese font is required. Install MS Gothic or pass --font FILE.\n"); return 1;
     }
     if (!system_menu.load(data, &err)) { fprintf(stderr, "System menus: %s\n", err.c_str()); return 1; }
-    const fs::path profile_dir = save_directory();
+    const fs::path profile_dir = save_directory(data);
     const bool profile_allowed = !is_original_save_directory(profile_dir,data);
     if (profile_allowed && fs::is_regular_file(profile_dir / "profile.dc4profile"))
         if (!system_menu.load_profile((profile_dir / "profile.dc4profile").string(), &err))
@@ -778,7 +807,12 @@ int run(const Options& o) {
     };
     auto advance = [&]() {
         if (!scene || menu_open || backlog.open || slots.open || scene->waiting_for_choice()) return;
-        if(scene->waiting_for_time()){scene->finish_script_wait();advance_script();return;}
+        if (scene->waiting_for_time()) {
+            if (scene->effect_pck_active()) return;
+            scene->finish_script_wait();
+            advance_script();
+            return;
+        }
         if (!scene->message_visible()) { scene->set_message_visible(true); return; }
         if (!line_done) { line_done = true; line_finished = SDL_GetTicks(); return; }
         mark_read();
@@ -837,7 +871,7 @@ int run(const Options& o) {
             std::string(load ? "Load" : "Save") + " - slot " + std::to_string(slot + 1);
         bool preview_ok = true;
         try {
-            const fs::path directory = save_directory();
+            const fs::path directory = save_directory(data);
             if (is_original_save_directory(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
@@ -886,7 +920,7 @@ int run(const Options& o) {
         save_screen.set_mode(load ? dc4ui::SaveMode::Load : dc4ui::SaveMode::Save);
         save_screen.cancel_pointer();
         try {
-            const fs::path directory = save_directory();
+            const fs::path directory = save_directory(data);
             if (is_original_save_directory(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
@@ -931,7 +965,10 @@ int run(const Options& o) {
         prompt(load?dc4ui::ConfirmKind::QuickLoad:dc4ui::ConfirmKind::QuickSave,[&,load]{persist_state(load,-1);});
     };
     auto start_scene = [&](const dc4ui::SystemMenuAction& selected) {
-        audio.engine.stop_all();
+        audio.engine.stop_bgm();
+        audio.engine.stop_group(dc4::AudioGroup::Se);
+        audio.engine.stop_channel(6);
+        audio.engine.stop_channel(7);
         Backlog history;
         auto started=build_scene(selected.asset,0,true,&history,selected.label,
                                  selected.type==dc4ui::SystemMenuActionType::StartScene);
@@ -1047,7 +1084,9 @@ int run(const Options& o) {
             skip_mode = !scene->waiting_for_choice() && !skip_mode; auto_mode = false; status.clear();
         }
         else if (tag == ":backlog" || tag==":aalog") toggle_backlog();
-        else if (tag == ":n" || tag == ":off" || tag == ":close" || tag == ":clear") {
+        else if (tag == ":n") {
+            scene->toggle_taskbar();
+        } else if (tag == ":off" || tag == ":close" || tag == ":clear") {
             scene->set_message_visible(!scene->message_visible()); auto_mode = skip_mode = false;
         } else if (tag == ":qs" || tag==":aaqsave") prompt_quick(false);
         else if (tag == ":ql" || tag==":aaqload") prompt_quick(true);
