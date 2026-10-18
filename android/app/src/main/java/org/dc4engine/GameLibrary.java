@@ -69,6 +69,7 @@ final class GameLibrary {
             e.idEncoding = p.getProperty(id + ".idEncoding", "windows-31j");
             e.enFingerprint = p.getProperty(id + ".enFingerprint", "");
             e.idFingerprint = p.getProperty(id + ".idFingerprint", "");
+            autoDetectOverlays(e);
             if (!e.language.equals("jp") && e.overlay().isEmpty()) e.language = "jp";
             entries.add(e);
         }
@@ -214,13 +215,89 @@ final class GameLibrary {
         GameLibrary restored = new GameLibrary(file.getParentFile());
         entries.clear(); entries.addAll(restored.entries);
     }
-    static File dataRoot(File path, boolean overlay) throws IOException {
-        if (new File(path, "MES").isDirectory() && (overlay || new File(path, "MES/start.mes").isFile())) return path;
-        File[] list = path.listFiles();
-        if (list != null) for (File child : list) if (child.isDirectory() && child.getName().equalsIgnoreCase("AdvData")) {
-            if (new File(child, "MES").isDirectory() && (overlay || new File(child, "MES/start.mes").isFile())) return child;
+    static void autoDetectOverlays(Entry e) {
+        if (e == null || e.path == null || e.path.isEmpty()) return;
+        File dataDir = new File(e.path);
+        File root = dataDir;
+        String name = dataDir.getName();
+        if (name.equalsIgnoreCase("AdvData") || name.equalsIgnoreCase("Advdata") ||
+            name.equalsIgnoreCase("id_data") || name.equalsIgnoreCase("eng_data")) {
+            File p = dataDir.getParentFile();
+            if (p != null) root = p;
         }
-        throw new IOException(overlay ? "Choose a translation folder containing MES." : "Choose AdvData or its parent folder (MES/start.mes is required).");
+
+        // Auto-detect Indonesian overlay: sibling id_Data in game directory takes top priority
+        for (String c : new String[]{"id_Data", "id_data", "ID_DATA", "Id_Data", "id", "ID"}) {
+            File candidate = new File(root, c);
+            if (!candidate.isDirectory()) candidate = new File(dataDir, c);
+            if (candidate.isDirectory() && (hasMesScripts(candidate, true) || new File(candidate, "MOVIE").isDirectory() || new File(candidate, "Movie").isDirectory() || new File(candidate, "MOVIES").isDirectory())) {
+                e.indonesian = candidate.getAbsolutePath();
+                try { e.idFingerprint = fingerprint(candidate); } catch (Exception ignored) {}
+                break;
+            }
+        }
+
+        // Auto-detect English overlay: sibling eng_Data in game directory takes top priority
+        for (String c : new String[]{"eng_Data", "eng_data", "ENG_DATA", "Eng_Data", "en_Data", "en_data", "en", "EN"}) {
+            File candidate = new File(root, c);
+            if (!candidate.isDirectory()) candidate = new File(dataDir, c);
+            if (candidate.isDirectory() && (hasMesScripts(candidate, true) || new File(candidate, "MOVIE").isDirectory() || new File(candidate, "Movie").isDirectory() || new File(candidate, "MOVIES").isDirectory())) {
+                e.english = candidate.getAbsolutePath();
+                try { e.enFingerprint = fingerprint(candidate); } catch (Exception ignored) {}
+                break;
+            }
+        }
+    }
+
+    private static boolean hasMesScripts(File dir, boolean overlay) {
+        if (dir == null || !dir.isDirectory()) return false;
+        File mes = new File(dir, "MES");
+        if (!mes.isDirectory()) {
+            File[] sub = dir.listFiles();
+            if (sub != null) {
+                for (File s : sub) {
+                    if (s.isDirectory() && s.getName().equalsIgnoreCase("MES")) {
+                        mes = s;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!mes.isDirectory()) return false;
+        if (!overlay && (new File(mes, "start.mes").isFile() || new File(mes, "dc4_start.mes").isFile())) return true;
+        File[] list = mes.listFiles();
+        if (list != null) {
+            for (File f : list) {
+                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".mes")) return true;
+            }
+        }
+        return false;
+    }
+
+    static File dataRoot(File path, boolean overlay) throws IOException {
+        if (hasMesScripts(path, overlay)) return path;
+        File[] list = path.listFiles();
+        if (list != null) {
+            for (File child : list) {
+                if (child.isDirectory() && child.getName().equalsIgnoreCase("AdvData")) {
+                    if (hasMesScripts(child, overlay)) return child;
+                }
+            }
+            for (File child : list) {
+                if (child.isDirectory()) {
+                    if (hasMesScripts(child, overlay)) return child;
+                    File[] sub = child.listFiles();
+                    if (sub != null) {
+                        for (File sc : sub) {
+                            if (sc.isDirectory() && sc.getName().equalsIgnoreCase("AdvData") && hasMesScripts(sc, overlay)) {
+                                return sc;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        throw new IOException(overlay ? "Choose a translation folder containing MES." : "Choose AdvData or its parent folder containing MES scripts.");
     }
     static String fingerprint(File data) throws IOException {
         try {

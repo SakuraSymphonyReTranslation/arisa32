@@ -27,6 +27,7 @@
 #include <string>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "dc4", __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "dc4", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "dc4", __VA_ARGS__)
 
 namespace {
@@ -378,12 +379,13 @@ void refresh_menu_saves(Engine* e) {
             }
         }
     }
-    for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
-        if (std::filesystem::exists(e->data_dir + sub)) {
-            e->menu.load_system_dat(e->data_dir + sub);
-        }
-        if (std::filesystem::exists(e->save_dir + sub)) {
-            e->menu.load_system_dat(e->save_dir + sub);
+    std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
+    for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
+        if (dir.empty()) continue;
+        for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
+            if (std::filesystem::exists(dir + sub)) {
+                e->menu.load_system_dat(dir + sub);
+            }
         }
     }
     e->menu.set_save_available(latest, quick, automatic);
@@ -420,6 +422,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
 std::string restore_save(Engine* e, const std::string& path) {
     std::vector<uint8_t> current;
     if (!e->scene->load_state(path)) return "Load failed: " + e->scene->last_error();
+    sync_progress(e);
     e->movie.close();
     e->audio.stop_group(dc4::AudioGroup::Se);
     e->audio.stop_channel(6);
@@ -581,79 +584,140 @@ static bool has_op_identifier(const std::string& name_lower, char op_num) {
     return op_num == 0 || name_lower.find(op_num) != std::string::npos;
 }
 
-std::string get_base_movie_dir(const std::string& data_dir) {
+static std::vector<std::string> get_candidate_movie_dirs(const std::string& data_dir, const std::string& overlay, const std::string& language) {
     namespace fs = std::filesystem;
+    std::vector<std::string> dirs;
     std::error_code ec;
-    for (const char* adv : {"", "/Advdata", "/AdvData", "/advdata", "/ADVDATA"}) {
-        for (const char* mov : {"/MOVIE", "/movie", "/Movie"}) {
-            std::string candidate = data_dir + adv + mov;
-            if (fs::is_directory(candidate, ec)) return candidate;
+
+    auto add_if_exists = [&](const std::string& dir) {
+        if (dir.empty()) return;
+        if (fs::is_directory(dir, ec)) {
+            for (const auto& existing : dirs) {
+                if (existing == dir) return;
+            }
+            dirs.push_back(dir);
+        }
+    };
+
+    // Find the base game root (e.g. /storage/.../D.C.4 Da Capo 4)
+    std::string root = data_dir;
+    fs::path p(data_dir);
+    std::string leaf = to_lower_str(p.filename().string());
+    if (leaf == "advdata" || leaf == "id_data" || leaf == "eng_data") {
+        if (p.has_parent_path()) {
+            root = p.parent_path().string();
         }
     }
-    fs::path p(data_dir);
-    if (p.has_parent_path()) {
-        std::string parent = p.parent_path().string();
-        for (const char* adv : {"", "/Advdata", "/AdvData", "/advdata", "/ADVDATA"}) {
-            for (const char* mov : {"/MOVIE", "/movie", "/Movie"}) {
-                std::string candidate = parent + adv + mov;
-                if (fs::is_directory(candidate, ec)) return candidate;
+
+    std::string lang = to_lower_str(language);
+    if (lang.empty()) {
+        std::string o = to_lower_str(overlay);
+        if (o.find("id_data") != std::string::npos || o.find("id") != std::string::npos) lang = "id";
+        else if (o.find("eng_data") != std::string::npos || o.find("en") != std::string::npos) lang = "en";
+        else lang = "jp";
+    }
+
+    static const char* kMovieSubDirs[] = {
+        "/MOVIE", "/Movie", "/movie", "/MOVIES", "/Movies", "/movies"
+    };
+
+    // 1. If "id" (ID PATCH): check sibling id_Data/Movie first
+    if (lang == "id") {
+        for (const char* id_name : {"/id_Data", "/id_data", "/ID_DATA", "/Id_Data", "/id", "/ID"}) {
+            for (const char* sub : kMovieSubDirs) {
+                add_if_exists(root + id_name + sub);
+                add_if_exists(data_dir + id_name + sub);
+            }
+        }
+        if (!overlay.empty()) {
+            for (const char* sub : kMovieSubDirs) {
+                add_if_exists(overlay + sub);
             }
         }
     }
-    return data_dir + "/MOVIE";
+    // 2. If "en" (ENG PATCH): check sibling eng_Data/Movie first
+    else if (lang == "en") {
+        for (const char* en_name : {"/eng_Data", "/eng_data", "/ENG_DATA", "/Eng_Data", "/en_Data", "/en_data", "/en", "/EN"}) {
+            for (const char* sub : kMovieSubDirs) {
+                add_if_exists(root + en_name + sub);
+                add_if_exists(data_dir + en_name + sub);
+            }
+        }
+        if (!overlay.empty()) {
+            for (const char* sub : kMovieSubDirs) {
+                add_if_exists(overlay + sub);
+            }
+        }
+    }
+
+    // 3. Fallback to AdvData/Movie (and primary for "jp" / JP (Original))
+    for (const char* adv : {"/AdvData", "/Advdata", "/advdata", "/ADVDATA", ""}) {
+        for (const char* sub : kMovieSubDirs) {
+            add_if_exists(root + adv + sub);
+            add_if_exists(data_dir + adv + sub);
+        }
+    }
+
+    // Guaranteed fallback
+    if (dirs.empty()) {
+        dirs.push_back(data_dir + "/MOVIE");
+    }
+
+    return dirs;
 }
 
-std::string resolve_movie_file(const std::string& data_dir, const std::string& asset) {
+std::string resolve_movie_file(const std::string& data_dir, const std::string& overlay, const std::string& language, const std::string& asset) {
     std::string rel = asset;
     std::replace(rel.begin(), rel.end(), '\\', '/');
-    if (rel.rfind("MOVIE/", 0) == 0 || rel.rfind("movie/", 0) == 0) {
+    if (rel.rfind("MOVIE/", 0) == 0 || rel.rfind("movie/", 0) == 0 || rel.rfind("Movie/", 0) == 0) {
         rel = rel.substr(6);
     }
 
     const std::filesystem::path p(rel);
     const std::string stem = p.stem().string();
     const bool is_op = is_opening_movie(rel);
-    const bool prefer_mp4 = is_op3_movie(stem);
 
-    // Prioritize mpg over mp4 by default; prefer mp4 for OP3 (mpeg2video in OP3 mpg is unsupported on Android).
-    static const char* kExtsDefault[] = {".mpg", ".MPG", ".mp4", ".MP4", ".ogv", ".mkv", ".avi"};
-    static const char* kExtsOp3[]     = {".mp4", ".MP4", ".mpg", ".MPG", ".ogv", ".mkv", ".avi"};
-    const auto& exts = prefer_mp4 ? kExtsOp3 : kExtsDefault;
+    // Prioritize mpg over mp4 for Da Capo 4 & Da Capo 4 Plus Harmony compatibility
+    static const char* kExts[] = {".mpg", ".MPG", ".mpeg", ".MPEG", ".mp4", ".MP4", ".ogv", ".mkv", ".avi"};
 
     std::vector<std::string> names;
-    for (const char* ext : exts) {
+    for (const char* ext : kExts) {
         names.push_back(stem + ext);
     }
     if (p.has_extension()) {
         names.push_back(rel);
     }
 
-    const std::string base_movie = get_base_movie_dir(data_dir);
+    const std::vector<std::string> search_dirs = get_candidate_movie_dirs(data_dir, overlay, language);
 
-    // 1. Direct stem match in base movie directory (<gameRoot>/Advdata/MOVIE)
-    for (const auto& name : names) {
-        std::string candidate = base_movie + "/" + name;
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0) {
-            LOGI("Resolved movie: %s", candidate.c_str());
-            return candidate;
+    // 1. Direct stem match across directories in priority order
+    // (id_Data/Movie first if ID PATCH, eng_Data/Movie first if ENG PATCH, fallback to AdvData/Movie)
+    for (const auto& dir : search_dirs) {
+        for (const auto& name : names) {
+            std::string candidate = dir + "/" + name;
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0) {
+                LOGI("Resolved movie (patch=%s): %s", language.c_str(), candidate.c_str());
+                return candidate;
+            }
         }
     }
 
-    // 2. Fuzzy match in base movie directory for opening videos
+    // 2. Fuzzy match for opening videos across directories in priority order
     if (is_op) {
         char op_num = 0;
         for (char c : to_lower_str(stem)) {
             if (c >= '1' && c <= '9') { op_num = c; break; }
         }
         std::error_code ec;
-        if (std::filesystem::is_directory(base_movie, ec)) {
-            for (const char* ext : exts) {
-                for (const auto& entry : std::filesystem::directory_iterator(base_movie, ec)) {
+        for (const auto& dir : search_dirs) {
+            if (!std::filesystem::is_directory(dir, ec)) continue;
+            for (const char* ext : kExts) {
+                for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
                     if (!entry.is_regular_file()) continue;
                     const std::string flower = to_lower_str(entry.path().filename().string());
                     if (has_op_identifier(flower, op_num) && has_suffix_ci(flower, ext)) {
-                        LOGI("Fuzzy resolved opening movie: %s", entry.path().string().c_str());
+                        LOGI("Fuzzy resolved opening movie (patch=%s): %s", language.c_str(), entry.path().string().c_str());
                         return entry.path().string();
                     }
                 }
@@ -664,7 +728,7 @@ std::string resolve_movie_file(const std::string& data_dir, const std::string& a
     // 3. Fallback through dc4::resolve_asset (only for non-opening movies)
     if (!is_op) {
         for (const auto& name : names) {
-            for (const char* sub : {"/MOVIE/", "/movie/"}) {
+            for (const char* sub : {"/MOVIE/", "/movie/", "/Movie/"}) {
                 std::string candidate = dc4::resolve_asset(data_dir + sub + name);
                 std::error_code ec;
                 if (std::filesystem::is_regular_file(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0) {
@@ -677,13 +741,45 @@ std::string resolve_movie_file(const std::string& data_dir, const std::string& a
     return {};
 }
 
+static bool is_mp4_container_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    uint8_t b[16] = {0};
+    if (!in.read(reinterpret_cast<char*>(b), sizeof(b))) return false;
+    if (b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') return true;
+    if (b[4] == 'm' && b[5] == 'o' && b[6] == 'o' && b[7] == 'v') return true;
+    if (b[4] == 'm' && b[5] == 'd' && b[6] == 'a' && b[7] == 't') return true;
+    return false;
+}
+
 bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, std::string* error) {
     e->movie_from_scene = from_scene;
-    std::string full_path = resolve_movie_file(e->data_dir, asset);
+    std::string full_path = resolve_movie_file(e->data_dir, g_config.overlay, g_config.language, asset);
     if (full_path.empty()) {
         if (error) *error = "movie resource not found: " + asset;
         LOGE("movie resource not found: %s in %s", asset.c_str(), e->data_dir.c_str());
         return false;
+    }
+
+    // Determine format: check extension and container signature
+    std::string ext = std::filesystem::path(full_path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    const bool ext_is_mpg = (ext == ".mpg" || ext == ".mpeg");
+    const bool is_mp4 = is_mp4_container_file(full_path) || (!ext_is_mpg);
+    const bool is_mpg = ext_is_mpg && (!is_mp4);
+
+    // For genuine MPEG-1 (.mpg/.mpeg), play natively via C++ pl_mpeg decoder
+    if (is_mpg) {
+        if (!e->audio.channel_playing(0) || from_scene) {
+            e->audio.stop_group(dc4::AudioGroup::Bgm);
+        }
+        dc4::AudioEngine* movie_audio = &e->audio;
+        if (e->movie.open_file(full_path, movie_audio, error)) {
+            LOGI("movie playing natively via pl_mpeg: %s", full_path.c_str());
+            return true;
+        }
+        LOGW("native movie open failed for %s (%s), falling back to Java MediaPlayer",
+             full_path.c_str(), error ? error->c_str() : "unknown");
     }
 
     if (e->activity && e->vm) {
@@ -706,7 +802,7 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
                 env->DeleteLocalRef(cls);
                 if (attached) e->vm->DetachCurrentThread();
                 e->movie_playing_in_java = true;
-                LOGI("movie playing in Java VideoView: %s", full_path.c_str());
+                LOGI("movie playing in Java MediaPlayer: %s", full_path.c_str());
                 return true;
             }
             env->DeleteLocalRef(cls);
@@ -715,7 +811,7 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
     }
 
     dc4::AudioEngine* movie_audio = e->audio.channel_playing(0) ? nullptr : &e->audio;
-    return e->movie.open(e->data_dir, asset, movie_audio, error);
+    return e->movie.open_file(full_path, movie_audio, error);
 }
 
 std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
@@ -821,8 +917,15 @@ void tick_engine(Engine* e) {
     if (e->movie.active() && !e->movie_suspended) {
         e->movie.update(elapsed);
         if (e->movie.finished()) {
+            const bool from_scene = e->movie_from_scene;
             e->movie.close();
-            if (e->movie_from_scene) { e->scene->finish_movie(); advance_scene(e); }
+            e->movie_from_scene = false;
+            if (from_scene) {
+                e->scene->finish_movie();
+                advance_scene(e);
+            } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
+                play_menu_music(e, "music/001.pcm", true);
+            }
         }
         return;
     }
@@ -950,12 +1053,13 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         e->menu_open = false;
         e->in_game = true;
     } else {
-        for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
-            if (std::filesystem::exists(e->data_dir + sub)) {
-                e->menu.load_system_dat(e->data_dir + sub);
-            }
-            if (std::filesystem::exists(e->save_dir + sub)) {
-                e->menu.load_system_dat(e->save_dir + sub);
+        std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
+        for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
+            if (dir.empty()) continue;
+            for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
+                if (std::filesystem::exists(dir + sub)) {
+                    e->menu.load_system_dat(dir + sub);
+                }
             }
         }
         if (std::filesystem::exists(e->data_dir + "/system-profile.dat")) {
@@ -966,6 +1070,9 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         }
     }
     if (menu_ok) e->confirm.load(e->data_dir);
+    if (!e->save_dir.empty() && !std::filesystem::exists(e->save_dir + "/system-profile.dat")) {
+        save_profile(e);
+    }
     std::ifstream read_file(e->save_dir + "/read-lines.txt",std::ios::binary);
     std::string read_key;
     while (e->read_lines.size() < 100000 && std::getline(read_file,read_key))
@@ -1094,9 +1201,11 @@ Java_org_dc4engine_Dc4Activity_dc4MenuTouch(JNIEnv* env,jobject,jint action,jint
             // Prevent accidental instant skip from the touch-up of the previous dialog/button.
             // Require at least 1.0 second of playback before allowing touch-to-skip.
             if (e->movie.time() >= 1.0) {
+                const bool from_scene = e->movie_from_scene;
                 const double movie_time = e->movie.time();
                 const double movie_duration = e->movie.duration();
                 e->movie.close();
+                e->movie_from_scene = false;
                 if (e->audio.channel_playing(0)) {
                     const double remaining = movie_duration - movie_time;
                     if (remaining > 0) {
@@ -1104,7 +1213,12 @@ Java_org_dc4engine_Dc4Activity_dc4MenuTouch(JNIEnv* env,jobject,jint action,jint
                         e->audio.seek_channel_seconds(0, current_pos + remaining);
                     }
                 }
-                if (e->movie_from_scene) { e->scene->finish_movie(); advance_scene(e); }
+                if (from_scene) {
+                    e->scene->finish_movie();
+                    advance_scene(e);
+                } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
+                    play_menu_music(e, "music/001.pcm", true);
+                }
             }
         }
         return env->NewStringUTF("");

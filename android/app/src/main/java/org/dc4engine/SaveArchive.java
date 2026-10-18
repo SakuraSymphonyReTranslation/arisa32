@@ -93,14 +93,23 @@ final class SaveArchive {
                     continue;
                 }
                 File dest = new File(saves, baseName);
-                try (FileOutputStream out = new FileOutputStream(dest)) {
+                File tmp = new File(saves, baseName + ".tmp");
+                long total = 0;
+                try (FileOutputStream out = new FileOutputStream(tmp)) {
                     int n;
                     while ((n = zip.read(buffer)) > 0) {
                         out.write(buffer, 0, n);
+                        total += n;
                     }
                     out.getFD().sync();
                 }
-                count++;
+                if (total > 0) {
+                    if (dest.exists()) dest.delete();
+                    tmp.renameTo(dest);
+                    count++;
+                } else {
+                    tmp.delete();
+                }
                 zip.closeEntry();
             }
         }
@@ -125,7 +134,7 @@ final class SaveArchive {
         File[] files = checkDir.listFiles();
         if (files != null) {
             for (File f : files) {
-                if (f.isFile() && isSaveFile(f.getName())) {
+                if (f.isFile() && isSaveFile(f.getName()) && f.length() > 0) {
                     File dest = new File(saves, f.getName());
                     copyFile(f, dest);
                     count++;
@@ -136,7 +145,7 @@ final class SaveArchive {
             File[] rootFiles = sourceDir.listFiles();
             if (rootFiles != null) {
                 for (File f : rootFiles) {
-                    if (f.isFile() && isSaveFile(f.getName())) {
+                    if (f.isFile() && isSaveFile(f.getName()) && f.length() > 0) {
                         File dest = new File(saves, f.getName());
                         if (!dest.exists()) {
                             copyFile(f, dest);
@@ -152,7 +161,12 @@ final class SaveArchive {
 
     static int importTree(ContentResolver resolver, Uri treeUri, File directPath, File saves) throws IOException {
         if (directPath != null && directPath.isDirectory()) {
-            return importDirectory(directPath, saves);
+            try {
+                int directCount = importDirectory(directPath, saves);
+                if (directCount > 0) return directCount;
+            } catch (Exception ignored) {
+                // If direct filesystem reading yields no files, fall through to SAF below
+            }
         }
         if (!saves.isDirectory() && !saves.mkdirs()) throw new IOException("Cannot access save folder: " + saves.getAbsolutePath());
 
@@ -174,17 +188,27 @@ final class SaveArchive {
                     if (name == null || name.isEmpty()) continue;
                     if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
                         String lower = name.toLowerCase(Locale.ROOT);
-                        if (lower.equals("savedata") || lower.equals("savegame")) {
+                        if (lower.equals("savedata") || lower.equals("savegame") || lower.equals("advdata") || lower.contains("dc4")) {
                             subFolderIds.add(childId);
                         }
                     } else if (isSaveFile(name)) {
                         Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId);
+                        File dest = new File(saves, name);
+                        File tmp = new File(saves, name + ".tmp");
                         try (InputStream in = resolver.openInputStream(docUri);
-                             OutputStream out = new FileOutputStream(new File(saves, name))) {
+                             OutputStream out = new FileOutputStream(tmp)) {
                             if (in != null) {
-                                copy(in, out, MAX_FILE);
-                                count++;
+                                long total = copy(in, out, MAX_FILE);
+                                if (total > 0) {
+                                    if (dest.exists()) dest.delete();
+                                    tmp.renameTo(dest);
+                                    count++;
+                                } else {
+                                    tmp.delete();
+                                }
                             }
+                        } catch (Exception ignored) {
+                            tmp.delete();
                         }
                     }
                 }
@@ -199,14 +223,59 @@ final class SaveArchive {
                         String childId = cursor.getString(0);
                         String name = cursor.getString(1);
                         String mime = cursor.getString(2);
-                        if (name != null && !DocumentsContract.Document.MIME_TYPE_DIR.equals(mime) && isSaveFile(name)) {
-                            Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId);
-                            try (InputStream in = resolver.openInputStream(docUri);
-                                 OutputStream out = new FileOutputStream(new File(saves, name))) {
-                                if (in != null) {
-                                    copy(in, out, MAX_FILE);
-                                    count++;
+                        if (name == null || name.isEmpty()) continue;
+                        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                            String lower = name.toLowerCase(Locale.ROOT);
+                            if (lower.equals("savedata") || lower.equals("savegame")) {
+                                Uri grandChildren = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, childId);
+                                try (Cursor grandCursor = resolver.query(grandChildren, projection, null, null, null)) {
+                                    if (grandCursor != null) {
+                                        while (grandCursor.moveToNext()) {
+                                            String gId = grandCursor.getString(0);
+                                            String gName = grandCursor.getString(1);
+                                            String gMime = grandCursor.getString(2);
+                                            if (gName != null && !DocumentsContract.Document.MIME_TYPE_DIR.equals(gMime) && isSaveFile(gName)) {
+                                                Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, gId);
+                                                File dest = new File(saves, gName);
+                                                File tmp = new File(saves, gName + ".tmp");
+                                                try (InputStream in = resolver.openInputStream(docUri);
+                                                     OutputStream out = new FileOutputStream(tmp)) {
+                                                    if (in != null) {
+                                                        long total = copy(in, out, MAX_FILE);
+                                                        if (total > 0) {
+                                                            if (dest.exists()) dest.delete();
+                                                            tmp.renameTo(dest);
+                                                            count++;
+                                                        } else {
+                                                            tmp.delete();
+                                                        }
+                                                    }
+                                                } catch (Exception ignored) {
+                                                    tmp.delete();
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+                        } else if (isSaveFile(name)) {
+                            Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId);
+                            File dest = new File(saves, name);
+                            File tmp = new File(saves, name + ".tmp");
+                            try (InputStream in = resolver.openInputStream(docUri);
+                                 OutputStream out = new FileOutputStream(tmp)) {
+                                if (in != null) {
+                                    long total = copy(in, out, MAX_FILE);
+                                    if (total > 0) {
+                                        if (dest.exists()) dest.delete();
+                                        tmp.renameTo(dest);
+                                        count++;
+                                    } else {
+                                        tmp.delete();
+                                    }
+                                }
+                            } catch (Exception ignored) {
+                                tmp.delete();
                             }
                         }
                     }
@@ -219,8 +288,19 @@ final class SaveArchive {
     }
 
     private static void copyFile(File src, File dst) throws IOException {
-        try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(dst)) {
-            copy(in, out, MAX_FILE);
+        if (src == null || !src.isFile() || src.length() == 0) return;
+        File tmp = new File(dst.getParentFile(), dst.getName() + ".tmp");
+        try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(tmp)) {
+            long total = copy(in, out, MAX_FILE);
+            if (total > 0) {
+                if (dst.exists()) dst.delete();
+                tmp.renameTo(dst);
+            } else {
+                tmp.delete();
+            }
+        } catch (IOException e) {
+            tmp.delete();
+            throw e;
         }
     }
 

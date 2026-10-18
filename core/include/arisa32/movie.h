@@ -13,6 +13,8 @@ public:
     ~MoviePlayer();
     MoviePlayer(const MoviePlayer&) = delete;
     MoviePlayer& operator=(const MoviePlayer&) = delete;
+    bool open_file(const std::string& path,
+                   AudioEngine* audio = nullptr, std::string* error = nullptr);
     bool open(const std::string& data_dir, const std::string& name,
               AudioEngine* audio = nullptr, std::string* error = nullptr);
     void close();

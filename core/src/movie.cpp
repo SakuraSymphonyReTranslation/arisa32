@@ -52,8 +52,7 @@ void MoviePlayer::close() {
     impl_->pixels.clear();
     impl_->done = true;
 }
-bool MoviePlayer::open(const std::string& data_dir, const std::string& name,
-                       AudioEngine* audio, std::string* error) {
+bool MoviePlayer::open_file(const std::string& path, AudioEngine* audio, std::string* error) {
     close();
     *impl_ = Impl{};
     auto fail = [&](const std::string& reason) {
@@ -62,26 +61,16 @@ bool MoviePlayer::open(const std::string& data_dir, const std::string& name,
         if (error) *error = reason;
         return false;
     };
-    // Names are stems, or relative MOVIE names with their .mpg extension.
-    std::string relative = name;
-    std::replace(relative.begin(), relative.end(), '\\', '/');
-    if (relative.empty() || relative.find('/') != std::string::npos ||
-        relative.find(':') != std::string::npos || relative.find("..") != std::string::npos ||
-        relative.find('\0') != std::string::npos || relative.size() > 200)
-        return fail("invalid movie resource name");
-    std::string extension = std::filesystem::path(relative).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    if (extension.empty()) relative += ".mpg";
-    else if (extension != ".mpg") return fail("movie resource must be an MPEG .mpg file");
-    const auto path = resolve_asset(data_dir + "/MOVIE/" + relative);
     std::error_code ec;
     const auto length = std::filesystem::file_size(path, ec);
-    if (ec || length < 32 || length > 1024ull * 1024 * 1024) return fail("movie is missing, empty, or too large");
+    if (ec || length < 32 || length > 2048ull * 1024 * 1024) return fail("movie is missing, empty, or too large");
     // Validate the sequence header before the decoder allocates image planes.
     std::ifstream input(path, std::ios::binary);
     std::vector<uint8_t> header(size_t(std::min<uint64_t>(length, 65536)));
     if (!input.read(reinterpret_cast<char*>(header.data()), std::streamsize(header.size())))
         return fail("cannot read movie header");
+    if (header.size() >= 8 && header[4] == 'f' && header[5] == 't' && header[6] == 'y' && header[7] == 'p')
+        return fail("file is an MP4 container, not MPEG-1");
     bool sequence = false;
     for (size_t i = 0; i + 8 < header.size(); ++i) {
         if (header[i] || header[i + 1] || header[i + 2] != 1) continue;
@@ -118,11 +107,75 @@ bool MoviePlayer::open(const std::string& data_dir, const std::string& name,
         impl_->audio = audio;
     }
     impl_->done = false;
-    plm_decode(impl_->decoder, 0.000001); // first video frame plus 300 ms audio
+
+    // Decode initial video frame and pre-buffer audio
+    plm_frame_t* first_frame = plm_decode_video(impl_->decoder);
+    if (first_frame) {
+        plm_frame_to_rgba(first_frame, impl_->pixels.data(), impl_->width * 4);
+        impl_->frames = 1;
+        impl_->clock = first_frame->time;
+    } else {
+        plm_decode(impl_->decoder, 0.000001);
+    }
+    if (impl_->audio && impl_->audio_clock) {
+        plm_decode(impl_->decoder, 0.000001);
+    }
+
     if (!impl_->failure.empty()) return fail(impl_->failure);
     if (!impl_->frames) return fail("movie contains no decodable video frame");
     if (error) error->clear();
     return true;
+}
+
+bool MoviePlayer::open(const std::string& data_dir, const std::string& name,
+                       AudioEngine* audio, std::string* error) {
+    if (name.empty()) {
+        if (error) *error = "invalid movie resource name";
+        return false;
+    }
+
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(name, ec)) {
+        return open_file(name, audio, error);
+    }
+
+    std::string relative = name;
+    std::replace(relative.begin(), relative.end(), '\\', '/');
+    if (relative.find("..") != std::string::npos || relative.find('\0') != std::string::npos || relative.size() > 260) {
+        if (error) *error = "invalid movie resource name";
+        return false;
+    }
+
+    if (relative.rfind("MOVIE/", 0) == 0 || relative.rfind("movie/", 0) == 0) {
+        relative = relative.substr(6);
+    }
+
+    std::string extension = std::filesystem::path(relative).extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (extension.empty()) {
+        relative += ".mpg";
+    } else if (extension != ".mpg" && extension != ".mpeg") {
+        if (error) *error = "movie resource must be an MPEG .mpg file";
+        return false;
+    }
+
+    const std::vector<std::string> candidates = {
+        data_dir + "/MOVIE/" + relative,
+        data_dir + "/movie/" + relative,
+        data_dir + "/Advdata/MOVIE/" + relative,
+        data_dir + "/Advdata/movie/" + relative,
+        data_dir + "/" + relative
+    };
+
+    for (const auto& cand : candidates) {
+        std::string resolved = resolve_asset(cand);
+        if (std::filesystem::is_regular_file(resolved, ec) && std::filesystem::file_size(resolved, ec) > 0) {
+            return open_file(resolved, audio, error);
+        }
+    }
+
+    if (error) *error = "movie is missing, empty, or too large";
+    return false;
 }
 void MoviePlayer::update(uint32_t elapsed_ms) {
     if (!active() || impl_->paused) return;
@@ -155,10 +208,17 @@ void MoviePlayer::set_paused(bool paused) {
 }
 void MoviePlayer::draw_rgba(std::vector<uint8_t>* rgba, int width, int height) const {
     if (!rgba || width <= 0 || height <= 0 || width > 8192 || height > 8192) return;
+    if (impl_->pixels.empty()) {
+        rgba->assign(size_t(width) * height * 4, 0);
+        for (size_t i = 3; i < rgba->size(); i += 4) (*rgba)[i] = 255;
+        return;
+    }
+    if (width == impl_->width && height == impl_->height) {
+        *rgba = impl_->pixels;
+        return;
+    }
     rgba->assign(size_t(width) * height * 4, 0);
     for (size_t i = 3; i < rgba->size(); i += 4) (*rgba)[i] = 255;
-    if (impl_->pixels.empty()) return;
-    if (width == impl_->width && height == impl_->height) { *rgba = impl_->pixels; return; }
     const double scale = std::min(double(width) / impl_->width, double(height) / impl_->height);
     const int w = std::max(1, int(impl_->width * scale)), h = std::max(1, int(impl_->height * scale));
     const int x0 = (width - w) / 2, y0 = (height - h) / 2;

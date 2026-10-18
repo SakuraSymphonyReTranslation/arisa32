@@ -9,6 +9,7 @@ import android.content.res.Configuration;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -41,11 +42,19 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.TextureView;
+import android.graphics.Matrix;
+import android.graphics.SurfaceTexture;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.interfaces.IVLCVout;
+import org.videolan.libvlc.util.VLCVideoLayout;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -63,6 +72,8 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import org.dc4engine.profile.GameProfile;
+import org.dc4engine.profile.GameProfileRegistry;
 
 /** Android presentation/input shell; scene execution stays in arisa32core. */
 public class Arisa32Activity extends Activity implements SurfaceHolder.Callback {
@@ -118,7 +129,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private SurfaceView surface;
     private FrameLayout gameLayout;
     private TextView bubble;
-    private android.widget.VideoView videoView;
+    private FrameLayout movieContainer;
+    private VLCVideoLayout vlcVideoLayout;
+    private TextureView movieTextureView;
+    private Surface movieSurface;
+    private MediaPlayer movieMediaPlayer;
+    private FileInputStream movieFis;
     private volatile boolean moviePlaying = false;
     private long movieStartTime = 0;
 
@@ -128,25 +144,18 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 dc4MovieCompleted();
                 return;
             }
-            if (videoView == null) {
-                videoView = new android.widget.VideoView(this);
-                videoView.setZOrderMediaOverlay(true);
-                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        Gravity.CENTER);
-                gameLayout.addView(videoView, lp);
+            stopMovie();
+
+            final File file = new File(path);
+            if (!file.exists()) {
+                Log.e(TAG, "Movie file not found: " + path);
+                dc4MovieCompleted();
+                return;
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                AudioAttributes aa = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                        .build();
-                videoView.setAudioAttributes(aa);
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                videoView.setAudioFocusRequest(AudioManager.AUDIOFOCUS_GAIN);
-            }
+
+            moviePlaying = true;
+            movieStartTime = SystemClock.uptimeMillis();
+
             try {
                 AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
                 if (am != null) {
@@ -166,33 +175,23 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             } catch (Throwable t) {
                 Log.w(TAG, "Cannot request audio focus", t);
             }
-            moviePlaying = true;
-            movieStartTime = SystemClock.uptimeMillis();
-            videoView.setVisibility(View.VISIBLE);
-            videoView.bringToFront();
-            videoView.setOnPreparedListener(mp -> {
-                try {
-                    mp.setVolume(1.0f, 1.0f);
-                } catch (Throwable t) {
-                    Log.w(TAG, "Cannot set video volume", t);
-                }
-                try {
-                    videoView.start();
-                } catch (Throwable t) {
-                    Log.e(TAG, "Cannot start videoView", t);
-                }
-            });
-            videoView.setOnInfoListener((mp, what, extra) -> {
-                Log.i(TAG, "VideoView info: what=" + what + ", extra=" + extra);
-                return false;
-            });
-            videoView.setOnCompletionListener(mp -> onMovieFinished());
-            videoView.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "VideoView playback error: " + what + ", " + extra);
-                onMovieFinished();
-                return true;
-            });
-            videoView.setOnTouchListener((v, event) -> {
+
+            movieContainer = new FrameLayout(this);
+            movieContainer.setBackgroundColor(Color.BLACK);
+
+            vlcVideoLayout = new VLCVideoLayout(this);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER);
+            movieContainer.addView(vlcVideoLayout, lp);
+
+            gameLayout.addView(movieContainer, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+            movieContainer.bringToFront();
+
+            movieContainer.setOnTouchListener((v, event) -> {
                 if (event.getAction() == MotionEvent.ACTION_UP) {
                     if (SystemClock.uptimeMillis() - movieStartTime > 1000) {
                         onMovieFinished();
@@ -201,28 +200,200 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
                 return true;
             });
-            try {
-                videoView.setVideoPath(path);
-            } catch (Throwable t) {
-                Log.e(TAG, "Failed to start movie: " + path, t);
-                onMovieFinished();
-            }
+
+            startVlcPlayer(file, path);
         });
+    }
+
+    private void adjustTextureViewAspectRatio(int videoWidth, int videoHeight) {
+        if (videoWidth <= 0 || videoHeight <= 0 || movieTextureView == null || movieContainer == null) return;
+        int viewWidth = movieContainer.getWidth();
+        int viewHeight = movieContainer.getHeight();
+        if (viewWidth <= 0 || viewHeight <= 0) return;
+
+        float sx = 1.0f;
+        float sy = 1.0f;
+        float videoRatio = (float) videoWidth / (float) videoHeight;
+        float viewRatio = (float) viewWidth / (float) viewHeight;
+
+        if (videoRatio > viewRatio) {
+            sy = viewRatio / videoRatio;
+        } else {
+            sx = videoRatio / viewRatio;
+        }
+
+        Matrix matrix = new Matrix();
+        matrix.setScale(sx, sy, viewWidth / 2f, viewHeight / 2f);
+        movieTextureView.setTransform(matrix);
+    }
+
+    private org.videolan.libvlc.LibVLC vlcInstance;
+    private org.videolan.libvlc.MediaPlayer vlcPlayer;
+
+    private org.videolan.libvlc.LibVLC getLibVLC() {
+        if (vlcInstance == null) {
+            ArrayList<String> options = new ArrayList<>();
+            options.add("--no-drop-late-frames");
+            options.add("--no-skip-frames");
+            options.add("--quiet");
+            vlcInstance = new org.videolan.libvlc.LibVLC(this, options);
+        }
+        return vlcInstance;
+    }
+
+    private void startVlcPlayer(File file, String path) {
+        try {
+            releaseMoviePlayer();
+            org.videolan.libvlc.LibVLC libvlc = getLibVLC();
+            vlcPlayer = new org.videolan.libvlc.MediaPlayer(libvlc);
+            vlcPlayer.attachViews(vlcVideoLayout, null, false, false);
+
+            Media media = new Media(libvlc, file.getAbsolutePath());
+            media.setHWDecoderEnabled(true, false);
+            vlcPlayer.setMedia(media);
+            media.release();
+
+            vlcPlayer.setEventListener(event -> {
+                if (event.type == org.videolan.libvlc.MediaPlayer.Event.EndReached) {
+                    runOnUiThread(this::onMovieFinished);
+                } else if (event.type == org.videolan.libvlc.MediaPlayer.Event.EncounteredError) {
+                    Log.e(TAG, "LibVLC playback error: " + path);
+                    runOnUiThread(this::onMovieFinished);
+                }
+            });
+
+            vlcPlayer.play();
+            Log.i(TAG, "LibVLC movie playback started: " + path);
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to initialize LibVLC, falling back to MediaPlayer for: " + path, t);
+            startMediaPlayer(file, path);
+        }
+    }
+
+    private void startMediaPlayer(File file, String path) {
+        if (movieContainer == null) return;
+        if (vlcVideoLayout != null) {
+            try { movieContainer.removeView(vlcVideoLayout); } catch (Throwable ignored) {}
+            vlcVideoLayout = null;
+        }
+        movieTextureView = new TextureView(this);
+        movieContainer.addView(movieTextureView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER));
+
+        if (movieTextureView.isAvailable()) {
+            startMediaPlayerInternal(movieTextureView.getSurfaceTexture(), file, path);
+        } else {
+            movieTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                @Override
+                public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int width, int height) {
+                    startMediaPlayerInternal(surfaceTexture, file, path);
+                }
+
+                @Override
+                public void onSurfaceTextureSizeChanged(SurfaceTexture surfaceTexture, int width, int height) {
+                    if (movieMediaPlayer != null) {
+                        adjustTextureViewAspectRatio(movieMediaPlayer.getVideoWidth(), movieMediaPlayer.getVideoHeight());
+                    }
+                }
+
+                @Override
+                public boolean onSurfaceTextureDestroyed(SurfaceTexture surfaceTexture) {
+                    releaseMoviePlayer();
+                    return true;
+                }
+
+                @Override
+                public void onSurfaceTextureUpdated(SurfaceTexture surfaceTexture) {}
+            });
+        }
+    }
+
+    private void startMediaPlayerInternal(SurfaceTexture surfaceTexture, File file, String path) {
+        try {
+            if (movieSurface != null) {
+                try { movieSurface.release(); } catch (Throwable ignored) {}
+                movieSurface = null;
+            }
+            movieSurface = new Surface(surfaceTexture);
+            movieMediaPlayer = new MediaPlayer();
+            movieFis = new FileInputStream(file);
+            movieMediaPlayer.setDataSource(movieFis.getFD());
+            movieMediaPlayer.setSurface(movieSurface);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                AudioAttributes aa = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build();
+                movieMediaPlayer.setAudioAttributes(aa);
+            }
+            movieMediaPlayer.setVolume(1.0f, 1.0f);
+            movieMediaPlayer.setOnVideoSizeChangedListener((player, w, h) -> {
+                adjustTextureViewAspectRatio(w, h);
+            });
+            movieMediaPlayer.setOnPreparedListener(mp -> {
+                try {
+                    adjustTextureViewAspectRatio(mp.getVideoWidth(), mp.getVideoHeight());
+                    mp.start();
+                    Log.i(TAG, "Hardware movie playback started: " + path);
+                } catch (Throwable t) {
+                    Log.e(TAG, "Cannot start mediaPlayer", t);
+                    onMovieFinished();
+                }
+            });
+            movieMediaPlayer.setOnCompletionListener(mp -> onMovieFinished());
+            movieMediaPlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "MediaPlayer error: what=" + what + ", extra=" + extra);
+                onMovieFinished();
+                return true;
+            });
+            movieMediaPlayer.prepareAsync();
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to initialize MediaPlayer for: " + path, t);
+            onMovieFinished();
+        }
     }
 
     public void stopMovie() {
         runOnUiThread(this::onMovieFinished);
     }
 
+    private void releaseMoviePlayer() {
+        if (vlcPlayer != null) {
+            try {
+                vlcPlayer.stop();
+                vlcPlayer.detachViews();
+                vlcPlayer.release();
+            } catch (Throwable ignored) {}
+            vlcPlayer = null;
+        }
+        if (movieMediaPlayer != null) {
+            try { movieMediaPlayer.stop(); } catch (Throwable ignored) {}
+            try { movieMediaPlayer.release(); } catch (Throwable ignored) {}
+            movieMediaPlayer = null;
+        }
+        if (movieSurface != null) {
+            try { movieSurface.release(); } catch (Throwable ignored) {}
+            movieSurface = null;
+        }
+        if (movieFis != null) {
+            try { movieFis.close(); } catch (Throwable ignored) {}
+            movieFis = null;
+        }
+    }
+
     private void onMovieFinished() {
         if (!moviePlaying) return;
         moviePlaying = false;
-        if (videoView != null) {
-            try { videoView.stopPlayback(); } catch (Throwable ignored) {}
-            videoView.setVisibility(View.GONE);
-            try { gameLayout.removeView(videoView); } catch (Throwable ignored) {}
-            videoView = null;
+        releaseMoviePlayer();
+        if (movieContainer != null) {
+            movieContainer.setVisibility(View.GONE);
+            try { gameLayout.removeView(movieContainer); } catch (Throwable ignored) {}
+            movieContainer = null;
         }
+        vlcVideoLayout = null;
+        movieTextureView = null;
         if (renderThread != null) {
             menuCommands.offer(this::dc4MovieCompleted);
         } else {
@@ -303,7 +474,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (files == null) return 0;
         long score = 0;
         for (File f : files) {
-            if (!f.isFile()) continue;
+            if (!f.isFile() || f.length() == 0) continue;
             String name = f.getName().toLowerCase(Locale.ROOT);
             if (name.equals("system.dat")) {
                 score += 1000000L + f.lastModified();
@@ -345,15 +516,15 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (bestDir != null && bestScore > 0) return bestDir;
         if (bestDir != null) return bestDir;
 
-        // Default: Create inside AdvData
+        // Default: Create inside AdvData using the active GameProfile's preferred directory
+        GameProfile profile = GameProfileRegistry.resolveProfile(advData != null ? advData : gameRoot, null);
+        String prefSub = profile.getSaveSubdir();
         if (advData != null) {
-            File prefInside = new File(advData, "SAVEDATA");
-            if (prefInside.isDirectory() || prefInside.mkdirs()) return prefInside;
-            prefInside = new File(advData, "savedata");
+            File prefInside = new File(advData, prefSub);
             if (prefInside.isDirectory() || prefInside.mkdirs()) return prefInside;
         }
 
-        File preferred = new File(gameRoot, "savedata");
+        File preferred = new File(gameRoot, prefSub);
         if (preferred.isDirectory() || preferred.mkdirs()) return preferred;
 
         return null;
@@ -782,7 +953,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 for (File entry : entries) {
                     if (!entry.isDirectory()) continue;
                     String name = entry.getName().toLowerCase(Locale.ROOT);
-                    if (name.contains("dc4") || name.contains("plus harmony") || name.contains("dc3") || name.contains("dc2") || name.contains("dal segno") || name.equalsIgnoreCase("circus") || name.equalsIgnoreCase("games")) {
+                    if (name.contains("dc4") || name.contains("plus harmony") || name.contains("dc3") || name.contains("dc2") || name.contains("dal segno") || name.equalsIgnoreCase("circus") || name.equalsIgnoreCase("games") || name.equalsIgnoreCase("gamehub")) {
                         File hit = probeDir(new File(entry, "AdvData"));
                         if (hit == null) hit = probeDir(new File(entry, "Advdata"));
                         if (hit != null) return hit;
@@ -1152,38 +1323,18 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         return -1;
     }
 
+    private GameProfile currentProfile() {
+        return GameProfileRegistry.resolveProfile(selected != null && selected.path != null ? new File(selected.path) : null, selected != null ? selected.title : null);
+    }
+
     private File resolveSlotSaveFile(File dir, int slotIndex) {
         if (dir == null) return null;
-        int slotNum = slotIndex + 1;
-        File dc4File = new File(dir, "slot" + slotNum + ".dc4sav");
-        if (dc4File.isFile()) return dc4File;
-
-        File[] files = dir.listFiles();
-        if (files == null) return dc4File;
-
-        for (File f : files) {
-            if (!f.isFile()) continue;
-            if (extractSlotNumber(f.getName()) == slotNum) {
-                return f;
-            }
-        }
-        return dc4File;
+        return currentProfile().resolveSlotSaveFile(dir, slotIndex);
     }
 
     private File resolveQuickSaveFile(File dir) {
         if (dir == null) return null;
-        File dc4File = new File(dir, "quicksave.dc4sav");
-        if (dc4File.isFile()) return dc4File;
-        File[] files = dir.listFiles();
-        if (files != null) {
-            for (File f : files) {
-                if (!f.isFile()) continue;
-                String name = f.getName().toLowerCase(Locale.ROOT);
-                if (name.startsWith("system") || name.startsWith("uinst")) continue;
-                if (name.contains("quick") || extractSlotNumber(name) == 0) return f;
-            }
-        }
-        return dc4File;
+        return currentProfile().resolveQuickSaveFile(dir);
     }
 
     private static File findThumbnailImage(File saveFile) {
@@ -1261,12 +1412,21 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
         // 2. Scan for game executable (*.exe)
         List<File> exeCandidates = new ArrayList<>();
+        String[] knownExes = new String[]{"DC4.EXE", "dc4.exe", "DC4PHDL.exe", "dc4phdl.exe", "DC4Launcher.exe", "DC4PHLauncher.exe"};
+        for (String kn : knownExes) {
+            if (parent != null) {
+                File pe = new File(parent, kn);
+                if (pe.isFile() && !exeCandidates.contains(pe)) exeCandidates.add(pe);
+            }
+            File be = new File(base, kn);
+            if (be.isFile() && !exeCandidates.contains(be)) exeCandidates.add(be);
+        }
         if (parent != null) {
             File[] list = parent.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".exe"));
-            if (list != null) Collections.addAll(exeCandidates, list);
+            if (list != null) for (File f : list) if (!exeCandidates.contains(f)) exeCandidates.add(f);
         }
         File[] listBase = base.listFiles((dir, name) -> name.toLowerCase(Locale.ROOT).endsWith(".exe"));
-        if (listBase != null) Collections.addAll(exeCandidates, listBase);
+        if (listBase != null) for (File f : listBase) if (!exeCandidates.contains(f)) exeCandidates.add(f);
 
         for (File exe : exeCandidates) {
             if (extractTitlesFromExe(exe)) break;
@@ -1432,14 +1592,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             String script = readScriptFromDat(saveFile);
             if (script != null && !script.isEmpty()) {
                 loadScenarioTitles(selected);
-                String jpTitle = scriptTitles.get(script.toLowerCase(Locale.ROOT));
-                if (jpTitle != null) {
-                    if (selected != null && "id".equalsIgnoreCase(selected.language)) {
-                        String idTitle = jpToIdTitles.get(jpTitle);
-                        if (idTitle != null && !idTitle.isEmpty()) return idTitle;
-                    }
-                    return jpTitle;
-                }
+                String title = currentProfile().resolveScenarioTitle(script, selected != null ? selected.language : "jp", scriptTitles, jpToIdTitles);
+                if (title != null && !title.isEmpty()) return title;
                 return script;
             }
             return saveFile.getName().substring(0, saveFile.getName().length() - 4);
@@ -2111,40 +2265,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             for (StorageLocation loc : locations) {
                 File root = loc.root;
                 if (root == null || !root.isDirectory()) continue;
-                String[] standardPaths = {
-                    "DC4PH/AdvData", "DC4PH/Advdata",
-                    "D.C.4 Da Capo 4 Plus Harmony/AdvData", "D.C.4 Da Capo 4 Plus Harmony/Advdata",
-                    "DC4/AdvData", "DC4/Advdata",
-                    "DC3/AdvData", "DC3/Advdata",
-                    "DC3R/AdvData", "DC3R/Advdata",
-                    "DC3PP/AdvData", "DC3PP/Advdata",
-                    "DC3WY/AdvData", "DC3WY/Advdata",
-                    "DC3DD/AdvData", "DC3DD/Advdata",
-                    "DC2/AdvData", "DC2/Advdata",
-                    "DC2SC/AdvData", "DC2SC/Advdata",
-                    "DC2PC/AdvData", "DC2PC/Advdata",
-                    "DC2TY/AdvData", "DC2TY/Advdata",
-                    "DC2FL/AdvData", "DC2FL/Advdata",
-                    "DC2DM/AdvData", "DC2DM/Advdata",
-                    "DC/AdvData", "DC/Advdata",
-                    "DCPC/AdvData", "DCPC/Advdata",
-                    "DCWS/AdvData", "DCWS/Advdata",
-                    "DCSV/AdvData", "DCSV/Advdata",
-                    "DCAS/AdvData", "DCAS/Advdata",
-                    "DCDX/AdvData", "DCDX/Advdata",
-                    "DS/AdvData", "DS/Advdata",
-                    "DSIF/AdvData", "DSIF/Advdata",
-                    "Games/DC4PH/AdvData", "Games/DC4PH/Advdata",
-                    "Games/DC4/AdvData", "Games/DC4/Advdata",
-                    "Games/DC3/AdvData", "Games/DC3/Advdata",
-                    "Games/DC3R/AdvData", "Games/DC3R/Advdata",
-                    "Games/DC2/AdvData", "Games/DC2/Advdata",
-                    "Games/DS/AdvData", "Games/DS/Advdata",
-                    "Games/DSIF/AdvData", "Games/DSIF/Advdata",
-                    "Download/DC4PH/AdvData", "Download/DC4PH/Advdata",
-                    "Download/DC4/AdvData", "Download/DC4/Advdata",
-                    "AdvData", "Advdata"
-                };
+                List<String> standardPaths = GameProfileRegistry.getAllStandardScanPaths();
                 for (String sp : standardPaths) {
                     File hit = probeDir(new File(root, sp));
                     if (hit != null && !candidates.contains(hit)) candidates.add(hit);
@@ -2193,6 +2314,40 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }, () -> {});
     }
 
+    private File probePresetCandidate(File f, String presetId) {
+        if (f == null || !f.isDirectory()) return null;
+        String name = f.getName().toLowerCase(Locale.ROOT);
+        boolean match = false;
+        if ("dc4ph".equals(presetId) && (name.contains("plus harmony") || name.contains("dc4ph"))) match = true;
+        else if ("dc4".equals(presetId) && (name.contains("dc4") || name.contains("da capo 4")) && !name.contains("harmony")) match = true;
+        else if ("dc3r".equals(presetId) && (name.contains("dc3r") || name.contains("iii r"))) match = true;
+        else if ("dc3pp".equals(presetId) && (name.contains("dc3pp") || name.contains("platinum partner"))) match = true;
+        else if ("dc3wy".equals(presetId) && (name.contains("dc3wy") || name.contains("with you"))) match = true;
+        else if ("dc3dd".equals(presetId) && (name.contains("dc3dd") || name.contains("dream days"))) match = true;
+        else if ("dc3".equals(presetId) && (name.contains("dc3") || name.contains("da capo 3") || name.contains("da capo iii")) && !name.contains("r") && !name.contains("partner") && !name.contains("you") && !name.contains("day")) match = true;
+        else if ("dc2sc".equals(presetId) && (name.contains("dc2sc") || name.contains("spring celebration"))) match = true;
+        else if ("dc2pc".equals(presetId) && (name.contains("dc2pc") || (name.contains("plus communication") && (name.contains("2") || name.contains("ii"))))) match = true;
+        else if ("dc2ty".equals(presetId) && (name.contains("dc2ty") || name.contains("to you"))) match = true;
+        else if ("dc2fl".equals(presetId) && (name.contains("dc2fl") || name.contains("fall in love"))) match = true;
+        else if ("dc2dm".equals(presetId) && (name.contains("dc2dm") || name.contains("dearest marriage"))) match = true;
+        else if ("dc2".equals(presetId) && (name.contains("dc2") || name.contains("da capo 2") || name.contains("da capo ii")) && !name.contains("spring") && !name.contains("communication") && !name.contains("you") && !name.contains("love") && !name.contains("marriage")) match = true;
+        else if ("dcpc".equals(presetId) && (name.contains("dcpc") || (name.contains("plus communication") && !name.contains("ii") && !name.contains("2")))) match = true;
+        else if ("dcws".equals(presetId) && (name.contains("dcws") || name.contains("white season"))) match = true;
+        else if ("dcsv".equals(presetId) && (name.contains("dcsv") || name.contains("summer vacation"))) match = true;
+        else if ("dcas".equals(presetId) && (name.contains("dcas") || name.contains("after seasons"))) match = true;
+        else if ("dcdx".equals(presetId) && (name.contains("dcdx") || name.contains("dream x'mas") || name.contains("dream xmas"))) match = true;
+        else if ("dc".equals(presetId) && (name.contains("da capo") || name.equalsIgnoreCase("dc")) && !name.contains("2") && !name.contains("3") && !name.contains("4") && !name.contains("ii") && !name.contains("iii") && !name.contains("season") && !name.contains("vacation") && !name.contains("christmas") && !name.contains("xmas") && !name.contains("communication")) match = true;
+        else if ("dsif".equals(presetId) && (name.contains("dsif") || name.contains("in future"))) match = true;
+        else if ("ds".equals(presetId) && (name.contains("dal segno") || name.equalsIgnoreCase("ds")) && !name.contains("future") && !name.contains("if")) match = true;
+        if (match) {
+            File hit = probeDir(f);
+            if (hit == null) hit = probeDir(new File(f, "AdvData"));
+            if (hit == null) hit = probeDir(new File(f, "Advdata"));
+            if (hit != null) return hit;
+        }
+        return null;
+    }
+
     private void scanForSpecificGame(String presetId, String defaultTitle) {
         runFileTask(tr("Searching for " + defaultTitle + "…", "Mencari " + defaultTitle + "…", "検索中…"), () -> {
             File hit = null;
@@ -2202,18 +2357,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 if (root == null || !root.isDirectory()) continue;
                 ArrayList<String> pathsToTry = new ArrayList<>();
                 if ("dc4ph".equals(presetId)) {
-                    pathsToTry.add("DC4PH/AdvData");
-                    pathsToTry.add("DC4PH/Advdata");
-                    pathsToTry.add("D.C.4 Da Capo 4 Plus Harmony/AdvData");
-                    pathsToTry.add("D.C.4 Da Capo 4 Plus Harmony/Advdata");
-                    pathsToTry.add("Games/DC4PH/AdvData");
-                    pathsToTry.add("Download/DC4PH/AdvData");
+                    pathsToTry.addAll(GameProfileRegistry.getProfileById("dc4ph").getStandardScanPaths());
                 } else if ("dc4".equals(presetId)) {
-                    pathsToTry.add("DC4/AdvData");
-                    pathsToTry.add("DC4/Advdata");
-                    pathsToTry.add("D.C.4 Da Capo 4/AdvData");
-                    pathsToTry.add("Games/DC4/AdvData");
-                    pathsToTry.add("Download/DC4/AdvData");
+                    pathsToTry.addAll(GameProfileRegistry.getProfileById("dc4").getStandardScanPaths());
                 } else if ("dc3r".equals(presetId)) {
                     pathsToTry.add("DC3R/AdvData");
                     pathsToTry.add("DC3R/Advdata");
@@ -2296,40 +2442,25 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
                 if (hit != null) break;
 
-                // Match folder name heuristic
+                // Match folder name heuristic (both directly in root and 1 level deeper in subfolders like Games/, Download/, VN/, etc.)
                 File[] list = root.listFiles();
                 if (list != null) {
                     for (File f : list) {
                         if (!f.isDirectory()) continue;
                         String name = f.getName().toLowerCase(Locale.ROOT);
-                        boolean match = false;
-                        if ("dc4ph".equals(presetId) && (name.contains("plus harmony") || name.contains("dc4ph"))) match = true;
-                        else if ("dc4".equals(presetId) && (name.contains("dc4") || name.contains("da capo 4")) && !name.contains("harmony")) match = true;
-                        else if ("dc3r".equals(presetId) && (name.contains("dc3r") || name.contains("iii r"))) match = true;
-                        else if ("dc3pp".equals(presetId) && (name.contains("dc3pp") || name.contains("platinum partner"))) match = true;
-                        else if ("dc3wy".equals(presetId) && (name.contains("dc3wy") || name.contains("with you"))) match = true;
-                        else if ("dc3dd".equals(presetId) && (name.contains("dc3dd") || name.contains("dream days"))) match = true;
-                        else if ("dc3".equals(presetId) && (name.contains("dc3") || name.contains("da capo 3") || name.contains("da capo iii")) && !name.contains("r") && !name.contains("partner") && !name.contains("you") && !name.contains("day")) match = true;
-                        else if ("dc2sc".equals(presetId) && (name.contains("dc2sc") || name.contains("spring celebration"))) match = true;
-                        else if ("dc2pc".equals(presetId) && (name.contains("dc2pc") || (name.contains("plus communication") && (name.contains("2") || name.contains("ii"))))) match = true;
-                        else if ("dc2ty".equals(presetId) && (name.contains("dc2ty") || name.contains("to you"))) match = true;
-                        else if ("dc2fl".equals(presetId) && (name.contains("dc2fl") || name.contains("fall in love"))) match = true;
-                        else if ("dc2dm".equals(presetId) && (name.contains("dc2dm") || name.contains("dearest marriage"))) match = true;
-                        else if ("dc2".equals(presetId) && (name.contains("dc2") || name.contains("da capo 2") || name.contains("da capo ii")) && !name.contains("spring") && !name.contains("communication") && !name.contains("you") && !name.contains("love") && !name.contains("marriage")) match = true;
-                        else if ("dcpc".equals(presetId) && (name.contains("dcpc") || (name.contains("plus communication") && !name.contains("ii") && !name.contains("2")))) match = true;
-                        else if ("dcws".equals(presetId) && (name.contains("dcws") || name.contains("white season"))) match = true;
-                        else if ("dcsv".equals(presetId) && (name.contains("dcsv") || name.contains("summer vacation"))) match = true;
-                        else if ("dcas".equals(presetId) && (name.contains("dcas") || name.contains("after seasons"))) match = true;
-                        else if ("dcdx".equals(presetId) && (name.contains("dcdx") || name.contains("dream x'mas") || name.contains("dream xmas"))) match = true;
-                        else if ("dc".equals(presetId) && (name.contains("da capo") || name.equalsIgnoreCase("dc")) && !name.contains("2") && !name.contains("3") && !name.contains("4") && !name.contains("ii") && !name.contains("iii") && !name.contains("season") && !name.contains("vacation") && !name.contains("christmas") && !name.contains("xmas") && !name.contains("communication")) match = true;
-                        else if ("dsif".equals(presetId) && (name.contains("dsif") || name.contains("in future"))) match = true;
-                        else if ("ds".equals(presetId) && (name.contains("dal segno") || name.equalsIgnoreCase("ds")) && !name.contains("future") && !name.contains("if")) match = true;
-                        if (match) {
-                            hit = probeDir(f);
-                            if (hit == null) hit = probeDir(new File(f, "AdvData"));
-                            if (hit == null) hit = probeDir(new File(f, "Advdata"));
-                            if (hit != null) break;
+                        if (name.startsWith(".") || name.startsWith("android")) continue;
+                        hit = probePresetCandidate(f, presetId);
+                        if (hit != null) break;
+
+                        File[] sublist = f.listFiles();
+                        if (sublist != null) {
+                            for (File sub : sublist) {
+                                if (!sub.isDirectory() || sub.getName().startsWith(".")) continue;
+                                hit = probePresetCandidate(sub, presetId);
+                                if (hit != null) break;
+                            }
                         }
+                        if (hit != null) break;
                     }
                 }
                 if (hit != null) break;
@@ -2840,6 +2971,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     entry.title = titleHint;
                 }
             }
+            GameLibrary.autoDetectOverlays(entry);
             migrateLegacySaves(entry);
         }
         try { library.save(); }
@@ -3001,8 +3133,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        if (moviePlaying && videoView != null) {
-            try { videoView.start(); } catch (Throwable ignored) {}
+        if (moviePlaying) {
+            if (vlcPlayer != null) {
+                try { vlcPlayer.play(); } catch (Throwable ignored) {}
+            } else if (movieMediaPlayer != null) {
+                try { movieMediaPlayer.start(); } catch (Throwable ignored) {}
+            }
         }
         startRendering();
     }
@@ -3023,8 +3159,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         skipMode = false;
         backlogOpen = false;
         slotMenuOpen = false;
-        if (moviePlaying && videoView != null) {
-            try { videoView.pause(); } catch (Throwable ignored) {}
+        if (moviePlaying) {
+            if (vlcPlayer != null) {
+                try { vlcPlayer.pause(); } catch (Throwable ignored) {}
+            } else if (movieMediaPlayer != null) {
+                try { movieMediaPlayer.pause(); } catch (Throwable ignored) {}
+            }
         }
         stopRendering();
         if (saveDialog != null) { saveDialog.dismiss(); saveDialog = null; }
@@ -3042,9 +3182,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override protected void onDestroy() {
         stopRendering();
-        if (videoView != null) {
-            try { videoView.stopPlayback(); } catch (Throwable ignored) {}
-            videoView = null;
+        stopMovie();
+        if (vlcInstance != null) {
+            try { vlcInstance.release(); } catch (Throwable ignored) {}
+            vlcInstance = null;
         }
         if (initialized) dc4Quit();
         initialized = false;

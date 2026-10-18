@@ -226,9 +226,21 @@ struct SystemMenu::Impl {
         return false;
     }
     void progress_vars() {
-        for (size_t i = 0; i < cg_names.size(); ++i) put(97,int(i),seen_cg.count(key(cg_names[i])) ? 1 : 0);
-        for (size_t i = 0; i < scene_names.size(); ++i) put(98,int(i),seen_scene.count(key(scene_names[i])) ? 1 : 0);
-        for (size_t i = 0; i < bgm_names.size(); ++i) put(96,int(i),seen_music.count(key(bgm_names[i])) ? 1 : 0);
+        for (size_t i = 0; i < cg_names.size(); ++i) {
+            std::string k = key(cg_names[i]);
+            if (get(97, int(i)) > 0) seen_cg.insert(k);
+            if (seen_cg.count(k)) put(97, int(i), 1);
+        }
+        for (size_t i = 0; i < scene_names.size(); ++i) {
+            std::string k = key(scene_names[i]);
+            if (get(98, int(i)) > 0) seen_scene.insert(k);
+            if (seen_scene.count(k)) put(98, int(i), 1);
+        }
+        for (size_t i = 0; i < bgm_names.size(); ++i) {
+            std::string k = key(bgm_names[i]);
+            if (get(96, int(i)) > 0) seen_music.insert(k);
+            if (seen_music.count(k)) put(96, int(i), 1);
+        }
     }
     void clear_layout() { widgets.clear(); chips.clear(); captions.clear(); list_rects.clear(); list_titles.clear(); }
     int hit(int x,int y) const {
@@ -838,6 +850,7 @@ bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
         if (p_->vars.find({94, i}) == p_->vars.end()) p_->vars[{94, i}] = 100;
         if (p_->vars.find({95, i}) == p_->vars.end() || p_->vars[{95, i}] == 0) p_->vars[{95, i}] = 1;
     }
+    p_->progress_vars();
     p_->rebuild();
     if (error) error->clear();
     return true;
