@@ -474,6 +474,7 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         pointer_x_ = pointer_y_ = -1;
         pointer_down_ = false;
         pending_movie_.clear();
+        pending_movie_is_effect_ = false;
         input_skip_label_.clear();
         script_wait_pending_ = false;
         script_wait_ms_ = 0;
@@ -607,7 +608,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (!animation_enabled_) finish_animations();
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
         next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
-        pending_movie_.clear(); input_skip_label_.clear();
+        pending_movie_.clear(); pending_movie_is_effect_ = false; input_skip_label_.clear();
         script_wait_pending_ = false; script_wait_ms_ = 0;
         credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
         credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();

@@ -786,6 +786,12 @@ int run(const Options& o) {
         system_menu.mark_scene_seen(scene->script_name(),"@"+std::to_string(scene->script_position()));
         profile_dirty=true;
     };
+    auto movie_audio_engine = [&](const std::string& mov) -> dc4::AudioEngine* {
+        if (!audio_ready) return nullptr;
+        const bool is_dc4 = dc4::is_dc4_or_dc4ph_game(data);
+        const bool is_kotori = is_dc4 && (dc4::is_kotori_song_movie(mov) || (scene && scene->is_effect_movie()));
+        return is_kotori ? nullptr : &audio.engine;
+    };
     std::function<void()> advance_script;
     advance_script = [&]() {
         if(!scene)return;
@@ -793,7 +799,7 @@ int run(const Options& o) {
         sync_progress();flush_profile();
         if(!scene->pending_movie().empty()) {
             movie_from_scene=true;
-            if(!movie.open(data,scene->pending_movie(),audio_ready?&audio.engine:nullptr,&err)) {
+            if(!movie.open(data,scene->pending_movie(),movie_audio_engine(scene->pending_movie()),&err)) {
                 notify("Movie: "+err);scene->finish_movie();
             }
         } else if(scene->waiting_for_time())return;
@@ -1101,7 +1107,7 @@ int run(const Options& o) {
         const Uint32 tick = SDL_GetTicks();
         if (scene && !menu_open && !movie.active() && !scene->pending_movie().empty()) {
             movie_from_scene = true;
-            if (!movie.open(data, scene->pending_movie(), audio_ready ? &audio.engine : nullptr, &err)) {
+            if (!movie.open(data, scene->pending_movie(), movie_audio_engine(scene->pending_movie()), &err)) {
                 notify("Movie: " + err); scene->finish_movie();
             }
         }
@@ -1172,7 +1178,7 @@ int run(const Options& o) {
     if (!o.shot.empty()) {
         if (scene && !scene->pending_movie().empty() && !movie.active()) {
             movie_from_scene = true;
-            movie.open(data, scene->pending_movie(), audio_ready ? &audio.engine : nullptr, &err);
+            movie.open(data, scene->pending_movie(), movie_audio_engine(scene->pending_movie()), &err);
         }
         if (movie.active()) {
             const uint32_t target_ms = o.effect_ms >= 0 ? uint32_t(o.effect_ms) :
@@ -1469,7 +1475,7 @@ int run(const Options& o) {
         if(scene && !global_confirm.active() && !menu_open && !backlog.open && !slots.open && !movie.active()) {
             if(!scene->pending_movie().empty()){
                 movie_from_scene=true;
-                if(!movie.open(data,scene->pending_movie(),audio_ready?&audio.engine:nullptr,&err)){notify("Movie: "+err);scene->finish_movie();advance_script();}
+                if(!movie.open(data,scene->pending_movie(),movie_audio_engine(scene->pending_movie()),&err)){notify("Movie: "+err);scene->finish_movie();advance_script();}
             } else if(scene->script_ready())advance_script();
         }
         if(menu_open && system_menu.page()==dc4ui::SystemMenuPage::Music && !movie.active()) {

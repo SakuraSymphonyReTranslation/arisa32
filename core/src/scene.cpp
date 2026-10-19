@@ -334,7 +334,10 @@ int FontRenderer::text_width(const std::u16string& text, float pixel_size) const
 
 // ---------------------------------------------------------------------------
 
-SceneRunner::SceneRunner(const std::string& data_dir) : data_(data_dir), scene_audio_(data_dir) {
+SceneRunner::SceneRunner(const std::string& data_dir)
+    : data_(data_dir),
+      scene_audio_(data_dir),
+      is_dc4_or_dc4ph_(dc4::is_dc4_or_dc4ph_game(data_dir)) {
     frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
     set_latin_mode(dc4::is_latin());
 }
@@ -475,7 +478,8 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
         // Opcode 0x15(72) is the introductory wait before Kotori's song performance
         // (EFF\KTR.PCK / KotoRI_uta01.mpg). BGM 43's acapella intro lasts exactly 12.58s
         // (72 eighth-notes at 171.7 BPM), after which the chorus beat drops.
-        script_wait_ms_ = (c.p1 == 72) ? 12580.0 : (c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1);
+        const double standard_wait = c.p1 == 255 || (!c.p1 && c.p2) ? -1 : 200.0 * c.p1;
+        script_wait_ms_ = (c.p1 == 72 && is_dc4_or_dc4ph_) ? 12580.0 : standard_wait;
         if (script_wait_ms_ != 0) {
             script_wait_pending_ = true;
         }
@@ -509,6 +513,7 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
     if (c.kind == K::Str && c.op == 0x52) {
         scene_audio_.stop_for_movie();
         pending_movie_ = c.str;
+        pending_movie_is_effect_ = false;
         return true;
     }
     if (c.kind == K::ParamStr && c.op == 0x43 && (c.p1 == 2 || c.p1 == 3)) {
@@ -647,9 +652,9 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
             std::string err;
             if (load_grp_crx(c.str, &img, &err)) transition_overlay_ = std::move(img);
         } else {
-            if (up.find("KTR.PCK") != std::string::npos || up.find("KTR01") != std::string::npos) {
+            if (is_dc4_or_dc4ph_ && (up.find("KTR.PCK") != std::string::npos || up.find("KTR01") != std::string::npos)) {
                 effect_movie_ = "KotoRI_uta01.mpg";
-            } else if (up.find("KTR02.PCK") != std::string::npos || up.find("KTR02") != std::string::npos) {
+            } else if (is_dc4_or_dc4ph_ && (up.find("KTR02.PCK") != std::string::npos || up.find("KTR02") != std::string::npos)) {
                 effect_movie_ = "KotoRI_uta02.mpg";
             }
             load_slot(c.p1, c.str);
@@ -753,6 +758,7 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
     if (c.kind == K::Words4 && c.op == 0x95) {
         if (!effect_movie_.empty()) {
             pending_movie_ = effect_movie_;
+            pending_movie_is_effect_ = true;
             effect_movie_.clear();
             return true;
         }
@@ -1052,7 +1058,7 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     std::string up = name;
     for (char& c : up) c = char(std::toupper((unsigned char)c));
     if (up.find(".PCK") != std::string::npos) {
-        if (up.find("KTR") == std::string::npos) {
+        if (!is_dc4_or_dc4ph_ || up.find("KTR") == std::string::npos) {
             load_pck_effect(name);
         }
         return;

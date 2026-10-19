@@ -768,14 +768,19 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
     const bool is_mp4 = is_mp4_container_file(full_path) || (!ext_is_mpg);
     const bool is_mpg = ext_is_mpg && (!is_mp4);
 
+    const bool is_dc4 = dc4::is_dc4_or_dc4ph_game(e->data_dir);
+    const bool is_kotori = is_dc4 && (dc4::is_kotori_song_movie(asset) || (e->scene && e->scene->is_effect_movie()));
+
     // For genuine MPEG-1 (.mpg/.mpeg), play natively via C++ pl_mpeg decoder
     if (is_mpg) {
-        if (!e->audio.channel_playing(0) || from_scene) {
-            e->audio.stop_group(dc4::AudioGroup::Bgm);
+        if (!is_kotori) {
+            if (!e->audio.channel_playing(0) || from_scene) {
+                e->audio.stop_group(dc4::AudioGroup::Bgm);
+            }
         }
-        dc4::AudioEngine* movie_audio = &e->audio;
+        dc4::AudioEngine* movie_audio = is_kotori ? nullptr : &e->audio;
         if (e->movie.open_file(full_path, movie_audio, error)) {
-            LOGI("movie playing natively via pl_mpeg: %s", full_path.c_str());
+            LOGI("movie playing natively via pl_mpeg (kotori_song=%d): %s", is_kotori, full_path.c_str());
             return true;
         }
         LOGW("native movie open failed for %s (%s), falling back to Java MediaPlayer",
@@ -792,10 +797,12 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
             jclass cls = env->GetObjectClass(e->activity);
             jmethodID play_method = env->GetMethodID(cls, "playMovie", "(Ljava/lang/String;)V");
             if (play_method) {
-                if (!e->audio.channel_playing(0) || from_scene) {
-                    e->audio.stop_group(dc4::AudioGroup::Bgm);
+                if (!is_kotori) {
+                    if (!e->audio.channel_playing(0) || from_scene) {
+                        e->audio.stop_group(dc4::AudioGroup::Bgm);
+                    }
+                    e->audio.set_device_paused(true);
                 }
-                e->audio.set_device_paused(true);
                 jstring jpath = env->NewStringUTF(full_path.c_str());
                 env->CallVoidMethod(e->activity, play_method, jpath);
                 env->DeleteLocalRef(jpath);
@@ -810,7 +817,7 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
         }
     }
 
-    dc4::AudioEngine* movie_audio = e->audio.channel_playing(0) ? nullptr : &e->audio;
+    dc4::AudioEngine* movie_audio = is_kotori ? nullptr : (e->audio.channel_playing(0) ? nullptr : &e->audio);
     return e->movie.open_file(full_path, movie_audio, error);
 }
 
@@ -1316,7 +1323,18 @@ Java_org_dc4engine_Dc4Activity_dc4Advance(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused || e->menu_open) return JNI_FALSE;
     if (e->movie.active()) {
-        e->movie.close(); e->scene->finish_movie(); return advance_scene(e);
+        const double movie_time = e->movie.time();
+        const double movie_duration = e->movie.duration();
+        e->movie.close();
+        if (e->audio.channel_playing(0)) {
+            const double remaining = movie_duration - movie_time;
+            if (remaining > 0) {
+                const double current_pos = e->audio.channel_position_seconds(0);
+                e->audio.seek_channel_seconds(0, current_pos + remaining);
+            }
+        }
+        e->scene->finish_movie();
+        return advance_scene(e);
     }
     if (e->scene->waiting_for_time()) {
         if (e->scene->effect_pck_active()) {

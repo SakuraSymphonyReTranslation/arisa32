@@ -205,7 +205,8 @@ public:
     using CommandObserver = std::function<void(const dc4::MesCommand&, const std::string&)>;
     void set_observer(CommandObserver observer) { observer_ = std::move(observer); }
     const std::string& pending_movie() const { return pending_movie_; }
-    void finish_movie() { pending_movie_.clear(); }
+    bool is_effect_movie() const { return pending_movie_is_effect_; }
+    void finish_movie() { pending_movie_.clear(); pending_movie_is_effect_ = false; }
     // Hosts keep updating while a script wait is pending, then advance once
     // script_ready() is true. Input can finish a skippable wait/credit sequence.
     bool waiting_for_time() const { return script_wait_pending_ && script_wait_ms_ != 0; }
@@ -341,6 +342,8 @@ private:
     std::string script_name_;
     CommandObserver observer_;
     std::string pending_movie_, input_skip_label_;
+    bool pending_movie_is_effect_ = false;
+    bool is_dc4_or_dc4ph_ = false;
     double script_wait_ms_ = 0;
     bool script_wait_pending_ = false;
     bool credits_active_ = false;

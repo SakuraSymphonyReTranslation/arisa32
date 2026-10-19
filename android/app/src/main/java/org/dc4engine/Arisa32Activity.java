@@ -138,6 +138,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private volatile boolean moviePlaying = false;
     private long movieStartTime = 0;
 
+    private boolean isKotoriSongMovie(String path) {
+        if (path == null) return false;
+        String lower = path.toLowerCase(Locale.ROOT);
+        return lower.contains("kotori_uta01") || lower.contains("kotori_uta02");
+    }
+
     public void playMovie(final String path) {
         runOnUiThread(() -> {
             if (destroyed || gameLayout == null) {
@@ -156,24 +162,26 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             moviePlaying = true;
             movieStartTime = SystemClock.uptimeMillis();
 
-            try {
-                AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                if (am != null) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        AudioAttributes aa = new AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                                .build();
-                        AudioFocusRequest afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                                .setAudioAttributes(aa)
-                                .build();
-                        am.requestAudioFocus(afr);
-                    } else {
-                        am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            if (!isKotoriSongMovie(path)) {
+                try {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            AudioAttributes aa = new AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                    .build();
+                            AudioFocusRequest afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                                    .setAudioAttributes(aa)
+                                    .build();
+                            am.requestAudioFocus(afr);
+                        } else {
+                            am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+                        }
                     }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Cannot request audio focus", t);
                 }
-            } catch (Throwable t) {
-                Log.w(TAG, "Cannot request audio focus", t);
             }
 
             movieContainer = new FrameLayout(this);
@@ -262,6 +270,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
             });
 
+            if (isKotoriSongMovie(path)) {
+                vlcPlayer.setVolume(0);
+            }
             vlcPlayer.play();
             Log.i(TAG, "LibVLC movie playback started: " + path);
         } catch (Throwable t) {
@@ -328,7 +339,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         .build();
                 movieMediaPlayer.setAudioAttributes(aa);
             }
-            movieMediaPlayer.setVolume(1.0f, 1.0f);
+            if (isKotoriSongMovie(path)) {
+                movieMediaPlayer.setVolume(0.0f, 0.0f);
+            } else {
+                movieMediaPlayer.setVolume(1.0f, 1.0f);
+            }
             movieMediaPlayer.setOnVideoSizeChangedListener((player, w, h) -> {
                 adjustTextureViewAspectRatio(w, h);
             });

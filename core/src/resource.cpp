@@ -363,6 +363,46 @@ int romanized_face_id(const std::u16string& name) {
     }
     return -2;
 }
+
+bool is_dc4_or_dc4ph_game(const std::string& data_dir) {
+    if (data_dir.empty()) return false;
+    std::string lower_dir = data_dir;
+    for (char& c : lower_dir) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (lower_dir.find("d.c.4") != std::string::npos ||
+        lower_dir.find("da capo 4") != std::string::npos ||
+        lower_dir.find("dc4") != std::string::npos ||
+        lower_dir.find("da capo iv") != std::string::npos) {
+        return true;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* cand : {
+        "/MES/dc4_kyo20190204a1.mes", "/mes/dc4_kyo20190204a1.mes",
+        "/MES/dc4_start.mes", "/mes/dc4_start.mes",
+        "/MES/dc4_sen20181213b.mes", "/mes/dc4_sen20181213b.mes",
+        "/MES/dc4_asu20190506c.mes", "/mes/dc4_asu20190506c.mes"
+    }) {
+        if (fs::exists(fs::u8path(data_dir + cand), ec)) return true;
+    }
+    fs::path parent = fs::u8path(data_dir).parent_path();
+    if (fs::exists(parent / "DC4PHDL.exe", ec) ||
+        fs::exists(parent / "DC4PHLauncher.exe", ec) ||
+        fs::exists(parent / "DC4.exe", ec)) {
+        return true;
+    }
+    return false;
+}
+
+bool is_kotori_song_movie(const std::string& asset) {
+    if (asset.empty()) return false;
+    std::string lower = asset;
+    for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return (lower.find("kotori_uta") != std::string::npos ||
+            lower.find("ktr_uta") != std::string::npos ||
+            lower.find("ktr01") != std::string::npos ||
+            lower.find("ktr02") != std::string::npos);
+}
+
 }  // namespace dc4
 
 
