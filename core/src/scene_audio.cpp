@@ -1,5 +1,6 @@
 #include "arisa32/scene_audio.h"
 #include "arisa32/bgm.h"
+#include "arisa32/names.h"
 #include "arisa32/resource.h"
 #include <algorithm>
 #include <cctype>
@@ -53,21 +54,6 @@ uint32_t u32(const std::vector<uint8_t>& bytes, size_t offset) {
     return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
         (uint32_t(bytes[offset + 2]) << 16) | (uint32_t(bytes[offset + 3]) << 24);
 }
-bool read_table(const std::vector<uint8_t>& bytes, size_t* at, size_t stride,
-                uint32_t maximum, std::vector<std::string>* names) {
-    if (*at > bytes.size() || bytes.size() - *at < 4) return false;
-    uint32_t count = u32(bytes, *at);
-    *at += 4;
-    if (count > maximum || count > (bytes.size() - *at) / stride) return false;
-    for (uint32_t i = 0; i < count; ++i) {
-        const char* start = reinterpret_cast<const char*>(bytes.data() + *at);
-        const char* end = static_cast<const char*>(std::memchr(start, 0, 32));
-        if (!end) return false;
-        names->emplace_back(start, end);
-        *at += stride;
-    }
-    return true;
-}
 std::string audio_name(std::string name) {
     if (std::filesystem::path(name).extension().empty()) name += ".pcm";
     return name;
@@ -76,10 +62,10 @@ uint32_t ticks_ms(unsigned ticks) {
     // Native ramps are per-update ticks. 60 Hz is the desktop playback clock.
     return uint32_t((uint64_t(ticks) * 1000 + 30) / 60);
 }
-AudioPlayback bgm_options(const std::string& name, int mode, bool alternate) {
+AudioPlayback bgm_options(const std::string& name, int mode, bool alternate, bool legacy = false) {
     int start = 0, end = 0;
     std::string normal = lower(name);
-    bgm_loop_for(normal.substr(normal.find_last_of('/') + 1), &start, &end);
+    if (!legacy) bgm_loop_for(normal.substr(normal.find_last_of('/') + 1), &start, &end);
     return {alternate ? mode == 0 : mode < 2, size_t(std::max(start, 0)), size_t(std::max(end, 0))};
 }
 int se_channel(const std::string& name, bool loop, int free_channel) {
@@ -151,18 +137,17 @@ void SceneAudio::fail(const std::string& message) {
 }
 bool SceneAudio::load_names(std::string* error) {
     std::vector<uint8_t> bytes;
-    std::vector<std::string> bgm, se;
-    size_t at = 228;  // u32 version + 224 bytes of character names
-    bool valid = read_bytes(resolve(data_, "GRP/NAMES.DAT"), &bytes) &&
-        bytes.size() >= at && u32(bytes, 0) == 7 &&
-        read_table(bytes, &at, 48, 400, &bgm) && read_table(bytes, &at, 36, 600, &se);
+    GameNames names;
+    const bool valid = (read_bytes(resolve(data_, "GRP/NAMES.DAT"), &bytes) ||
+                        read_bytes(resolve(data_, "DAT/names.dat"), &bytes)) && decode_game_names(bytes,&names);
     if (!valid) {
-        last_error_ = "invalid or missing GRP/NAMES.DAT version 7 audio tables";
+        last_error_ = "invalid or missing NAMES.DAT audio tables";
         if (error) *error = last_error_;
         return false;
     }
-    bgm_names_.swap(bgm);
-    se_names_.swap(se);
+    legacy_names_ = u32(bytes,0)==6;
+    bgm_names_.swap(names.bgm);
+    se_names_.swap(names.se);
     return true;
 }
 void SceneAudio::reset_state() {
@@ -196,7 +181,7 @@ bool SceneAudio::play_bgm(int id, int mode, bool alternate) {
     if (id < 0 || size_t(id) >= bgm_names_.size()) { fail("BGM index out of range"); return false; }
     std::string name = audio_name(bgm_names_[size_t(id)]);
     if (audio_) {
-        AudioPlayback options = bgm_options(name, mode, alternate);
+        AudioPlayback options = bgm_options(name, mode, alternate, legacy_names_);
         audio_->fade_out_bgm();
         if (!audio_->play_file(0, resolve(data_, name), options)) {
             fail("cannot decode BGM " + name);
@@ -350,7 +335,7 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
     if (snapshot.bgm_id >= 0) {
         if (size_t(snapshot.bgm_id) >= bgm_names_.size()) return invalid("BGM index out of range");
         const auto& name = bgm_names_[size_t(snapshot.bgm_id)];
-        if (!prepare(name, 0, bgm_options(name, snapshot.bgm_mode, snapshot.bgm_alternate),
+        if (!prepare(name, 0, bgm_options(name, snapshot.bgm_mode, snapshot.bgm_alternate, legacy_names_),
                      snapshot.bgm_position_frames, snapshot.bgm_playing)) return false;
     }
     std::array<bool, 12> seen{};
@@ -391,17 +376,17 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
 bool SceneAudio::dispatch(const MesCommand& c) {
     if (pending_bgm_fade_) {
         pending_bgm_fade_ = false;
-        bool extension = c.kind == CmdKind::Words4 && c.op == 0x77;
+        bool extension = c.kind == CmdKind::Words4 && c.opcode() == dc4::Opcode::CHIP;
         if (audio_) audio_->stop_group(AudioGroup::Bgm,
             extension && c.words[0] ? ticks_ms(c.words[0]) : 500);
         if (extension) return true;
     }
     bool is_voice_cmd = false;
     if (c.kind == CmdKind::Str) {
-        if (c.op == 0x4C || c.op == 0x4D || c.op == 0x4E ||
-            c.op == 0x35 || c.op == 0x36 || c.op == 0x3D) {
+        if (c.opcode() == dc4::Opcode::VOICE || c.opcode() == dc4::Opcode::VOICE_ALT || c.opcode() == dc4::Opcode::VOICE_EXTRA ||
+            c.opcode() == dc4::Opcode::LEGACY_LABEL_OR_VOICE || c.opcode() == dc4::Opcode::COMMIT_TRANSITION || c.opcode() == dc4::Opcode::LOAD_SHEET) {
             std::string low = lower(c.str);
-            if (c.op == 0x4C || c.op == 0x4D || c.op == 0x4E ||
+            if (c.opcode() == dc4::Opcode::VOICE || c.opcode() == dc4::Opcode::VOICE_ALT || c.opcode() == dc4::Opcode::VOICE_EXTRA ||
                 low.rfind("voice\\", 0) == 0 || low.rfind("voice/", 0) == 0 ||
                 low.rfind("lvoice\\", 0) == 0 || low.rfind("lvoice/", 0) == 0 ||
                 low.rfind("svoice\\", 0) == 0 || low.rfind("svoice/", 0) == 0 ||
@@ -414,7 +399,7 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         play_voice(c.str);
         return true;
     }
-    if (c.kind == CmdKind::Param2 && c.op == 0x13) {
+    if (c.kind == CmdKind::Param2 && c.opcode() == dc4::Opcode::STOP_BGM) {
         state_.bgm_id = -1;
         state_.bgm_playing = false;
         state_.bgm_position_frames = 0;
@@ -422,7 +407,7 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         if (audio_ && !pending_bgm_fade_) audio_->stop_group(AudioGroup::Bgm, 500);
         return true;
     }
-    if (c.kind == CmdKind::Param2 && c.op == 0x05) {
+    if (c.kind == CmdKind::Param2 && c.opcode() == dc4::Opcode::BGM_VOLUME) {
         if (c.p1 == 254) return true;  // original flushes queued audio commands
         if (audio_) state_.groups = audio_->capture_snapshot().groups;
         if (c.p1 == 255) {
@@ -437,15 +422,15 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         return true;
     }
     if (c.kind != CmdKind::Words4) return false;
-    if (c.op == 0x6F || c.op == 0x70) {
-        play_bgm(int16_t(c.words[0]), int16_t(c.words[1]), c.op == 0x6F);
+    if (c.opcode() == dc4::Opcode::PLAY_BGM || c.opcode() == dc4::Opcode::PLAY_BGM_ONCE) {
+        play_bgm(int16_t(c.words[0]), int16_t(c.words[1]), c.opcode() == dc4::Opcode::PLAY_BGM);
         return true;
     }
-    if (c.op == 0x71) {
+    if (c.opcode() == dc4::Opcode::PLAY_SE) {
         play_se(int16_t(c.words[0]), c.words[1] != 0);
         return true;
     }
-    if (c.op == 0xAF) {
+    if (c.opcode() == dc4::Opcode::AUDIO_PAN) {
         if (c.words[3] < 3) {
             AudioGroup group = AudioGroup(c.words[3]);
             int start = std::clamp(int16_t(c.words[0]) * 100, -10000, 10000);

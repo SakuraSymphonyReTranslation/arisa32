@@ -268,14 +268,14 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         if (sheets_.find(37) == sheets_.end()) {
             std::string start_mes = dc4::find_file_ci(data_ + "/MES", "start.mes");
             if (!start_mes.empty()) load_sheets(data_ + "/MES/" + start_mes);
-            std::string win_size = dc4::find_file_ci(data_ + "/MES", "win_size.mes");
+            std::string win_size = dc4::find_file_ci(data_ + "/MES", mes_.version==0x9969 ? "start.mes" : "win_size.mes");
             if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
             if (sheets_.find(37) == sheets_.end()) {
                 show_message_window("SYSTEM/MESWIN.CRX");
             }
         }
         if (buttons_.empty()) {
-            std::string win_size = dc4::find_file_ci(data_ + "/MES", "win_size.mes");
+            std::string win_size = dc4::find_file_ci(data_ + "/MES", mes_.version==0x9969 ? "start.mes" : "win_size.mes");
             if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
         }
         scene_chips_.clear();

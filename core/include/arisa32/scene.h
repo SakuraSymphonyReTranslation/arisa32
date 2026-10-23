@@ -47,7 +47,7 @@ public:
     ~FontRenderer();
     FontRenderer(const FontRenderer&) = delete;
     FontRenderer& operator=(const FontRenderer&) = delete;
-    bool load(const std::string& path, int font_index, float pixel_size);
+    bool load(const std::string& path, int font_index, float pixel_size, bool native = true);
     // Renders white glyphs starting at x0 with the given baseline.
     // pixel_size overrides the font's own size (the engine uses 22px dialogue
     // and 18px names from one face). A dark outline is drawn under the glyphs.
@@ -55,7 +55,8 @@ public:
                         std::vector<uint8_t>* rgba, int buf_w, int buf_h,
                         float pixel_size = 0, uint32_t rgb = 0xFFFFFF,
                         bool wide = false, uint32_t outline_rgb = 0) const;
-    int text_width(const std::u16string& text, float pixel_size = 0) const;
+    int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false) const;
+    int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false) const;
 
 private:
     struct Glyph {
@@ -176,6 +177,7 @@ struct UiButton {
 // box. Default dialogue cells advance 22px (11px for halfwidth characters).
 struct MesWinLayout {
     int bg_x = 0, bg_y = 540, bg_w = kScreenW, bg_h = kScreenH - 540;
+    int bg_src_x = 0, bg_src_y = 540;
     int text_x = 283, text_w = 660, text_baseline = 594;
     int name_x = 283, name_baseline = 540, name_font = 18;
     int font_size = 22;
@@ -328,7 +330,7 @@ private:
     void snapshot_for_transition();
     void draw_transition(uint8_t* dst);
 
-    // Modular opcode dispatchers (decoupled from advance_to_next_text to maintain clean architecture)
+    bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
     bool dispatch_timing_command(const dc4::MesCommand& c);
     bool dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers);
     bool dispatch_ui_chip_command(const dc4::MesCommand& c);
@@ -374,6 +376,8 @@ private:
     UiButton pending_button_;
     bool pending_has_button_ = false;
     MesWinLayout layout_;
+    bool dc2pc_ui_ = false;
+    int ui_bar_top_ = 690;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
     Image transition_overlay_; // 0x3C slot 22 pattern overlay (SYSTEM\EFFCHANGESCREEN*.crx)

@@ -66,6 +66,7 @@ private:
     std::vector<uint8_t> last_voice_;
     SceneAudioSnapshot state_;
     bool pending_bgm_fade_ = false;
+    bool legacy_names_ = false;
     std::array<int, 51> character_volume_ = [] { std::array<int, 51> values{}; values.fill(100); return values; }();
     size_t voice_character_ = 15;
     void apply_character_volume(const std::string& name);

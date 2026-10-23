@@ -1,6 +1,7 @@
 #include "arisa32/mesvm.h"
 
 #include <limits>
+#include <algorithm>
 #include <sstream>
 
 namespace dc4 {
@@ -12,7 +13,16 @@ std::string to_lower(const std::string& str) {
     return out;
 }
 
-int byte_bank_size(uint16_t bank) {
+int byte_bank_size(uint16_t bank, bool dc2pc = false) {
+    if (dc2pc) {
+        if (bank < 10) return 100;
+        if (bank == 97 || bank == 98) return 1500;
+        if (bank == 100) return 100;
+        if (bank == 95) return 400;
+        // Host music catalogue flags remain separate from native bank 95.
+        if (bank == 96) return 400;
+        return 0;
+    }
     if (bank <= 10) return 100;
     switch (bank) {
     case 96: return 400;
@@ -69,9 +79,10 @@ uint64_t script_fingerprint(const MesFile& mes) {
     return hash;
 }
 
-bool snapshot_variable_valid(uint16_t bank, uint16_t index, int32_t value) {
-    const int size = byte_bank_size(bank);
+bool snapshot_variable_valid(uint16_t bank, uint16_t index, int32_t value, bool dc2pc) {
+    const int size = byte_bank_size(bank, dc2pc);
     if (size) return index < size && value >= 0 && value <= 255;
+    if (dc2pc) return bank == 99;
     if (bank == 93) return index < 20;
     if (bank == 94) return index == 50 && value <= 100;
     if (bank == 95) return index == 50;
@@ -98,7 +109,8 @@ bool MesVm::bind(const MesFile& mes) {
     choices_.clear();
     error_.clear();
     waiting_for_choice_ = transferring_ = ended_ = pending_button_action_ = false;
-    if (mes.code.size() < 3) return fail("missing MES header", 0);
+    if (mes.code.size() < 3)
+        return fail("missing MES header", 0);
 
     MesStream scan(mes);
     MesCommand command;
@@ -106,17 +118,24 @@ bool MesVm::bind(const MesFile& mes) {
         command = MesCommand{};
         if (!scan.next(&command))
             return fail("truncated MES command", scan.pos());
-        if (command.op == 0) continue;
+        if (command.opcode() == Opcode::END)
+            continue;
         if (command.kind == CmdKind::Str || command.kind == CmdKind::ParamStr) {
-            if (command.op == 0x4B || command.op == 0x35 || command.op == 0x34 ||
-                (!command.str.empty() && command.str[0] == ':')) {
+            const Opcode opcode = command.opcode();
+            const bool named_label = command.dc2pc ? opcode == Opcode::LEGACY_LABEL_OR_VOICE
+                                                   : opcode == Opcode::LABEL ||
+                                                         opcode == Opcode::LEGACY_LABEL_OR_VOICE ||
+                                                         opcode == Opcode::LEGACY_LABEL_DM;
+            if (named_label || (!command.str.empty() && command.str[0] == ':')) {
                 labels_.emplace(command.str, command.pos);
                 std::string lower = to_lower(command.str);
-                if (lower != command.str) labels_.emplace(lower, command.pos);
+                if (lower != command.str)
+                    labels_.emplace(lower, command.pos);
                 if (!command.str.empty() && command.str[0] == ':') {
                     labels_.emplace(command.str.substr(1), command.pos);
                     std::string lower_sub = to_lower(command.str.substr(1));
-                    if (lower_sub != command.str.substr(1)) labels_.emplace(lower_sub, command.pos);
+                    if (lower_sub != command.str.substr(1))
+                        labels_.emplace(lower_sub, command.pos);
                 }
             }
         }
@@ -168,7 +187,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
         return reject("unsupported MES VM snapshot version");
     if (snapshot.script_fingerprint != script_fingerprint(*mes_))
         return reject("MES VM snapshot belongs to a different or modified script");
-    if (snapshot.pc < 3 || snapshot.pc > mes_->code.size())
+    const uint32_t header_size = uint32_t(mes_opcode_profile(mes_->dialect, mes_->version).header_size);
+    if (snapshot.pc < header_size || snapshot.pc > mes_->code.size())
         return reject("MES VM snapshot program counter is outside the script");
     const unsigned states = unsigned(snapshot.ended) + unsigned(snapshot.transferring)
                           + unsigned(snapshot.waiting_for_choice);
@@ -182,7 +202,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
             return reject("MES VM snapshot contains an unknown choice target");
     }
     for (const auto& variable : snapshot.variables) {
-        if (!snapshot_variable_valid(variable.first.first, variable.first.second, variable.second))
+        if (!snapshot_variable_valid(variable.first.first, variable.first.second, variable.second,
+                                     mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969))
             return reject("MES VM snapshot contains an invalid variable bank, index, or value");
     }
 
@@ -190,18 +211,19 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     // Keep the preceding command to validate suspended/finished states too.
     MesStream scan(*mes_);
     MesCommand previous;
-    bool boundary = snapshot.pc == 3;
+    bool boundary = snapshot.pc == header_size;
     while (!boundary && scan.pos() < mes_->code.size()) {
         if (!scan.next(&previous)) return reject("bound MES script is malformed");
         boundary = scan.pos() == snapshot.pc;
-        if (previous.op == 0) break;
+        if (previous.opcode() == Opcode::END) break;
     }
     if (!boundary) return reject("MES VM snapshot program counter is not a command boundary");
-    if (snapshot.transferring && previous.op != 0x4F && previous.op != 0x50)
+    const auto previous_opcode = mes_engine_command(previous).opcode();
+    if (snapshot.transferring && previous_opcode != Opcode::TRANSFER && previous_opcode != Opcode::TRANSFER_ALT)
         return reject("MES VM snapshot transfer is not positioned after a script-transfer command");
-    if (snapshot.waiting_for_choice && (previous.op != 0x0A || previous.p1 != 0))
+    if (snapshot.waiting_for_choice && (previous.opcode() != Opcode::WAIT_INPUT || previous.p1 != 0))
         return reject("MES VM snapshot choice wait is not positioned after a choice command");
-    if (snapshot.ended && !(snapshot.pc > 3 && previous.op == 0)
+    if (snapshot.ended && !(snapshot.pc > header_size && previous.opcode() == Opcode::END)
         && snapshot.pc != mes_->code.size())
         return reject("MES VM snapshot end is not positioned at the end of playback");
 
@@ -323,14 +345,26 @@ bool MesVm::choose(size_t index) {
 }
 
 int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
+    const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
+    if (dc2pc && bank >= 200 && bank < 210) {
+        if (index >= 97) return 0;
+        uint32_t bits = 0;
+        for (int i=0;i<4;++i) bits = (bits << 8) | uint32_t(read_variable(bank-200,index+i));
+        return bits <= INT32_MAX ? int32_t(bits) : int32_t(int64_t(bits)-0x100000000LL);
+    }
     // Route unlock flags (100..119) default to 1 so choices are never skipped or locked out.
-    if (bank == 100 && index >= 100 && index <= 119) {
+    if (!dc2pc && bank == 100 && index >= 100 && index <= 119) {
         const auto found = variables_.find({bank, index});
         if (found == variables_.end() || found->second == 0) return 1;
         return found->second;
     }
-    const int size = byte_bank_size(bank);
+    const int size = byte_bank_size(bank,dc2pc);
     if (size && index >= size) return 0;
+    if (dc2pc) {
+        if (!size && bank != 99) return 0;
+        const auto found = variables_.find({bank,index});
+        return found == variables_.end() ? 0 : found->second;
+    }
     if (!size && bank != 93 && bank != 94 && bank != 95 && bank != 99)
         return 0;
     if (bank == 93 && index >= 20) return 0;
@@ -347,12 +381,24 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
 }
 
 void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
-    const int size = byte_bank_size(bank);
+    const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
+    if (dc2pc && bank >= 200 && bank < 210) {
+        if (index >= 97) return;
+        const uint32_t bits=uint32_t(value);
+        for (int i=0;i<4;++i) write_variable(bank-200,index+i,(bits >> (24-8*i)) & 255);
+        return;
+    }
+    const int size = byte_bank_size(bank,dc2pc);
     if (size) {
         if (index >= size) return;
-        variables_[{bank, index}] = uint8_t(value);
+        variables_[{bank, index}] = dc2pc && bank < 10 ? std::clamp(value,0,255) : uint8_t(value);
+        if (dc2pc) return;
         if (bank == 100 && index == 49)
             write_variable(99, 11, value);
+        return;
+    }
+    if (dc2pc) {
+        if (bank == 99 && !system_read_only(index)) variables_[{bank,index}] = value;
         return;
     }
     if (bank == 93) {
@@ -384,10 +430,10 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
 bool MesVm::skip_scope(uint8_t scope) {
     MesCommand command;
     while (read_command(&command)) {
-        if (command.op == 0)
+        if (command.opcode() == Opcode::END)
             return fail("unterminated conditional scope", command.pos);
         // sub_4385A0 matches the encoded scope ID, not nesting depth or p1.
-        if (command.op == 0x20 && command.p2 == scope) return true;
+        if (mes_engine_command(command).opcode() == Opcode::SCOPE && command.p2 == scope) return true;
     }
     return fail("unterminated conditional scope", pos());
 }
@@ -413,7 +459,7 @@ bool MesVm::execute_compare(const MesCommand& command) {
     }
     MesCommand marker;
     if (!consume_companion(&marker, "conditional scope marker")) return false;
-    if (marker.op != 0x02)
+    if (marker.opcode() != Opcode::SCOPE_MARKER)
         return fail("expected 0x02 conditional scope marker", marker.pos);
     return condition || skip_scope(marker.p1);
 }
@@ -424,12 +470,31 @@ bool MesVm::execute_sum(const MesCommand& command) {
     for (;;) {
         if (!consume_companion(&operand, "sum-list operand or terminator"))
             return false;
-        if (operand.op == 0x02) break;
+        if (operand.opcode() == Opcode::SCOPE_MARKER) break;
         if (operand.kind != CmdKind::Words4)
             return fail("expected word operands in sum list", operand.pos);
         sum = wrap_add(sum, read_variable(operand.words[0], operand.words[1]));
     }
     write_variable(command.words[0], command.words[1], sum);
+    return true;
+}
+
+bool MesVm::execute_assignment(const MesCommand& command) {
+    int32_t value = signed_word(command.words[2]);
+    const int32_t old = read_variable(command.words[0], command.words[1]);
+    switch (command.words[3]) {
+    case 0:
+        break;
+    case 1:
+        value = wrap_add(old, value);
+        break;
+    case 2:
+        value = wrap_add(old, -value);
+        break;
+    default:
+        return fail("unsupported assignment operator", command.pos);
+    }
+    write_variable(command.words[0], command.words[1], value);
     return true;
 }
 
@@ -441,29 +506,31 @@ bool MesVm::next(MesCommand* out) {
     for (size_t executed = 0; executed < 100000; ++executed) {
         MesCommand command;
         if (!read_command(&command)) return false;
+        const MesCommand raw = command;
+        command = mes_engine_command(command);
         if (pending_button_action_) {
             pending_button_action_ = false;
-            *out = command;
+            *out = raw;
             return true;
         }
         if (command.kind == CmdKind::Words4 &&
-            (command.op == 0x72 || command.op == 0x54 || command.op == 0x4F)) {
+            (command.opcode() == Opcode::CONTROL || command.opcode() == Opcode::JUMP || command.opcode() == Opcode::TRANSFER)) {
             pending_button_action_ = true;
-            *out = command;
+            *out = raw;
             return true;
         }
-        switch (command.op) {
-        case 0:
+        switch (command.opcode()) {
+        case Opcode::END:
             if (!stream_ || stream_->pos() >= mes_->code.size()) {
                 ended_ = true;
                 return false;
             }
             continue;
-        case 0x02: // companion marker; harmless if reached linearly
-        case 0x4B: // named-label declaration (Modern)
-        case 0x34: // named-label declaration (ClassicDM)
+        case Opcode::SCOPE_MARKER: // companion marker; harmless if reached linearly
+        case Opcode::LABEL:
+        case Opcode::LEGACY_LABEL_DM:
             continue;
-        case 0x35: // named-label declaration (Classic) or voice
+        case Opcode::LEGACY_LABEL_OR_VOICE: // named-label declaration (Classic) or voice
             if (!command.str.empty()) {
                 std::string s = to_lower(command.str);
                 if (s.rfind("voice\\", 0) == 0 || s.rfind("lvoice\\", 0) == 0 ||
@@ -472,17 +539,17 @@ bool MesVm::next(MesCommand* out) {
                 }
             }
             continue;
-        case 0x09:
+        case Opcode::CLEAR_CHOICES:
             choices_.clear();
             break;  // host may set up the choice window here
-        case 0x0A:
-        case 0x0D:
+        case Opcode::WAIT_INPUT:
+        case Opcode::WAIT_INPUT_ALT:
             if (!choices_.empty()) {
                 waiting_for_choice_ = true;
                 return false;
             }
             break;
-        case 0x1C: {
+        case Opcode::CHECKPOINT: {
             // Saves a resume checkpoint and consumes its following jump tag.
             // The host still sees 0x1C so save support can capture scene state.
             MesCommand companion;
@@ -491,16 +558,16 @@ bool MesVm::next(MesCommand* out) {
                 return fail("expected checkpoint target string", companion.pos);
             break;
         }
-        case 0x1D:
+        case Opcode::RESTORE_CHECKPOINT:
             return fail("checkpoint restore needs a saved scene", command.pos);
-        case 0x20:
+        case Opcode::SCOPE:
             if (!command.p1 && !skip_scope(command.p2)) return false;
             continue;
-        case 0x2E:
+        case Opcode::TRANSFER_WITH_PARAM:
             transferring_ = true;
             break;
-        case 0x4F:
-        case 0x50:
+        case Opcode::TRANSFER:
+        case Opcode::TRANSFER_ALT:
             if (command.kind == CmdKind::Str && !command.str.empty() &&
                 static_cast<unsigned char>(command.str[0]) >= 0x20 &&
                 static_cast<unsigned char>(command.str[0]) < 0x7F &&
@@ -508,42 +575,35 @@ bool MesVm::next(MesCommand* out) {
                 transferring_ = true;
             }
             break;
-        case 0x3B:
-        case 0x51:
+        case Opcode::LEGACY_ENTRY:
+        case Opcode::ENTRY:
             if (command.kind == CmdKind::Str) {
                 entry_label_ = command.str;
                 continue;
             }
             break;
-        case 0x3A:
-        case 0x54:
-        case 0x3D:
+        case Opcode::LEGACY_JUMP:
+        case Opcode::JUMP:
+        case Opcode::LOAD_SHEET:
             if (command.kind == CmdKind::Str && !command.str.empty()) {
                 if (!jump(command.str)) return false;
                 continue;
             }
             break;
-        case 0x62: {
+        case Opcode::LEGACY_ASSIGN:
             if (command.kind == CmdKind::Words4) {
-                int32_t value = signed_word(command.words[2]);
-                const int32_t old = read_variable(command.words[0], command.words[1]);
-                if (command.words[3] == 1) value = wrap_add(old, value);
-                else if (command.words[3] == 2) value = wrap_add(old, -value);
-                else if (command.words[3] != 0)
-                    return fail("unsupported assignment operator", command.pos);
-                write_variable(command.words[0], command.words[1], value);
+                if (!execute_assignment(command)) return false;
                 continue;
             }
             break;
-        }
-        case 0x66: {
+        case Opcode::LEGACY_COMPARE: {
             if (command.kind == CmdKind::Words4) {
                 if (!execute_compare(command)) return false;
                 continue;
             }
             break;
         }
-        case 0x5C: {
+        case Opcode::CHOICE: {
             if (command.kind == CmdKind::Str) {
                 MesCommand caption;
                 if (!consume_companion(&caption, "choice text")) return false;
@@ -552,17 +612,10 @@ bool MesVm::next(MesCommand* out) {
                 choices_.push_back({command.str, caption.str});
                 continue;
             }
-            // ClassicDC2 Words4: 0x5C is assignment (equivalent to 0x82)
-            int32_t value = signed_word(command.words[2]);
-            const int32_t old = read_variable(command.words[0], command.words[1]);
-            if (command.words[3] == 1) value = wrap_add(old, value);
-            else if (command.words[3] == 2) value = wrap_add(old, -value);
-            else if (command.words[3] != 0)
-                return fail("unsupported assignment operator", command.pos);
-            write_variable(command.words[0], command.words[1], value);
+            if (!execute_assignment(command)) return false;
             continue;
         }
-        case 0x5F: {
+        case Opcode::STRING_COMPANION: {
             if (command.kind == CmdKind::Str) {
                 MesCommand companion;
                 if (!consume_companion(&companion, "string companion")) return false;
@@ -573,35 +626,28 @@ bool MesVm::next(MesCommand* out) {
             // ClassicDC2 Words4: 0x5F is variable compare
             continue;
         }
-        case 0x82: {
-            int32_t value = signed_word(command.words[2]);
-            const int32_t old = read_variable(command.words[0], command.words[1]);
-            if (command.words[3] == 1) value = wrap_add(old, value);
-            else if (command.words[3] == 2) value = wrap_add(old, -value);
-            else if (command.words[3] != 0)
-                return fail("unsupported assignment operator", command.pos);
-            write_variable(command.words[0], command.words[1], value);
+        case Opcode::ASSIGN:
+            if (!execute_assignment(command)) return false;
             continue;
-        }
-        case 0x83:
+        case Opcode::COPY:
             write_variable(command.words[0], command.words[1],
                            read_variable(command.words[2], command.words[3]));
             continue;
-        case 0x84:
+        case Opcode::SUM:
             if (!execute_sum(command)) return false;
             continue;
-        case 0x85:
+        case Opcode::ADD:
             write_variable(command.words[0], command.words[1],
                 wrap_add(read_variable(command.words[0], command.words[1]),
                          read_variable(command.words[2], command.words[3])));
             continue;
-        case 0x86:
+        case Opcode::COMPARE:
             if (!execute_compare(command)) return false;
             continue;
         default:
             break; // the host owns rendering/audio/other engine services
         }
-        *out = std::move(command);
+        *out = raw;
         return true;
     }
     return fail("MES execution budget exceeded (possible jump loop)", pos());

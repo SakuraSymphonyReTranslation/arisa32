@@ -60,8 +60,9 @@ public:
     bool jump(const std::string& label);
     bool has_label(const std::string& label) const;
 
-    // Byte banks truncate on writes exactly as the original does. System bank
-    // 99 holds host-supplied state; absent engine services read as zero.
+    // Profile-specific byte banks wrap or clamp as in the original. DC2PC
+    // banks 200..209 alias four bytes of banks 0..9 in big-endian order.
+    // System bank 99 holds host state; absent services read as zero.
     int32_t read_variable(uint16_t bank, uint16_t index) const;
     void write_variable(uint16_t bank, uint16_t index, int32_t value);
 
@@ -79,6 +80,7 @@ private:
     bool skip_scope(uint8_t scope);
     bool execute_compare(const MesCommand& command);
     bool execute_sum(const MesCommand& command);
+    bool execute_assignment(const MesCommand& command);
 
     const MesFile* mes_ = nullptr;
     std::unique_ptr<MesStream> stream_;

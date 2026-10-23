@@ -250,13 +250,17 @@ bool play_voice(dc4::AudioEngine& audio, dc4::VoiceArchive& archive, const std::
     return entry && archive.read_entry(*entry, &blob, nullptr) && audio.play_voice_blob(blob.data(), blob.size());
 }
 
-bool load_font(dc4scene::FontRenderer* font, const std::string& requested) {
+bool load_font(dc4scene::FontRenderer* font, const std::string& requested, const std::string& data) {
     if (!requested.empty()) return font->load(requested, 0, 21.0f);
     if (const char* env = std::getenv("DC4_FONT")) if (font->load(env, 0, 21.0f)) return true;
     const char* windir = std::getenv("WINDIR");
     const fs::path fonts = fs::path(windir ? windir : "C:/Windows") / "Fonts";
+    dc4::MesFile main_script;
+    const bool dc2pc_latin = dc4::is_latin() && main_script.load_file(data + "/MES/main.mes") &&
+        main_script.dialect == dc4::MesDialect::ClassicDC2 && (main_script.version & 0xFFFF) == 0x9969;
     for (const char* face : {"msgothic.ttc", "meiryo.ttc", "YuGothR.ttc"})
-        if (font->load((fonts / face).string(), 0, 21.0f)) return true;
+        if (font->load((fonts / face).string(),
+                       dc2pc_latin && !strcmp(face, "msgothic.ttc") ? 2 : 0, 21.0f)) return true;
     return false;
 }
 
@@ -264,6 +268,10 @@ fs::path save_directory(const std::string& data = "") {
     if (const char* env = std::getenv("DC4_SAVE_DIR")) if (*env) return fs::absolute(env);
     if (!data.empty()) {
         const fs::path data_path(data);
+        dc4::MesFile main_script;
+        if (main_script.load_file(dc4::resolve_asset((data_path / "MES/main.mes").string())) &&
+            dc4::mes_opcode_profile(main_script.dialect, main_script.version).id == dc4::MesProfileId::DC2PC)
+            return data_path / "arisa32-saves" / "dc2pc";
         const std::vector<fs::path> candidates = {
             data_path / "savegame",
             data_path / "Savegame",
@@ -602,7 +610,7 @@ int run(const Options& o) {
     bool menu_open = false, slots_from_menu = false;
     bool current_line_read = false;
     bool profile_dirty = false;
-    if (!load_font(&font, o.font)) {
+    if (!load_font(&font, o.font, data)) {
         fprintf(stderr, "A Japanese font is required. Install MS Gothic or pass --font FILE.\n"); return 1;
     }
     if (!system_menu.load(data, &err)) { fprintf(stderr, "System menus: %s\n", err.c_str()); return 1; }
@@ -648,8 +656,9 @@ int run(const Options& o) {
     };
     auto title_music = [&]() {
         if(!audio_ready)return;
-        int begin=0,end=0;dc4::bgm_loop_for("001.pcm",&begin,&end);
-        audio.engine.play_bgm_file(data+"/MUSIC/001.pcm",size_t(std::max(begin,0)),size_t(std::max(end,0)),true);
+        const auto asset=system_menu.title_music();
+        int begin=0,end=0;if(system_menu.scene_ui_script()!="start.mes")dc4::bgm_loop_for(asset,&begin,&end);
+        audio.engine.play_bgm_file(dc4::resolve_asset(data+"/"+asset),size_t(std::max(begin,0)),size_t(std::max(end,0)),true);
     };
     Backlog backlog;
     bool thumbnails_on = true;
@@ -666,7 +675,7 @@ int run(const Options& o) {
         rebuilt->set_observer(observe);
         if (audio_ready) rebuilt->set_audio(&audio.engine, &voices);
         if (!rebuilt->load_sheets(data + "/MES/start.mes") ||
-            !rebuilt->load_ui_script(data + "/MES/win_size.mes") ||
+            !rebuilt->load_ui_script(data + "/MES/" + system_menu.scene_ui_script()) ||
             !rebuilt->load_script(script_path(data, scene_name), entry)) {
             fprintf(stderr, "Scene initialization failed: %s\n", rebuilt->last_error().c_str());
             return nullptr;
@@ -919,7 +928,7 @@ int run(const Options& o) {
             if(!load)return;
             scene=std::make_unique<dc4scene::SceneRunner>(data);scene->set_font(&font);scene->set_observer(observe);
             if(audio_ready)scene->set_audio(&audio.engine,&voices);
-            scene->load_sheets(data+"/MES/start.mes");scene->load_ui_script(data+"/MES/win_size.mes");
+            scene->load_sheets(data+"/MES/start.mes");scene->load_ui_script(data+"/MES/"+system_menu.scene_ui_script());
         }
         auto_mode = skip_mode = false;
         backlog.open = false;
@@ -1027,7 +1036,7 @@ int run(const Options& o) {
         case T::PlayMusic: {
             std::string name=selected.asset;std::replace(name.begin(),name.end(),'\\','/');
             if(fs::path(name).extension().empty())name+=".pcm";
-            int begin=0,end=0;dc4::bgm_loop_for(fs::path(name).filename().string(),&begin,&end);
+            int begin=0,end=0;if(system_menu.scene_ui_script()!="start.mes")dc4::bgm_loop_for(fs::path(name).filename().string(),&begin,&end);
             if(audio_ready&&!audio.engine.play_bgm_file((fs::path(data)/name).string(),size_t(std::max(0,begin)),size_t(std::max(0,end)),system_menu.variable(100,26)==0))
                 notify("Cannot play "+name);
             music_running=audio_ready&&audio.engine.channel_playing(0);
@@ -1089,16 +1098,17 @@ int run(const Options& o) {
         } else if (tag == ":rapid" || tag == ":skip") {
             skip_mode = !scene->waiting_for_choice() && !skip_mode; auto_mode = false; status.clear();
         }
-        else if (tag == ":backlog" || tag==":aalog") toggle_backlog();
+        else if (tag == ":backlog" || tag==":aalog" || tag==":up") toggle_backlog();
+        else if (tag == ":down") { advance(); }
         else if (tag == ":n") {
             scene->toggle_taskbar();
-        } else if (tag == ":off" || tag == ":close" || tag == ":clear") {
+        } else if (tag == ":off" || tag == ":close" || tag == ":clear" || tag == ":change") {
             scene->set_message_visible(!scene->message_visible()); auto_mode = skip_mode = false;
-        } else if (tag == ":qs" || tag==":aaqsave") prompt_quick(false);
+        } else if (tag == ":qs" || tag==":aaqsave" || tag==":qsave") prompt_quick(false);
         else if (tag == ":ql" || tag==":aaqload") prompt_quick(true);
         else if (tag == ":ds" || tag==":aasave") open_slots(false);
         else if (tag == ":dl" || tag==":aaload") open_slots(true);
-        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size") open_system(dc4ui::SystemMenuPage::Config);
+        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":full" || tag==":menu") open_system(dc4ui::SystemMenuPage::Config);
         else if(tag==":aatitle") prompt_title();
         else if(tag==":aaskip"){skip_mode=!skip_mode;auto_mode=false;}
         update_title();

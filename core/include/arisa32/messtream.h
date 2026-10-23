@@ -2,22 +2,14 @@
 // Mirrors the engine's fetcher (sub_438790). Verified against all 330 game
 // scripts: 50,707/50,707 labels land on command boundaries.
 #pragma once
-#include "arisa32/mesfile.h"
+#include "arisa32/mesopcode.h"
 #include <string>
 #include <vector>
 
 namespace dc4 {
 
-enum class CmdKind {
-    Nop,        // 0x00
-    Param2,     // 0x01-0x3A : two u8 params
-    ParamStr,   // 0x3B-0x47 : u8 param + raw string
-    Str,        // 0x48-0x68 : raw string (paths, names)
-    Text,       // 0x69-0x6D : message text (stored SJIS - 0x20 per byte)
-    Words4,     // 0x6E-0xFF : four u16 params
-};
-
 struct MesCommand {
+    bool dc2pc = false; // Exact MES 0x9969 profile; retain the raw opcode.
     CmdKind kind = CmdKind::Nop;
     uint32_t pos = 0;      // offset of the opcode byte within `code`
     uint8_t op = 0;
@@ -25,7 +17,12 @@ struct MesCommand {
     uint16_t words[4] = {};             // Words4
     std::string str;                    // Str / ParamStr / Text (decoded)
     size_t size = 0;                    // total bytes consumed incl. opcode
+    Opcode opcode() const { return static_cast<Opcode>(op); }
 };
+
+// Adapt only proven DC2PC operations to the engine's service vocabulary.
+// Unknown commands cannot fall through to a same-number DC4 operation.
+MesCommand mes_engine_command(const MesCommand& raw);
 
 // Decodes stored text (real SJIS byte - 0x20) into real SJIS bytes.
 std::string mes_decode_text(const uint8_t* data, size_t len);
@@ -33,10 +30,8 @@ std::string mes_decode_text(const uint8_t* data, size_t len);
 class MesStream {
 public:
     explicit MesStream(const MesFile& mes)
-        : code_(mes.code), dialect_(mes.dialect) {
-        base_ = 0;
-        pos_ = (dialect_ == MesDialect::ClassicDC2) ? 2 : 3;
-    }
+        : code_(mes.code), dialect_(mes.dialect), profile_(mes_opcode_profile(mes.dialect, mes.version)),
+          pos_(profile_.header_size) {}
 
     // Reads the next command. Returns false at end of code.
     bool next(MesCommand* out);
@@ -48,7 +43,7 @@ public:
 private:
     const std::vector<uint8_t>& code_;
     MesDialect dialect_ = MesDialect::Modern;
-    size_t base_ = 0;
+    const MesOpcodeProfile& profile_;
     size_t pos_ = 0;
 };
 

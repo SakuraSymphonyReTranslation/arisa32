@@ -64,6 +64,8 @@ public:
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;
     std::string system_voice(int event_id) const;
+    std::string title_music() const;
+    std::string scene_ui_script() const;
     // Raw native variable access supports platform settings and progression.
     int variable(int bank, int index) const;
     void set_variable(int bank, int index, int value);

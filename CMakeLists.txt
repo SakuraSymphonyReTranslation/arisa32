@@ -12,6 +12,8 @@ endif()
 
 add_library(arisa32_core STATIC
     core/src/messtream.cpp
+    core/src/mesopcode.cpp
+    core/src/names.cpp
     core/src/mesfile.cpp
     core/src/mesvm.cpp
     core/src/voice.cpp
@@ -84,6 +86,19 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(dc2pc_flow_test tests/dc2pc_flow_test.cpp)
+    target_link_libraries(dc2pc_flow_test PRIVATE dc4core)
+    add_test(NAME dc2pc_flow_test COMMAND dc2pc_flow_test)
+    add_executable(text_render_test tests/text_render_test.cpp)
+    target_link_libraries(text_render_test PRIVATE dc4core)
+    add_test(NAME text_render_test COMMAND text_render_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
+    add_executable(mesopcode_test tests/mesopcode_test.cpp)
+    target_link_libraries(mesopcode_test PRIVATE dc4core)
+    add_test(NAME mesopcode_test COMMAND mesopcode_test)
+    add_executable(dc2pc_menu_test tests/dc2pc_menu_test.cpp)
+    target_link_libraries(dc2pc_menu_test PRIVATE dc4core)
+    add_test(NAME dc2pc_menu_test COMMAND dc2pc_menu_test)
     add_executable(confirm_dialog_test tests/confirm_dialog_test.cpp)
     target_link_libraries(confirm_dialog_test PRIVATE dc4core)
     add_test(NAME confirm_dialog_test COMMAND confirm_dialog_test)

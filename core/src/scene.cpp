@@ -41,6 +41,11 @@ std::u16string sjis_to_utf16(const std::string& s) {
             if (ch == u'\u3000' || ch == u'\uff65') ch = u' ';
             // In Latin translation text: middle dot (U+30FB) or delimiter ($) acts as space
             else if (is_latin() && (ch == u'\u30fb' || ch == u'$')) ch = u' ';
+            // Translation MES files store Latin letters as fullwidth Shift-JIS.
+            // Preserve ruby delimiters and commands until display_text parses them.
+            else if (is_latin() && ((ch >= u'\uff10' && ch <= u'\uff19') ||
+                     (ch >= u'\uff21' && ch <= u'\uff3a') ||
+                     (ch >= u'\uff41' && ch <= u'\uff5a'))) ch -= 0xFEE0;
         }
     };
     if (prefers_utf8_text()) {
@@ -168,7 +173,7 @@ void blit(std::vector<uint8_t>* dst, int dst_w, int dst_h, int dx, int dy,
 
 // ---------------------------------------------------------------------------
 
-bool FontRenderer::load(const std::string& path, int font_index, float pixel_size) {
+bool FontRenderer::load(const std::string& path, int font_index, float pixel_size, bool native) {
     if (!read_file(path, &font_data_)) return false;
     int offset = stbtt_GetFontOffsetForIndex(font_data_.data(), font_index);
     if (offset < 0) return false;
@@ -190,11 +195,13 @@ bool FontRenderer::load(const std::string& path, int font_index, float pixel_siz
     // Arbitrary caller-supplied fonts retain the portable stb path.
     std::string filename = std::filesystem::path(path).filename().string();
     for (char& ch : filename) ch = char(std::tolower((unsigned char)ch));
-    if (filename == "msgothic.ttc") {
-        native_family_ = u"\uff2d\uff33 \u30b4\u30b7\u30c3\u30af";
+    if (native && filename == "msgothic.ttc") {
+        native_family_ = font_index == 2 ? u"MS PGothic" :
+                         font_index == 1 ? u"MS UI Gothic" : u"MS Gothic";
         native_dc_ = CreateCompatibleDC(nullptr);
     }
 #endif
+    (void)native;
     pixel_size_ = pixel_size;
     scale_ = stbtt_ScaleForPixelHeight(f, pixel_size);
     return true;
@@ -226,12 +233,14 @@ const FontRenderer::Glyph& FontRenderer::glyph(char16_t ch, int size, bool wide)
         matrix.eM11.value = matrix.eM22.value = 1;
         GLYPHMETRICS metrics{};
         DWORD bytes = GetGlyphOutlineW(dc, ch, GGO_GRAY8_BITMAP, &metrics, 0, nullptr, &matrix);
+        if (bytes != GDI_ERROR) g.advance = metrics.gmCellIncX;
         if (bytes != GDI_ERROR && bytes > 0) {
             std::vector<uint8_t> raw(bytes);
             GetGlyphOutlineW(dc, ch, GGO_GRAY8_BITMAP, &metrics, bytes, raw.data(), &matrix);
             g.w = int(metrics.gmBlackBoxX); g.h = int(metrics.gmBlackBoxY);
             const int cell = (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size) * (wide ? 2 : 1);
-            g.x = metrics.gmptGlyphOrigin.x + (cell - metrics.gmCellIncX) / 2;
+            g.x = metrics.gmptGlyphOrigin.x +
+                (ch < 0x100 && native_family_ == u"MS PGothic" ? 0 : (cell - metrics.gmCellIncX) / 2);
             g.y = -metrics.gmptGlyphOrigin.y;
             g.advance = metrics.gmCellIncX;
             g.coverage.resize(size_t(g.w) * g.h);
@@ -280,11 +289,7 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
             auto& value = mask[size_t(py) * buf_w + px];
             value = std::max(value, g.coverage[size_t(ry) * g.w + rx]);
         }
-        if (g.advance > 0 && ch < 0x100) {
-            x += g.advance;
-        } else {
-            x += (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1);
-        }
+        x += glyph_advance(ch, float(ps), wide);
     }
     // Build the outline from the completed coverage mask.
     for (int y = 0; y < buf_h; ++y) for (int px = 0; px < buf_w; ++px) {
@@ -317,18 +322,18 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
     }
 }
 
-int FontRenderer::text_width(const std::u16string& text, float pixel_size) const {
-    if (!font_) return 0;
+int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide) const {
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
-    int w = 0;
-    for (char16_t ch : text) {
-        const Glyph& g = glyph(ch, ps, false);
-        if (g.advance > 0 && ch < 0x100) {
-            w += g.advance;
-        } else {
-            w += (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps);
-        }
+    if (font_ && ch < 0x100) {
+        const Glyph& g = glyph(ch, ps, wide);
+        if (g.advance > 0) return g.advance;
     }
+    return (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1);
+}
+
+int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool wide) const {
+    int w = 0;
+    for (char16_t ch : text) w += glyph_advance(ch, pixel_size, wide);
     return w;
 }
 
@@ -344,6 +349,13 @@ SceneRunner::SceneRunner(const std::string& data_dir)
 
 void SceneRunner::set_latin_mode(bool latin) {
     latin_mode_ = latin;
+    if (dc2pc_ui_) {
+        layout_.font_size = latin ? 18 : 22;
+        layout_.text_baseline = latin ? 480 : 484;
+        layout_.text_w = 660;
+        layout_.line_spacing = latin ? 28 : 32;
+        return;
+    }
     if (latin) {
         layout_.font_size = 20;
         layout_.text_w = 750;
@@ -422,7 +434,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     input_skip_label_.clear();
     buttons_.erase(
         std::remove_if(buttons_.begin(), buttons_.end(),
-                       [](const UiButton& b) { return b.y < 690; }),
+                       [&](const UiButton& b) { return b.y < ui_bar_top_; }),
         buttons_.end());
     pending_button_ = UiButton();
     pending_has_button_ = false;
@@ -452,9 +464,92 @@ void SceneRunner::finish_script_wait() {
     scene_dirty_ = true;
 }
 
+bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
+    using Handler = bool (SceneRunner::*)(const MesCommand&);
+    static const auto handlers = [] {
+        std::array<std::array<Handler, 256>, 6> table{};
+        const auto register_group = [&](CmdKind kind, Handler handler,
+                                        std::initializer_list<Opcode> opcodes) {
+            for (Opcode opcode : opcodes)
+                table[size_t(kind)][opcode_byte(opcode)] = handler;
+        };
+        register_group(
+            CmdKind::Param2, &SceneRunner::dispatch_timing_command,
+            {Opcode::WAIT, Opcode::SYSTEM_SERVICE, Opcode::WAIT_INPUT, Opcode::WAIT_INPUT_ALT});
+        register_group(CmdKind::Param2, &SceneRunner::dispatch_layer_command,
+                       {Opcode::TRANSITION, Opcode::COMMIT_TRANSITION, Opcode::RESET_TRANSITION});
+        register_group(CmdKind::ParamStr, &SceneRunner::dispatch_layer_command,
+                       {Opcode::LOAD_SLOT, Opcode::LEGACY_LOAD_SLOT});
+        register_group(CmdKind::ParamStr, &SceneRunner::dispatch_sprite_command,
+                       {Opcode::CHARACTER_LAYER, Opcode::EFFECT_LAYER, Opcode::FACE_LAYER});
+        register_group(
+            CmdKind::Str, &SceneRunner::dispatch_ui_chip_command,
+            {Opcode::LOAD_SHEET, Opcode::LEGACY_JUMP, Opcode::JUMP, Opcode::LEGACY_BUTTON_TARGET});
+        register_group(CmdKind::Str, &SceneRunner::dispatch_layer_command,
+                       {Opcode::BACKGROUND, Opcode::LEGACY_BACKGROUND, Opcode::LEGACY_SHEET_1,
+                        Opcode::LEGACY_SHEET_2, Opcode::LEGACY_SHEET_3});
+        register_group(CmdKind::Words4, &SceneRunner::dispatch_ui_chip_command,
+                       {Opcode::TRANSFER_ALT, Opcode::BUTTON_POSITION, Opcode::CHIP_POSITION,
+                        Opcode::LEGACY_CHIP_POSITION_ALT, Opcode::LEGACY_CHIP_POSITION,
+                        Opcode::CHIP, Opcode::LEGACY_CHIP, Opcode::MOVIE, Opcode::CONTROL,
+                        Opcode::JUMP, Opcode::TRANSFER});
+        register_group(CmdKind::Words4, &SceneRunner::dispatch_layer_command,
+                       {Opcode::COMMIT_LAYERS});
+        register_group(CmdKind::Words4, &SceneRunner::dispatch_sprite_command,
+                       {Opcode::SPRITE_TRANSFORM, Opcode::SPRITE_SLIDE, Opcode::SPRITE_EFFECT,
+                        Opcode::PLAY_EFFECT});
+        register_group(CmdKind::Words4, &SceneRunner::dispatch_camera_command,
+                       {Opcode::CAMERA_DURATION, Opcode::CAMERA});
+        return table;
+    }();
+    if (scene_audio_.dispatch(c))
+        return true;
+    const auto handler = handlers[size_t(c.kind)][opcode_byte(c.opcode())];
+    if (handler == &SceneRunner::dispatch_timing_command && (this->*handler)(c))
+        return true;
+    // Flow services consume a transfer counter; text accepts every text variant.
+    switch (c.kind) {
+    case CmdKind::Str:
+        switch (c.opcode()) {
+        case Opcode::MOVIE:
+        case Opcode::TRANSFER:
+        case Opcode::TRANSFER_ALT:
+            return dispatch_flow_command(c, transfers);
+        default:
+            break;
+        }
+        break;
+    case CmdKind::ParamStr:
+        switch (c.opcode()) {
+        case Opcode::INPUT_SKIP_TARGET:
+        case Opcode::TRANSFER_WITH_PARAM:
+            return dispatch_flow_command(c, transfers);
+        default:
+            break;
+        }
+        break;
+    case CmdKind::Words4:
+        if (c.opcode() == Opcode::PHONE_CHAT)
+            return dispatch_flow_command(c, transfers);
+        break;
+    default:
+        break;
+    }
+    const bool chip_property = c.kind == CmdKind::Words4 &&
+                               (c.opcode() == Opcode::CHIP || c.opcode() == Opcode::LEGACY_CHIP ||
+                                c.opcode() == Opcode::MOVIE);
+    if (!chip_property)
+        pending_scene_blit_ = false;
+    if (c.kind == CmdKind::Text)
+        return dispatch_text_command(c);
+    if (handler && handler != &SceneRunner::dispatch_timing_command)
+        return (this->*handler)(c);
+    return false;
+}
+
 bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    if (c.kind == K::Param2 && c.op == 0x15 && animation_enabled_) {
+    if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT && animation_enabled_) {
         // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
         if (c.p1 == 254) {
             if (effect_pck_.active) {
@@ -485,7 +580,7 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
         }
         return true;
     }
-    if (c.kind == K::Param2 && c.op == 0x1E && c.p1 == 9 && animation_enabled_) {
+    if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::SYSTEM_SERVICE && c.p1 == 9 && animation_enabled_) {
         // MED sets bank3[0]=125 seconds before the native ED.PCK scroller.
         const int seconds = vm_.read_variable(3, 0);
         if (seconds > 0 && seconds <= 3600 && start_credits(uint32_t(seconds) * 1000)) {
@@ -494,7 +589,7 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
         }
         return true;
     }
-    if (c.kind == K::Param2 && (c.op == 0x0D || c.op == 0x0A)) {
+    if (c.kind == K::Param2 && (c.opcode() == dc4::Opcode::WAIT_INPUT_ALT || c.opcode() == dc4::Opcode::WAIT_INPUT)) {
         if (!buttons_.empty() || c.p1 == 0) {
             script_wait_pending_ = true;
             script_wait_ms_ = -1;
@@ -510,23 +605,23 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers) {
     using K = dc4::CmdKind;
-    if (c.kind == K::Str && c.op == 0x52) {
+    if (c.kind == K::Str && c.opcode() == dc4::Opcode::MOVIE) {
         scene_audio_.stop_for_movie();
         pending_movie_ = c.str;
         pending_movie_is_effect_ = false;
         return true;
     }
-    if (c.kind == K::ParamStr && c.op == 0x43 && (c.p1 == 2 || c.p1 == 3)) {
+    if (c.kind == K::ParamStr && c.opcode() == dc4::Opcode::INPUT_SKIP_TARGET && (c.p1 == 2 || c.p1 == 3)) {
         input_skip_label_ = c.str;
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0xAB) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::PHONE_CHAT) {
         // COMU phone chat manager (MesVM case 171 at 0x430710).
         comu_command(c.words[0], c.words[1], c.words[2], c.words[3]);
         return true;
     }
-    if ((c.kind == K::Str && (c.op == 0x4F || c.op == 0x50)) ||
-        (c.kind == K::ParamStr && c.op == 0x2E)) {
+    if ((c.kind == K::Str && (c.opcode() == dc4::Opcode::TRANSFER || c.opcode() == dc4::Opcode::TRANSFER_ALT)) ||
+        (c.kind == K::ParamStr && c.opcode() == dc4::Opcode::TRANSFER_WITH_PARAM)) {
         if (c.str.empty() || c.str[0] == ':' ||
             static_cast<unsigned char>(c.str[0]) < 0x20 ||
             static_cast<unsigned char>(c.str[0]) >= 0x7F) {
@@ -547,7 +642,8 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
         if (use_system_menu_ && (system_name == "main" || system_name == "start" ||
             system_name == "config" || system_name == "save" || system_name == "load" ||
             system_name == "cgmode" || system_name == "music" || system_name == "scemode" ||
-            system_name == "sce_end")) {
+            system_name == "sce_end" || (c.dc2pc && (system_name == "sc_end" || system_name == "option" ||
+            system_name.rfind("title_",0)==0 || system_name.rfind("cg_",0)==0 || system_name.rfind("sce_",0)==0)))) {
             next_script_ = c.str;
             scene_end_ = true;
             return true;
@@ -564,20 +660,20 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
 
 bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    const bool is_button_chip_pos = (c.kind == K::Words4 && (c.op == 0x50 || c.op == 0x73));
-    const bool is_chip_pos = (c.kind == K::Words4 && (c.op == 0x7A || c.op == 0x55 || c.op == 0x53));
-    const bool is_chip_prop = (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52));
-    const bool is_button_rect = (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54 || c.op == 0x4F));
+    const bool is_button_chip_pos = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::TRANSFER_ALT || c.opcode() == dc4::Opcode::BUTTON_POSITION));
+    const bool is_chip_pos = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::CHIP_POSITION || c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION_ALT || c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION));
+    const bool is_chip_prop = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::CHIP || c.opcode() == dc4::Opcode::LEGACY_CHIP || c.opcode() == dc4::Opcode::MOVIE));
+    const bool is_button_rect = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::CONTROL || c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::TRANSFER));
     const bool is_button_target = (c.kind == K::Str && pending_has_button_ &&
-                                   (c.op == 0x3D || c.op == 0x3A || c.op == 0x54 || c.op == 0x48));
+                                   (c.opcode() == dc4::Opcode::LOAD_SHEET || c.opcode() == dc4::Opcode::LEGACY_JUMP || c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET));
 
     if (pending_scene_blit_ && !is_chip_prop) {
         pending_scene_blit_ = false;
     }
 
     if (is_button_chip_pos) {
-        int src_x = (c.op == 0x50) ? (int16_t(c.words[0]) - int16_t(c.words[2])) : int(c.words[2]);
-        int src_y = (c.op == 0x50) ? (int16_t(c.words[1]) - int16_t(c.words[3])) : int(c.words[3]);
+        int src_x = (c.opcode() == dc4::Opcode::TRANSFER_ALT) ? (int16_t(c.words[0]) - int16_t(c.words[2])) : int(c.words[2]);
+        int src_y = (c.opcode() == dc4::Opcode::TRANSFER_ALT) ? (int16_t(c.words[1]) - int16_t(c.words[3])) : int(c.words[3]);
         pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
                                      src_x, src_y, 0, 0, 0, true};
         pending_scene_blit_ = true;
@@ -626,7 +722,7 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    if (c.kind == K::Param2 && c.op == 0x0F) {
+    if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::TRANSITION) {
         if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
         if (c.p1 == 21) {
             if (!transition_pending_ || transition_snap_.empty()) {
@@ -639,7 +735,7 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
         if (c.p1 == 32) snapshot_for_transition();
         return true;
     }
-    if (c.kind == K::ParamStr && (c.op == 0x3C || c.op == 0x2B)) {
+    if (c.kind == K::ParamStr && (c.opcode() == dc4::Opcode::LOAD_SLOT || c.opcode() == dc4::Opcode::LEGACY_LOAD_SLOT)) {
         std::string up;
         up.reserve(c.str.size());
         for (char ch : c.str) up.push_back(char(std::toupper((unsigned char)ch)));
@@ -661,26 +757,26 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
         }
         return true;
     }
-    if (c.kind == K::Param2 && c.op == 0x36) {
+    if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::COMMIT_TRANSITION) {
         mark_transition_frame(0x36);
         return true;
     }
-    if (c.kind == K::Param2 && c.op == 0x37) {
+    if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::RESET_TRANSITION) {
         mark_transition_frame(0x37);
         std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0xB4) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::COMMIT_LAYERS) {
         mark_transition_frame(0xB4);
         std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
         return true;
     }
-    if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30 || c.op == 0x31 || c.op == 0x32 || c.op == 0x33)) {
+    if (c.kind == K::Str && (c.opcode() == dc4::Opcode::BACKGROUND || c.opcode() == dc4::Opcode::LEGACY_BACKGROUND || c.opcode() == dc4::Opcode::LEGACY_SHEET_1 || c.opcode() == dc4::Opcode::LEGACY_SHEET_2 || c.opcode() == dc4::Opcode::LEGACY_SHEET_3)) {
         if (c.str == ":n") { preserve_scene_ = true; return true; }
         if (c.str == ":r") { preserve_scene_ = false; return true; }
         if (c.str.empty() || c.str[0] == ':') return true;
         if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
-            if (c.op == 0x30 || c.op == 0x49) {
+            if (c.opcode() == dc4::Opcode::LEGACY_BACKGROUND || c.opcode() == dc4::Opcode::BACKGROUND) {
                 load_layer(1, c.str);
                 scene_chips_.clear();
                 scene_dirty_ = true;
@@ -692,11 +788,11 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
                         }
                     }
                 }
-            } else if (c.op == 0x31) {
+            } else if (c.opcode() == dc4::Opcode::LEGACY_SHEET_1) {
                 load_sheet(6, c.str);
-            } else if (c.op == 0x32) {
+            } else if (c.opcode() == dc4::Opcode::LEGACY_SHEET_2) {
                 load_sheet(7, c.str);
-            } else if (c.op == 0x33) {
+            } else if (c.opcode() == dc4::Opcode::LEGACY_SHEET_3) {
                 load_sheet(8, c.str);
             }
         }
@@ -707,17 +803,17 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    if (c.kind == K::ParamStr && (c.op == 0x3F || c.op == 0x40 || c.op == 0x41)) {
+    if (c.kind == K::ParamStr && (c.opcode() == dc4::Opcode::CHARACTER_LAYER || c.opcode() == dc4::Opcode::EFFECT_LAYER || c.opcode() == dc4::Opcode::FACE_LAYER)) {
         // Native Circus ADV32 opcode mapping:
         // 0x3F: Character layer index 0..4 (mapped to slots 4..8 -> sprite index 0..4)
         // 0x40: Cut-in / Effect layer (slot 25 -> sprite index 12 in Arisa32)
         // 0x41: Face/expression sub-layer 0..4
         int idx = -1;
-        if (c.op == 0x3F) {
+        if (c.opcode() == dc4::Opcode::CHARACTER_LAYER) {
             if (c.p1 < 5) idx = int(c.p1);
-        } else if (c.op == 0x40) {
+        } else if (c.opcode() == dc4::Opcode::EFFECT_LAYER) {
             idx = (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
-        } else if (c.op == 0x41) {
+        } else if (c.opcode() == dc4::Opcode::FACE_LAYER) {
             if (c.p1 < 5) idx = int(c.p1);
         }
         if (idx >= 0 && size_t(idx) < sprites_.size()) {
@@ -743,19 +839,19 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
         }
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0x8B) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::SPRITE_TRANSFORM) {
         set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0x8E) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::SPRITE_SLIDE) {
         queue_sprite_slide(c.words[0], c.words[1], c.words[2], c.words[3]);
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0x8C) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::SPRITE_EFFECT) {
         queue_sprite_effect(c.words[0], c.words[1], c.words[2], c.words[3]);
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0x95) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::PLAY_EFFECT) {
         if (!effect_movie_.empty()) {
             pending_movie_ = effect_movie_;
             pending_movie_is_effect_ = true;
@@ -772,11 +868,11 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_camera_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    if (c.kind == K::Words4 && c.op == 0x99) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::CAMERA_DURATION) {
         camera_duration_ = c.words[0];
         return true;
     }
-    if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
+    if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::CAMERA && c.words[0] < 2) {
         apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
         return true;
     }
@@ -785,17 +881,20 @@ bool SceneRunner::dispatch_camera_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    if (c.kind != K::Text) return false;
+    if (c.kind != K::Text)
+        return false;
     std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
     // Modern: 0x6A speaker, 0x6B.. line
     // Classic DC2: 0x4A speaker, 0x4B.. line
     // Classic DM: 0x4D speaker, 0x4E.. line
-    if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+    if (c.opcode() == dc4::Opcode::SPEAKER || c.opcode() == dc4::Opcode::LEGACY_SPEAKER ||
+        c.opcode() == dc4::Opcode::VOICE_ALT) {
         speaker_ = c.str;
         return true;
     }
-    if (c.op == 0x6D) {
-        if (comu_group_) comu_message(c.str);
+    if (c.opcode() == dc4::Opcode::CHAT_TEXT) {
+        if (comu_group_)
+            comu_message(c.str);
         current_line_.clear();
         speaker_.clear();
         scene_dirty_ = true;
@@ -826,20 +925,9 @@ bool SceneRunner::advance_to_next_text() {
             return false;
         }
         if (observer_) observer_(c, script_name_);
-        if (scene_audio_.dispatch(c)) continue;
-        if (dispatch_timing_command(c)) {
-            if (script_wait_pending_) return false;
-            continue;
-        }
-        if (dispatch_flow_command(c, transfers)) {
-            if (scene_end_ || !pending_movie_.empty()) return false;
-            continue;
-        }
-        if (dispatch_ui_chip_command(c)) continue;
-        if (dispatch_layer_command(c)) continue;
-        if (dispatch_sprite_command(c)) continue;
-        if (dispatch_camera_command(c)) continue;
-        if (dispatch_text_command(c)) {
+        c = dc4::mes_engine_command(c);
+        if (dispatch_command(c, transfers)) {
+            if (script_wait_pending_ || scene_end_ || !pending_movie_.empty()) return false;
             if (!current_line_.empty()) return true;
             continue;
         }
@@ -872,7 +960,8 @@ bool SceneRunner::load_sheets(const std::string& mes_path) {
     dc4::MesCommand c;
     int n = 0;
     while (stream.next(&c)) {
-        if (c.kind == dc4::CmdKind::ParamStr && c.op == 0x3D) {
+        c = dc4::mes_engine_command(c);
+        if (c.kind == dc4::CmdKind::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
             Image img;
             std::string lower = c.str;
             for (char& ch : lower) ch = char(std::tolower((unsigned char)ch));
@@ -907,17 +996,73 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     bool saw_rect = false;
     static_chips_.clear();
     buttons_.clear();
+    dc2pc_ui_ = ui.dialect == dc4::MesDialect::ClassicDC2 && (ui.version & 0xFFFF) == 0x9969;
+    ui_bar_top_ = dc2pc_ui_ ? 458 : 690;
+    layout_ = MesWinLayout{};
+    set_latin_mode(latin_mode_);
+    if (dc2pc_ui_) {
+        // start.mes first control group is the right-hand dialogue toolbar.
+        // Later groups define a second window style, confirmations and choices.
+        layout_.bg_x = 5; layout_.bg_y = 382;
+        layout_.bg_w = 736; layout_.bg_h = 208;
+        layout_.bg_src_x = 0; layout_.bg_src_y = 0;
+        layout_.text_x = 44;
+        layout_.name_x = 92; layout_.name_baseline = 418;
+        layout_.max_lines = 4;
+        layout_.gear_w = layout_.gear_h = 0;
+        open_button_ = UiButton{};
+        while (stream.next(&c)) {
+            c = dc4::mes_engine_command(c);
+            if (c.opcode() == dc4::Opcode::END_CONTROL) {
+                if (!buttons_.empty()) break;
+                continue;
+            }
+            if (c.opcode() == dc4::Opcode::LOAD_SHEET && c.kind == dc4::CmdKind::ParamStr) {
+                Image sheet;
+                if (load_grp_crx(c.str + ".crx", &sheet, &err))
+                    sheets_[37] = std::move(sheet);
+            } else if (c.opcode() == dc4::Opcode::CONTROL && c.kind == dc4::CmdKind::Words4) {
+                UiButton button;
+                button.x = 160 + int(std::lround(c.words[0] * 1.2));
+                button.y = int(std::lround(c.words[1] * 1.2));
+                button.w = 160 + int(std::lround(c.words[2] * 1.2)) - button.x;
+                button.h = int(std::lround(c.words[3] * 1.2)) - button.y;
+                buttons_.push_back(button);
+            } else if (c.opcode() == dc4::Opcode::JUMP && c.kind == dc4::CmdKind::Str && !buttons_.empty()) {
+                buttons_.back().action = c.str;
+            } else if (c.opcode() == dc4::Opcode::BUTTON_POSITION) {
+                pending = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
+                                 c.words[2], c.words[3], 0, 0, 37, true};
+            } else if (c.opcode() == dc4::Opcode::CHIP && pending.valid && !buttons_.empty()) {
+                const int state = c.words[3] == 99 ? 0 : int(c.words[3]);
+                pending.w = c.words[0]; pending.h = c.words[1];
+                // The second chip in each state is a hover caption above the
+                // window. Keep the first chip, which lies in the hit rectangle.
+                if (state >= 0 && state < 3 && !buttons_.back().state[state].valid)
+                    buttons_.back().state[state] = pending;
+                pending.valid = false;
+            }
+        }
+        printf("ui: DC2PC dialogue toolbar: %zu buttons\n", buttons_.size());
+        return true;
+    }
     while (stream.next(&c)) {
+        c = dc4::mes_engine_command(c);
         using K = dc4::CmdKind;
-        if (c.kind == K::ParamStr && (c.op == 0x3D || c.op == 0x2A || c.op == 0x2B || c.op == 0x2E)) {
+        if (c.kind == K::ParamStr && (c.opcode() == dc4::Opcode::LOAD_SHEET ||
+                                      c.opcode() == dc4::Opcode::LEGACY_LOAD_SHEET ||
+                                      c.opcode() == dc4::Opcode::LEGACY_LOAD_SLOT ||
+                                      c.opcode() == dc4::Opcode::TRANSFER_WITH_PARAM)) {
             Image img;
             std::string lower = c.str;
-            for (char& ch : lower) ch = char(std::tolower((unsigned char)ch));
+            for (char& ch : lower)
+                ch = char(std::tolower((unsigned char)ch));
             if (load_grp_crx(lower + ".crx", &img, &err))
                 sheets_[c.p1 + 37] = std::move(img);
             continue;
         }
-        if (c.kind == K::Words4 && (c.op == 0x72 || c.op == 0x54)) {
+        if (c.kind == K::Words4 &&
+            (c.opcode() == dc4::Opcode::CONTROL || c.opcode() == dc4::Opcode::JUMP)) {
             // Hit rect: only widgets in the bottom bar band are always on.
             saw_rect = int16_t(c.words[1]) >= 690 && int16_t(c.words[1]) < kScreenH;
             if (saw_rect) {
@@ -931,26 +1076,37 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
             pending = UiChip();
             continue;
         }
-        if (c.kind == K::Str && (c.op == 0x54 || c.op == 0x3D || c.op == 0x3A || c.op == 0x48)) {
+        if (c.kind == K::Str &&
+            (c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::LOAD_SHEET ||
+             c.opcode() == dc4::Opcode::LEGACY_JUMP ||
+             c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET)) {
             if (saw_rect && !buttons_.empty() && buttons_.back().action.empty())
                 buttons_.back().action = c.str;
             continue;
         }
-        if (c.kind == K::Words4 && (c.op == 0x73 || c.op == 0x7A || c.op == 0x55 || c.op == 0x53)) {
-            pending = UiChip{int16_t(c.words[0]), int16_t(c.words[1]), c.words[2], c.words[3],
-                             0, 0, 0, true};
-            from_widget = (c.op == 0x73 || c.op == 0x55 || c.op == 0x53);
+        if (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::BUTTON_POSITION ||
+                                    c.opcode() == dc4::Opcode::CHIP_POSITION ||
+                                    c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION_ALT ||
+                                    c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION)) {
+            pending = UiChip{
+                int16_t(c.words[0]), int16_t(c.words[1]), c.words[2], c.words[3], 0, 0, 0, true};
+            from_widget = (c.opcode() == dc4::Opcode::BUTTON_POSITION ||
+                           c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION_ALT ||
+                           c.opcode() == dc4::Opcode::LEGACY_CHIP_POSITION);
             continue;
         }
-        if (c.kind == K::Words4 && (c.op == 0x77 || c.op == 0x57 || c.op == 0x52) && pending.valid) {
+        if (c.kind == K::Words4 &&
+            (c.opcode() == dc4::Opcode::CHIP || c.opcode() == dc4::Opcode::LEGACY_CHIP ||
+             c.opcode() == dc4::Opcode::MOVIE) &&
+            pending.valid) {
             pending.w = c.words[0];
             pending.h = c.words[1];
             pending.sheet = c.words[2];
-            int state = c.words[3] == 99 ? 0 : c.words[3] == 1 ? 1
-                        : c.words[3] == 2 ? 2 : -1;
+            int state = c.words[3] == 99 ? 0 : c.words[3] == 1 ? 1 : c.words[3] == 2 ? 2 : -1;
             if (pending.dst_y >= 690 && pending.dst_y < kScreenH) {
                 if (from_widget && state >= 0) {
-                    if (!buttons_.empty()) buttons_.back().state[state] = pending;
+                    if (!buttons_.empty())
+                        buttons_.back().state[state] = pending;
                 } else {
                     static_chips_.push_back(pending);
                 }
@@ -964,11 +1120,14 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     open_button_ = UiButton();
     std::vector<UiButton> unique;
     for (const auto& button : buttons_) {
-        if (button.action.empty()) continue;
+        if (button.action.empty())
+            continue;
         if (button.action == ":n" && open_button_.action.empty()) {
             open_button_ = button;
-            if (open_button_.w < 47) open_button_.w = 47;
-            if (open_button_.h < 25) open_button_.h = 25;
+            if (open_button_.w < 47)
+                open_button_.w = 47;
+            if (open_button_.h < 25)
+                open_button_.h = 25;
             continue;
         }
         auto old = std::find_if(unique.begin(), unique.end(), [&](const UiButton& b) { return b.action == button.action; });
@@ -1834,7 +1993,7 @@ void SceneRunner::draw(int reveal_chars) {
         if (taskbar_visible_) {
             for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
             for (const UiButton& b : buttons_) {
-                if (b.y >= 690) {
+                if (b.y >= ui_bar_top_) {
                     bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
                     int state = hover ? (pointer_down_ ? 2 : 1) : 0;
                     const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
@@ -1864,7 +2023,7 @@ void SceneRunner::draw(int reveal_chars) {
     }
     if (!message_visible_) {
         for (const UiButton& b : buttons_) {
-            if (b.y < 690) {
+            if (b.y < ui_bar_top_) {
                 bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
                 int state = hover ? (pointer_down_ ? 2 : 1) : 0;
                 const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
@@ -2151,7 +2310,10 @@ void SceneRunner::blit_chip(const UiChip& ch, int alpha) {
         memcpy(&piece.rgba[(size_t(y) * ch.w + left) * 4],
                &s.rgba[(size_t(ch.src_y + y) * s.w + ch.src_x + left) * 4], size_t(right - left) * 4);
     }
-    blit(&frame_, kScreenW, kScreenH, ch.dst_x, ch.dst_y, piece, 1.0f, alpha);
+    const float scale = dc2pc_ui_ ? 1.2f : 1.0f;
+    blit(&frame_, kScreenW, kScreenH,
+         (dc2pc_ui_ ? 160 : 0) + int(std::lround(ch.dst_x * scale)),
+         int(std::lround(ch.dst_y * scale)), piece, scale, alpha);
 }
 
 // The message window is the sheet's own background piece at its natural
@@ -2169,19 +2331,33 @@ void SceneRunner::draw_message_window(int reveal_chars) {
     }
     if (img) {
         const Image& s = *img;
+        if (dc2pc_ui_) {
+            blit_chip(UiChip{4, 421, 0, 209, 736, 169, 37, true},
+                      (window_opacity_ * 255 + 50) / 100);
+        }
         Image piece;
         piece.w = layout_.bg_w;
         piece.h = layout_.bg_h;
         piece.name = "meswin_bg";
         piece.rgba.assign(size_t(piece.w) * piece.h * 4, 0);
         for (int y = 0; y < piece.h; ++y) {
-            if (layout_.bg_y + y >= s.h) break;
-            memcpy(&piece.rgba[size_t(y) * piece.w * 4],
-                   &s.rgba[(size_t(layout_.bg_y + y) * s.w) * 4],
-                   size_t(piece.w) * 4);
+            const int sy = layout_.bg_src_y + y;
+            if (sy < 0 || sy >= s.h) continue;
+            const int left = std::max(0, -layout_.bg_src_x);
+            const int right = std::min(piece.w, s.w - layout_.bg_src_x);
+            if (left >= right) continue;
+            memcpy(&piece.rgba[(size_t(y) * piece.w + left) * 4],
+                   &s.rgba[(size_t(sy) * s.w + layout_.bg_src_x + left) * 4],
+                   size_t(right - left) * 4);
         }
-        blit(&frame_, kScreenW, kScreenH, layout_.bg_x, layout_.bg_y, piece,
-             1.0f, (window_opacity_ * 255 + 50) / 100);
+        const float scale = dc2pc_ui_ ? 1.2f : 1.0f;
+        blit(&frame_, kScreenW, kScreenH,
+             (dc2pc_ui_ ? 160 : 0) + int(std::lround(layout_.bg_x * scale)),
+             int(std::lround(layout_.bg_y * scale)), piece,
+             scale, (window_opacity_ * 255 + 50) / 100);
+        if (dc2pc_ui_ && !speaker_.empty())
+            blit_chip(UiChip{18, 389, 12, 7, 200, 39, 37, true},
+                      (window_opacity_ * 255 + 50) / 100);
     }
     if (font_) {
         // Speaker name: plain outlined text above the window — the cyan
@@ -2194,8 +2370,9 @@ void SceneRunner::draw_message_window(int reveal_chars) {
             font_->rasterize_line(sjis_to_utf16(speaker_), 0,
                                   layout_.name_font + 2, &name.rgba, name.w,
                                   name.h, layout_.name_font);
-            blit(&frame_, kScreenW, kScreenH, layout_.name_x,
-                 layout_.name_baseline - layout_.name_font - 2, name, 1.0f,
+            const float scale = dc2pc_ui_ ? 1.2f : 1.0f;
+            blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround(layout_.name_x * scale)),
+                 int(std::lround((layout_.name_baseline - layout_.name_font - 2) * scale)), name, scale,
                  255);
         }
         if (!current_line_.empty()) draw_text_line(current_line_, reveal_chars);
@@ -2221,7 +2398,16 @@ DisplayText display_text(const std::string& sjis, int default_size = 22) {
     const std::u16string raw = sjis_to_utf16(sjis);
     DisplayText out;
     TextStyle style; style.size = default_size;
-    auto append = [&](char16_t ch) { out.text.push_back(ch); out.styles.push_back(style); };
+    auto append = [&](char16_t ch) {
+        // Normalize printable fullwidth ASCII after parsing ruby/format tags.
+        // This keeps Japanese text intact and avoids treating translated words
+        // as CJK, where a line break is allowed after every character.
+        if (is_latin()) {
+            if (ch >= 0xFF01 && ch <= 0xFF5E) ch -= 0xFEE0;
+            else if (ch == u'\u2212') ch = u'-';
+        }
+        out.text.push_back(ch); out.styles.push_back(style);
+    };
     auto digit = [](char16_t ch) { return ch >= u'0' && ch <= u'9'; };
     // Native 0x4B31B0, read through 0x43EE78/0x43EEF1. The native
     // palette call swaps its first two stored bytes; named @cr/g/b use RGB.
@@ -2314,7 +2500,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     std::vector<Line> lines;
     auto advance_at = [&](size_t i) {
         const auto& style = parsed.styles[i];
-        return cell_width(parsed.text[i], style.size) * (style.wide ? 2 : 1);
+        return font_->glyph_advance(parsed.text[i], float(style.size), style.wide);
     };
 
     auto is_cjk = [](char16_t ch) {
@@ -2393,7 +2579,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             int rx = 0, rw = 0;
             for (size_t at = line.start; at < ruby.start; ++at) rx += advance_at(at);
             for (size_t at = ruby.start; at < ruby.start + ruby.count; ++at) rw += advance_at(at);
-            const int reading_width = text_width(ruby.reading, 12);
+            const int reading_width = font_->text_width(ruby.reading, 12);
             const auto style = parsed.styles[ruby.start];
             font_->rasterize_line(ruby.reading, 2 + rx + (rw - reading_width) / 2,
                 baseline - style.size, &text_img.rgba, text_img.w, text_img.h, 12, style.rgb);
@@ -2402,7 +2588,9 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
         remaining -= int(shown_end - line.start);
     }
     const int y = layout_.text_baseline - 34;
-    blit(&frame_, kScreenW, kScreenH, layout_.text_x - 2, y, text_img, 1.0f, 255);
+    const float scale = dc2pc_ui_ ? 1.2f : 1.0f;
+    blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.text_x - 2) * scale)),
+         int(std::lround(y * scale)), text_img, scale, 255);
     if (wait_marker_ && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
         UiChip gear{layout_.text_x + last_x + 2, layout_.text_baseline + last_y - 23,
             layout_.gear_x + (wait_frame_ % 4) * 33, layout_.gear_y,
@@ -2486,6 +2674,13 @@ void SceneRunner::draw_choices() {
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
     if (vm_.waiting_for_choice()) return nullptr;
+    if (dc2pc_ui_) {
+        if (!message_visible_) return nullptr;
+        for (const auto& b : buttons_)
+            if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
+                return &b.action;
+        return nullptr;
+    }
     if (!message_visible_) {
         for (const UiButton& b : buttons_) {
             if (b.y < 690 && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())

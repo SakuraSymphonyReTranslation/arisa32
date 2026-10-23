@@ -1,192 +1,68 @@
 #include "arisa32/messtream.h"
 
-#include <cstring>
-
 namespace dc4 {
-
 std::string mes_decode_text(const uint8_t* data, size_t len) {
     std::string out;
     out.reserve(len);
-    for (size_t i = 0; i < len; ++i)
-        out.push_back(char(data[i] + 0x20));
+    for (size_t i = 0; i < len; ++i) out.push_back(char(data[i] + 0x20));
     return out;
 }
 
 bool MesStream::next(MesCommand* out) {
-    const size_t n = code_.size();
-    size_t p = pos_;
-    if (p >= n) return false;
-    out->pos = uint32_t(p);
-    const uint8_t op = code_[p];
-    out->op = op;
-    auto cstr_len = [&](size_t start) -> long {
-        const void* f = memchr(code_.data() + start, 0, n - start);
-        return f ? long(static_cast<const uint8_t*>(f) - code_.data() - start) : -1;
-    };
-    if (op == 0x00) {
-        out->kind = CmdKind::Nop;
-        out->size = 1;
-        pos_ = p + 1;
-        return true;
+    if (!out) return false;
+    *out = MesCommand{};
+    if (pos_ >= code_.size()) return false;
+    out->dc2pc = profile_.id == MesProfileId::DC2PC;
+    out->pos = uint32_t(pos_);
+    out->op = code_[pos_];
+    out->kind = profile_.opcodes[out->op].kind;
+    out->size = mes_command_size(code_.data(), code_.size(), pos_, out->kind);
+    if (!out->size) return false;
+    const auto* operands = code_.data() + pos_ + 1;
+    switch (out->kind) {
+    case CmdKind::Param2:
+        out->p1 = operands[0]; out->p2 = operands[1]; break;
+    case CmdKind::ParamStr:
+        out->p1 = operands[0];
+        out->str.assign(reinterpret_cast<const char*>(operands + 1), out->size - 3);
+        break;
+    case CmdKind::Str:
+        out->str.assign(reinterpret_cast<const char*>(operands), out->size - 2);
+        break;
+    case CmdKind::Text:
+        out->str = mes_decode_text(operands, out->size - 2); break;
+    case CmdKind::Words4:
+        for (int i = 0; i < 4; ++i)
+            out->words[i] = uint16_t(operands[2*i] | (operands[2*i+1] << 8));
+        break;
+    default: break;
     }
-
-    if (dialect_ == MesDialect::ClassicDC2) {
-        if (op < 0x29) {
-            if (p + 3 > n) return false;
-            out->kind = CmdKind::Param2;
-            out->p1 = code_[p + 1];
-            out->p2 = code_[p + 2];
-            out->size = 3;
-            pos_ = p + 3;
-            return true;
-        }
-        if (op < 0x2F) {
-            if (p + 2 > n) return false;
-            long l = cstr_len(p + 2);
-            if (l < 0) return false;
-            out->kind = CmdKind::ParamStr;
-            out->p1 = code_[p + 1];
-            out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
-            out->size = 2 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (op < 0x4A) {
-            long l = cstr_len(p + 1);
-            if (l < 0) return false;
-            out->kind = CmdKind::Str;
-            out->str.assign(reinterpret_cast<const char*>(&code_[p + 1]), size_t(l));
-            out->size = 1 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (op < 0x4E) {
-            long l = cstr_len(p + 1);
-            if (l < 0) return false;
-            out->kind = CmdKind::Text;
-            out->str = mes_decode_text(&code_[p + 1], size_t(l));
-            out->size = 1 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (p + 9 > n) return false;
-        out->kind = CmdKind::Words4;
-        for (int i = 0; i < 4; ++i) {
-            out->words[i] = uint16_t(code_[p + 1 + 2 * i] | (code_[p + 2 + 2 * i] << 8));
-        }
-        out->size = 9;
-        pos_ = p + 9;
-        return true;
-    }
-
-    if (dialect_ == MesDialect::ClassicDM) {
-        if (op < 0x2A) {
-            if (p + 3 > n) return false;
-            out->kind = CmdKind::Param2;
-            out->p1 = code_[p + 1];
-            out->p2 = code_[p + 2];
-            out->size = 3;
-            pos_ = p + 3;
-            return true;
-        }
-        if (op < 0x32) {
-            if (p + 2 > n) return false;
-            long l = cstr_len(p + 2);
-            if (l < 0) return false;
-            out->kind = CmdKind::ParamStr;
-            out->p1 = code_[p + 1];
-            out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
-            out->size = 2 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (op < 0x4D) {
-            long l = cstr_len(p + 1);
-            if (l < 0) return false;
-            out->kind = CmdKind::Str;
-            out->str.assign(reinterpret_cast<const char*>(&code_[p + 1]), size_t(l));
-            out->size = 1 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (op < 0x51) {
-            long l = cstr_len(p + 1);
-            if (l < 0) return false;
-            out->kind = CmdKind::Text;
-            out->str = mes_decode_text(&code_[p + 1], size_t(l));
-            out->size = 1 + size_t(l) + 1;
-            pos_ = p + out->size;
-            return true;
-        }
-        if (p + 9 > n) return false;
-        out->kind = CmdKind::Words4;
-        for (int i = 0; i < 4; ++i) {
-            out->words[i] = uint16_t(code_[p + 1 + 2 * i] | (code_[p + 2 + 2 * i] << 8));
-        }
-        out->size = 9;
-        pos_ = p + 9;
-        return true;
-    }
-
-    // Modern (DC3, DC4, DC4PH)
-    if (op == 0x2E) {
-        if (p + 2 > n) return false;
-        long l = cstr_len(p + 2);
-        if (l < 0) return false;
-        out->kind = CmdKind::ParamStr;
-        out->p1 = code_[p + 1];
-        out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
-        out->size = 2 + size_t(l) + 1;
-        pos_ = p + out->size;
-        return true;
-    }
-    if (op < 0x3B) {
-        if (p + 3 > n) return false;
-        out->kind = CmdKind::Param2;
-        out->p1 = code_[p + 1];
-        out->p2 = code_[p + 2];
-        out->size = 3;
-        pos_ = p + 3;
-        return true;
-    }
-    if (op < 0x48) {
-        if (p + 2 > n) return false;
-        long l = cstr_len(p + 2);
-        if (l < 0) return false;
-        out->kind = CmdKind::ParamStr;
-        out->p1 = code_[p + 1];
-        out->str.assign(reinterpret_cast<const char*>(&code_[p + 2]), size_t(l));
-        out->size = 2 + size_t(l) + 1;
-        pos_ = p + out->size;
-        return true;
-    }
-    if (op < 0x69) {
-        long l = cstr_len(p + 1);
-        if (l < 0) return false;
-        out->kind = CmdKind::Str;
-        out->str.assign(reinterpret_cast<const char*>(&code_[p + 1]), size_t(l));
-        out->size = 1 + size_t(l) + 1;
-        pos_ = p + out->size;
-        return true;
-    }
-    if (op < 0x6E) {
-        long l = cstr_len(p + 1);
-        if (l < 0) return false;
-        out->kind = CmdKind::Text;
-        out->str = mes_decode_text(&code_[p + 1], size_t(l));
-        out->size = 1 + size_t(l) + 1;
-        pos_ = p + out->size;
-        return true;
-    }
-    // 0x6E-0xFF: four u16
-    if (p + 9 > n) return false;
-    out->kind = CmdKind::Words4;
-    for (int i = 0; i < 4; ++i) {
-        out->words[i] = uint16_t(code_[p + 1 + 2 * i] | (code_[p + 2 + 2 * i] << 8));
-    }
-    out->size = 9;
-    pos_ = p + 9;
+    pos_ += out->size;
     return true;
 }
 
-}  // namespace dc4
+MesCommand mes_engine_command(const MesCommand& raw) {
+    if (!raw.dc2pc) return raw;
+    MesCommand c = raw;
+    const auto& opcode = mes_opcode_profile(MesDialect::ClassicDC2, 0x9969).opcodes[raw.op];
+    c.op = opcode_byte(Opcode::UNKNOWN);
+    if (raw.kind != opcode.kind) return c;
+    c.op = opcode_byte(opcode.operation);
+    c.kind = opcode.engine_kind;
+    switch (opcode.transform) {
+    case OperandTransform::ByteAudio:
+        c.words[0] = raw.p1;
+        c.words[1] = raw.p2;
+        break;
+    case OperandTransform::ButtonSource:
+        c.words[2] = uint16_t(raw.words[0] - raw.words[2]);
+        c.words[3] = uint16_t(raw.words[1] - raw.words[3]);
+        break;
+    case OperandTransform::StaticState:
+        if (c.words[3] == 9) c.words[3] = 99;
+        break;
+    default: break;
+    }
+    return c;
+}
+}

@@ -313,6 +313,7 @@ bool over_widget(Engine* e, int x, int y) {
 }
 
 std::string stopped_message(Engine* e) {
+    if(e->scene->last_error().empty() && !e->scene->next_script().empty()) return {};
     return e->scene->last_error().empty() ? "End of scenario" : "Scene stopped: " + e->scene->last_error();
 }
 
@@ -398,7 +399,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
     next->set_animation_enabled(true);
     if (std::filesystem::path(name).extension().empty()) name += ".mes";
     if (!next->load_sheets(e->data_dir + "/MES/start.mes") ||
-        !next->load_ui_script(e->data_dir + "/MES/win_size.mes") ||
+        !next->load_ui_script(e->data_dir + "/MES/" + e->menu.scene_ui_script()) ||
         !next->show_message_window("SYSTEM/MESWIN.CRX") ||
         !next->load_script(e->data_dir + "/MES/" + name, label)) return next->last_error();
     e->menu.initialize_scene(*next,replay);
@@ -459,10 +460,12 @@ void open_menu(Engine* e, dc4ui::SystemMenuPage page) {
 }
 
 bool play_menu_music(Engine* e, std::string asset, bool loop) {
+    if (asset.empty()) return false;
+    std::replace(asset.begin(),asset.end(),'\\','/');
     if (std::filesystem::path(asset).extension().empty()) asset += ".pcm";
     if (e->current_bgm == asset && e->audio.channel_playing(0)) return true;
     int first = 0, last = 0;
-    dc4::bgm_loop_for(asset,&first,&last);
+    if(e->menu.scene_ui_script() != "start.mes") dc4::bgm_loop_for(asset,&first,&last);
     e->audio.set_group_volume(dc4::AudioGroup::Bgm,100);
     const bool ok = e->audio.play_bgm_file(dc4::resolve_asset(e->data_dir + "/" + asset),
         size_t(std::max(0,first)),size_t(std::max(0,last)),loop);
@@ -506,7 +509,7 @@ void return_to_title(Engine* e) {
     e->menu.set_in_game(false);
     open_menu(e, P::Title);
     e->menu_music = false;
-    play_menu_music(e, "music/001.pcm", true);
+    play_menu_music(e, e->menu.title_music(), true);
 }
 
 void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
@@ -520,7 +523,7 @@ void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
     } else if (e->menu.page() == P::Title || e->menu.page() == P::Extras) {
         if (!e->in_game) {
             e->menu_music = false;
-            play_menu_music(e, "music/001.pcm", true);
+            play_menu_music(e, e->menu.title_music(), true);
         }
         if (e->menu.page() == P::Extras) {
             play_system_voice(e, 15);
@@ -536,7 +539,7 @@ void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
     } else if (before == P::Music && e->menu.page() != P::Config) {
         e->menu_music = false;
         if (!e->in_game) {
-            play_menu_music(e, "music/001.pcm", true);
+            play_menu_music(e, e->menu.title_music(), true);
         }
     }
 }
@@ -931,7 +934,7 @@ void tick_engine(Engine* e) {
                 e->scene->finish_movie();
                 advance_scene(e);
             } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
-                play_menu_music(e, "music/001.pcm", true);
+                play_menu_music(e, e->menu.title_music(), true);
             }
         }
         return;
@@ -952,13 +955,13 @@ void tick_engine(Engine* e) {
         if (e->menu.loaded()) {
             auto page = e->replay ? dc4ui::SystemMenuPage::Scenes : dc4ui::SystemMenuPage::Title;
             if (target == "music") page = dc4ui::SystemMenuPage::Music;
-            if (target == "cgmode") page = dc4ui::SystemMenuPage::Gallery;
-            if (target == "scemode" || target == "sce_end") page = dc4ui::SystemMenuPage::Scenes;
-            if (target == "config") page = dc4ui::SystemMenuPage::Config;
+            if (target == "cgmode" || target.rfind("cg_",0)==0) page = dc4ui::SystemMenuPage::Gallery;
+            if (target == "scemode" || target == "sce_end" || target == "sc_end" || target.rfind("sce_",0)==0) page = dc4ui::SystemMenuPage::Scenes;
+            if (target == "config" || target == "option") page = dc4ui::SystemMenuPage::Config;
             e->in_game = false; e->audio.stop_all(); e->menu_music = false;
             save_profile(e); open_menu(e,page);
             if (page == dc4ui::SystemMenuPage::Scenes) e->menu.resume_scenes();
-            if (page != dc4ui::SystemMenuPage::Music) play_menu_music(e,"music/001.pcm",true);
+            if (page != dc4ui::SystemMenuPage::Music) play_menu_music(e,e->menu.title_music(),true);
         } else {
             if (!target.empty()) {
                 std::string p = e->data_dir + "/MES/" + target + ".mes";
@@ -1036,9 +1039,11 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     else LOGE("VOICE.DAT: %s", err.c_str());
     if (!e->audio.init()) LOGE("audio init failed; continuing without device output");
 
+    bool menu_ok = e->menu.load(e->data_dir, &err);
     bool font_ok = false;
     if (!g_config.font.empty()) {
-        font_ok = e->font.load(g_config.font, 1, 22.0f);
+        const int face_index = dc4::is_latin() && e->menu.scene_ui_script() == "start.mes" ? 2 : 1;
+        font_ok = e->font.load(g_config.font, face_index, 22.0f);
         if (!font_ok) font_ok = e->font.load(g_config.font, 0, 22.0f);
         if (font_ok) LOGI("font: %s", g_config.font.c_str());
     }
@@ -1054,7 +1059,6 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->log_loaded = e->log.load(e->data_dir);
     e->log.set_latin_mode(dc4::is_latin());
     if (!e->log_loaded) LOGE("log screen artwork unavailable");
-    bool menu_ok = e->menu.load(e->data_dir, &err);
     if (!menu_ok) {
         LOGI("system menus unavailable (%s); using in-game flow", err.c_str());
         e->menu_open = false;
@@ -1094,7 +1098,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene->set_observer([e](const dc4::MesCommand& c,const std::string& script){e->menu.observe(c,script);});
 
     e->scene->load_sheets(e->data_dir + "/MES/start.mes");
-    e->scene->load_ui_script(e->data_dir + "/MES/win_size.mes");
+    e->scene->load_ui_script(e->data_dir + "/MES/" + e->menu.scene_ui_script());
     e->scene->show_message_window("SYSTEM/MESWIN.CRX");
 
     static const char* kOpeningCandidates[] = {
@@ -1128,7 +1132,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     if (menu_ok) {
         apply_config(e);
         open_menu(e, dc4ui::SystemMenuPage::Title);
-        play_menu_music(e, "music/001.pcm", true);
+        play_menu_music(e, e->menu.title_music(), true);
         LOGI("title ready");
     } else {
         e->audio.set_master_volume(100);
@@ -1224,7 +1228,7 @@ Java_org_dc4engine_Dc4Activity_dc4MenuTouch(JNIEnv* env,jobject,jint action,jint
                     e->scene->finish_movie();
                     advance_scene(e);
                 } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
-                    play_menu_music(e, "music/001.pcm", true);
+                    play_menu_music(e, e->menu.title_music(), true);
                 }
             }
         }
@@ -1395,13 +1399,15 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
                 message = e->scene->replay_voice() ? ":voice" : "No voice on this line";
             } else if (*tag == ":n") {
                 e->scene->toggle_taskbar();
-            } else if (*tag == ":off" || *tag == ":close" || *tag == ":clear") {
+            } else if (*tag == ":off" || *tag == ":close" || *tag == ":clear" || *tag == ":change") {
                 e->scene->set_message_visible(!e->scene->message_visible());
             } else if (*tag == ":auto" || *tag == ":rapid" || *tag == ":skip" ||
                        *tag == ":backlog" || *tag == ":qs" || *tag == ":ql" ||
                        *tag == ":ds" || *tag == ":dl" || *tag == ":option" || *tag == ":aatitle" ||
                        *tag == ":aaload" || *tag == ":aasave" || *tag == ":aaqload" ||
-                       *tag == ":aaqsave" || *tag == ":aaskip") {
+                       *tag == ":aaqsave" || *tag == ":aaskip" || *tag == ":qsave" ||
+                       *tag == ":full" || *tag == ":menu" || *tag == ":change" ||
+                       *tag == ":up" || *tag == ":down" || *tag == ":aalog") {
                 // Shell-level actions (auto/skip/backlog/save UI) dispatch in Java.
                 e->pressed_action.clear();
                 e->pressed_widget = false;

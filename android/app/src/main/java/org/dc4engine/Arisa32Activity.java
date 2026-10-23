@@ -463,6 +463,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         if (advData != null && !advData.equals(gamePath) && advData.getParentFile() != null) {
             return advData.getParentFile();
+
         }
         return gamePath;
     }
@@ -505,6 +506,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private static File findTargetSaveDir(File gameRoot, File gamePath, File advData) {
+        GameProfile detected = GameProfileRegistry.resolveProfile(advData != null ? advData : gameRoot, null);
+        if ("dc2pc".equals(detected.getId())) {
+            File dir = new File(advData != null ? advData : gameRoot, detected.getSaveSubdir());
+            return dir.isDirectory() || dir.mkdirs() ? dir : null;
+        }
         List<File> candidates = new ArrayList<>();
         // Priority 1: Inside AdvData (e.g. AdvData/SAVEDATA, AdvData/savedata)
         if (advData != null) {
@@ -1193,10 +1199,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 autoMode = false;
                 break;
             case ":backlog":
+            case ":aalog":
+            case ":up":
                 openBacklog();
+                break;
+            case ":down":
+                autoMode = skipMode = false;
+                dc4Advance();
                 break;
             case ":qs":
             case ":aaqsave":
+            case ":qsave":
                 autoMode=skipMode=false;handleOriginalAction(dc4RequestConfirm("quick-save"));
                 break;
             case ":ql":
@@ -1212,6 +1225,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 openSlots(true);
                 break;
             case ":option":
+            case ":aaconfig":
+            case ":aawin_size":
+            case ":full":
+            case ":menu":
                 closeMenus();
                 notifyUser(dc4OpenMenu("config"));
                 break;
@@ -1222,6 +1239,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             case ":off":
             case ":close":
             case ":clear":
+            case ":change":
                 autoMode = false;
                 skipMode = false;
                 break;

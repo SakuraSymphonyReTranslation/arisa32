@@ -16,18 +16,20 @@ void ScriptUi::load(const dc4::MesFile& mes, size_t max_commands) {
     bool has_pending = false;
     size_t n = 0;
     while (n++ < max_commands && stream.next(&c)) {
+        c = dc4::mes_engine_command(c);
         using K = dc4::CmdKind;
-        if (c.kind == K::Words4 && c.op == 0x72) {
+        const auto opcode = c.opcode();
+        if (c.kind == K::Words4 && opcode == dc4::Opcode::CONTROL) {
             Button b;
             b.hit = {c.words[0], c.words[1], c.words[2] - c.words[0],
                      c.words[3] - c.words[1]};
             buttons_.push_back(std::move(b));
-        } else if (c.kind == K::Str && c.op == 0x54) {
+        } else if (c.kind == K::Str && opcode == dc4::Opcode::JUMP) {
             if (!buttons_.empty()) buttons_.back().action = c.str;
-        } else if (c.kind == K::Words4 && c.op == 0x73) {
+        } else if (c.kind == K::Words4 && opcode == dc4::Opcode::BUTTON_POSITION) {
             pending = c;
             has_pending = true;
-        } else if (c.kind == K::Words4 && c.op == 0x77 && has_pending) {
+        } else if (c.kind == K::Words4 && opcode == dc4::Opcode::CHIP && has_pending) {
             int state_idx = c.words[3] == 99 ? 0 : c.words[3] == 1 ? 1
                             : c.words[3] == 2 ? 2 : -1;
             if (state_idx >= 0 && !buttons_.empty()) {

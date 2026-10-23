@@ -97,6 +97,24 @@ void protected_directories(const fs::path& root) {
 #endif
 }
 
+void dc2pc_save_directory(const fs::path& root) {
+    const fs::path data = root / "dc2pc" / "AdvData";
+    fs::create_directories(data / "MES");
+    fs::create_directories(data / "SAVEDATA");
+    // No labels, version 0x9969, one scope marker and the end opcode.
+    const char bytes[] = {0,0,0,0,0x69,char(0x99),2,0,0,0};
+    write_fixture(data / "MES/main.mes", std::string(bytes, sizeof(bytes)));
+    const char* override_dir = std::getenv("DC4_SAVE_DIR");
+    if (override_dir && *override_dir) {
+        CHECK(save_directory(data.string()) == fs::absolute(override_dir));
+        return;
+    }
+    const auto saves = save_directory(data.string());
+    CHECK(saves == data / "arisa32-saves" / "dc2pc");
+    CHECK(!is_original_save_directory(saves, data.string()));
+    CHECK(fs::is_empty(data / "SAVEDATA"));
+}
+
 void write_thumbnail(const fs::path& save, int width = 128, int height = 72) {
     Surface surface(SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_RGBA32), SDL_FreeSurface);
     if (!surface || SDL_FillRect(surface.get(), nullptr, SDL_MapRGBA(surface->format, 31, 63, 127, 255)) < 0 ||
@@ -183,6 +201,7 @@ int main() {
         TemporaryDirectory temporary;
         page_options();
         protected_directories(temporary.path);
+        dc2pc_save_directory(temporary.path);
         slot_metadata(temporary.path);
     } catch (const std::exception& e) {
         std::cerr << "save_host_test: " << e.what() << '\n';

@@ -1,4 +1,5 @@
 #include "arisa32/mesfile.h"
+#include "arisa32/mesopcode.h"
 #include "arisa32/resource.h"
 
 #include <cstdio>
@@ -23,28 +24,11 @@ static bool is_valid_modern_stream(const uint8_t* code, size_t len) {
     size_t valid_cmds = 0;
     while (p < len) {
         uint8_t op = code[p];
-        if (op == 0) { p++; continue; }
-        if (op == 0x2E) {
-            if (p + 2 > len) return false;
-            const void* f = memchr(code + p + 2, 0, len - (p + 2));
-            if (!f) return false;
-            p = (static_cast<const uint8_t*>(f) - code) + 1;
-        } else if (op < 0x3B) {
-            if (p + 3 > len) return false;
-            p += 3;
-        } else if (op < 0x48) {
-            if (p + 2 > len) return false;
-            const void* f = memchr(code + p + 2, 0, len - (p + 2));
-            if (!f) return false;
-            p = (static_cast<const uint8_t*>(f) - code) + 1;
-        } else if (op < 0x6E) {
-            const void* f = memchr(code + p + 1, 0, len - (p + 1));
-            if (!f) return false;
-            p = (static_cast<const uint8_t*>(f) - code) + 1;
-        } else {
-            if (p + 9 > len) return false;
-            p += 9;
-        }
+        const auto& profile = mes_opcode_profile(MesDialect::Modern);
+        const size_t command_size = mes_command_size(code, len, p, profile.opcodes[op].kind);
+        if (!command_size) return false;
+        p += command_size;
+        if (op == 0) continue;
         valid_cmds++;
     }
     return (p == len && valid_cmds > 0);
@@ -64,7 +48,9 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
     const size_t te6 = size_t(count) * 6 + 4;
 
     bool is_4byte = false;
-    if (count == 0) {
+    if (te4 + 2 <= size && rd_u16(data + te4) == 0x9969) {
+        is_4byte = true;
+    } else if (count == 0 && te4 + 2 <= size && data[te4] == 0x69) {
         is_4byte = true;
     } else if (te6 + 4 <= size && is_valid_modern_stream(data + te6, size - te6)) {
         is_4byte = false;
@@ -79,7 +65,12 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
         if (err) *err = "truncated MES table";
         return false;
     }
-    version = (table_end + 4 <= size) ? rd_u32(data + table_end) : 0;
+    if (table_end + (is_4byte ? 2 : 3) > size) {
+        if (err) *err = "truncated MES version";
+        return false;
+    }
+    version = rd_u16(data + table_end);
+    if (!is_4byte) version |= uint32_t(data[table_end + 2]) << 16;
 
     if (is_4byte) {
         dialect = MesDialect::ClassicDC2;

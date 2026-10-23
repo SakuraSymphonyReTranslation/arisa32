@@ -13,6 +13,8 @@ set(DC4_CORE_SRC
     ${DC4_CORE}/src/crm.cpp
     ${DC4_CORE}/src/mesfile.cpp
     ${DC4_CORE}/src/messtream.cpp
+    ${DC4_CORE}/src/mesopcode.cpp
+    ${DC4_CORE}/src/names.cpp
     ${DC4_CORE}/src/mesvm.cpp
     ${DC4_CORE}/src/voice.cpp
     ${DC4_CORE}/src/xpcm.cpp
