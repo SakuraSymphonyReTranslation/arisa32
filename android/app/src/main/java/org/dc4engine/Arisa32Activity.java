@@ -647,6 +647,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private long lastSkipTick;
     private static final int SLOT_COUNT = 100;
     private int latestSlot = -1;
+    private File[] pickerSaveFiles;
+    private File pickerSaveDir;
+    private GameLibrary.Entry profileGame;
+    private GameProfile cachedProfile;
     private int pendingSaveSlot = -1, saveRequestToken;
     private AlertDialog saveDialog;  // UI thread only.
     private Bitmap previewBitmap;
@@ -1351,8 +1355,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         pendingSaveSlot = -1;
         ++saveRequestToken;
         refreshSlots();
+        File quick = pickerSaveFiles[0];
         notifyUser(dc4SlotsOpen(loading, latestSlot >= 0,
-                resolveQuickSaveFile(savesDir()).isFile()));
+                quick != null && quick.isFile()));
         slotMenuOpen = true;
     }
 
@@ -1386,7 +1391,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private GameProfile currentProfile() {
-        return GameProfileRegistry.resolveProfile(selected != null && selected.path != null ? new File(selected.path) : null, selected != null ? selected.title : null);
+        if (cachedProfile == null || profileGame != selected) {
+            cachedProfile = GameProfileRegistry.resolveProfile(selected != null && selected.path != null ? new File(selected.path) : null, selected != null ? selected.title : null);
+            profileGame = selected;
+        }
+        return cachedProfile;
     }
 
     private File resolveSlotSaveFile(File dir, int slotIndex) {
@@ -1421,6 +1430,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
         try {
             BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
+            options.inSampleSize = 1;
+            while (options.outWidth / (options.inSampleSize * 2) >= 128
+                    && options.outHeight / (options.inSampleSize * 2) >= 72)
+                options.inSampleSize *= 2;
+            options.inJustDecodeBounds = false;
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
             Bitmap orig = BitmapFactory.decodeFile(targetImg.getAbsolutePath(), options);
             if (orig == null) return null;
@@ -1448,7 +1464,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void loadScenarioTitles(GameLibrary.Entry game) {
         if (game == null || game.path == null) return;
-        if (game.path.equals(currentTitleGamePath) && !scriptTitles.isEmpty()) return;
+        if (game.path.equals(currentTitleGamePath)) return;
         currentTitleGamePath = game.path;
         scriptTitles.clear();
         jpToIdTitles.clear();
@@ -1694,8 +1710,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             } catch (IOException errorWritingIcon) { Log.w(TAG,"save icon unavailable",errorWritingIcon); }
             writePreview(file);
             if (slotMenuOpen) {
-                refreshSlots();
-                File quick = resolveQuickSaveFile(dir);
+                updateWrittenSlot(dir, slot, file);
+                File quick = pickerSaveFiles[0];
                 notifyUser(dc4SlotsOpen(false, latestSlot >= 0,
                         quick != null && quick.isFile()));
             } else closeMenus();
@@ -1728,19 +1744,36 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void refreshSlots() {
         if (dateFormat == null) dateFormat = new SimpleDateFormat("yyyy MM/dd HH:mm:ss", Locale.US);
         final File dir = savesDir();
+        pickerSaveDir = dir;
+        pickerSaveFiles = currentProfile().resolveSaveFiles(dir, SLOT_COUNT);
+        updateLatestSlot();
+        for (int i = 0; i < SLOT_COUNT; ++i) publishSlotInfo(i,pickerSaveFiles[i + 1]);
+        publishSlotInfo(-1,pickerSaveFiles[0]);
+        publishSlotInfo(-2,latestSlot>=0?pickerSaveFiles[latestSlot + 1]:null);
+    }
+
+    private void updateLatestSlot() {
         latestSlot = -1;
         long newest = Long.MIN_VALUE;
         for (int i = 0; i < SLOT_COUNT; ++i) {
-            final File file = resolveSlotSaveFile(dir, i);
+            final File file = pickerSaveFiles[i + 1];
             final boolean occupied = file != null && file.isFile();
             if (occupied) {
                 final long modified = file.lastModified();
                 if (modified > newest) { newest = modified; latestSlot = i; }
             }
-            publishSlotInfo(i,file);
         }
-        publishSlotInfo(-1,resolveQuickSaveFile(dir));
-        publishSlotInfo(-2,latestSlot>=0?resolveSlotSaveFile(dir,latestSlot):null);
+    }
+
+    private void updateWrittenSlot(File dir, int slot, File file) {
+        if (pickerSaveFiles == null || !dir.equals(pickerSaveDir)) {
+            refreshSlots();
+            return;
+        }
+        pickerSaveFiles[slot + 1] = file;
+        publishSlotInfo(slot,file);
+        updateLatestSlot();
+        publishSlotInfo(-2,latestSlot>=0?pickerSaveFiles[latestSlot + 1]:null);
     }
 
     private void publishSlotInfo(int index, File file) {
@@ -2009,7 +2042,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             ArisaUi.gap(body, 10);
         }
         ArisaUi.gap(shell, 6);
-        TextView footer = text("Arisa32 · adv32 Runtime v0.2.0 (CIRCUS Engine)", 11, MUTED); shell.addView(footer);
+        TextView footer = text("Arisa32 · adv32 Runtime v" + BuildConfig.VERSION_NAME + " (CIRCUS Engine)", 11, MUTED); shell.addView(footer);
         setContentView(root); root.requestApplyInsets();
     }
     private void showAppSettings() {
@@ -2037,7 +2070,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             if (ensureStorageAccess()) notifyUser(tr("Storage access is already enabled.", "Akses penyimpanan sudah aktif.", "ストレージへのアクセスは許可されています。"));
         });
         section(body, tr("ENGINE SPECIFICATION", "SPESIFIKASI ENGINE", "エンジン仕様"));
-        body.addView(text("Arisa32 · adv32 v0.2.0", 16, TEXT)); ArisaUi.gap(body, 6);
+        body.addView(text("Arisa32 · adv32 Runtime v" + BuildConfig.VERSION_NAME, 16, TEXT)); ArisaUi.gap(body, 6);
         body.addView(text(tr("CIRCUS Visual Novel Engine runtime for Android. Executes native MES scripts, CRM/CRX graphics, and XPCM audio.",
                 "Runtime engine visual novel CIRCUS untuk Android. Menjalankan skrip MES asli, grafis CRM/CRX, dan audio XPCM.",
                 "Android向け CIRCUS adv32 ビジュアルノベルエンジン。MESスクリプト、CRM/CRX画像、XPCM音声をネイティブ再生。"), 13, MUTED));
@@ -2147,9 +2180,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         ArisaUi.gap(body, 14);
 
         setting(body, tr("Choose folder (Document Picker / SAF)", "Pilih folder (Pengelola Berkas / SAF)", "フォルダーを選択（SAF）"),
-                tr("Select any game folder. Direct external playback supported without copying.",
-                   "Pilih folder game. Mendukung pemutaran langsung dari penyimpanan eksternal tanpa menyalin.",
-                   "フォルダー選択画面で選択。直接起動またはコピーに対応。"),
+                tr("Link a readable game folder without copying. Copying requires your choice.",
+                   "Tautkan folder game yang dapat dibaca tanpa menyalin. Penyalinan hanya dilakukan jika dipilih.",
+                   "読み取り可能なゲームフォルダーをコピーせず登録。コピーは選択した場合のみ行います。"),
                 () -> pickTree(PICK_GAME));
 
         setting(body, tr("External Storage (MicroSD / USB OTG)", "Penyimpanan Eksternal (MicroSD / USB OTG)", "外部ストレージ（MicroSD / USB OTG）"),
@@ -3184,13 +3217,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             final String titleHint = pendingTitleHint;
             pendingTitleHint = null;
 
-            if (request == PICK_GAME) {
+            {
                 File direct = resolveUriToDirectPath(uri);
                 File validDirect = null;
                 if (direct != null) {
-                    validDirect = probeDir(direct);
-                    if (validDirect == null) validDirect = probeDir(new File(direct, "AdvData"));
-                    if (validDirect == null) validDirect = probeDir(new File(direct, "Advdata"));
+                    try { validDirect = GameLibrary.dataRoot(direct, overlay != null); }
+                    catch (IOException ignored) {}
+                    validDirect = probeDir(validDirect);
                 }
                 if (validDirect != null) {
                     final File chosenDirect = validDirect;
@@ -3200,16 +3233,24 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                                     "Pemutaran langsung didukung! Anda dapat langsung memainkannya dari penyimpanan tanpa perlu menyalin berkas, menghemat ruang penyimpanan.\n\nJalur: " + chosenDirect.getAbsolutePath(),
                                     "ストレージ上のデータから直接起動できます！本体ストレージにコピーせず、すぐにプレイできます。\n\nパス: " + chosenDirect.getAbsolutePath()))
                             .setPositiveButton(tr("Play Directly (Fast)", "Mainkan Langsung (Cepat)", "直接プレイ（高速）"), (d, w) -> {
-                                registerPath(chosenDirect, null, null, false, titleHint);
+                                registerPath(chosenDirect, overlay, game, false, titleHint);
                             })
                             .setNegativeButton(tr("Copy to App Storage", "Salin ke Penyimpanan Aplikasi", "アプリ領域にコピー"), (d, w) -> {
                                 startFolderImport(uri, overlay, game, titleHint);
                             })
+                            .setNeutralButton(tr("Cancel", "Batal", "キャンセル"), null)
                             .show();
                     return;
                 }
             }
-            startFolderImport(uri, overlay, game, titleHint);
+            settingsDialog = dialog().setTitle(tr("Copy folder to app storage?", "Salin folder ke penyimpanan aplikasi?", "アプリ領域にコピーしますか？"))
+                    .setMessage(tr(
+                            "This folder cannot currently be read directly. Copying the game or patch may use several GB. For direct playback, enable storage access and choose a local folder again.",
+                            "Folder ini belum dapat dibaca langsung. Menyalin game atau patch dapat memakai beberapa GB. Untuk pemutaran langsung, aktifkan akses penyimpanan lalu pilih kembali folder lokal.",
+                            "このフォルダーを現在直接読み取れません。ゲームやパッチのコピーには数 GB 必要な場合があります。直接起動するにはストレージ権限を許可し、ローカルフォルダーを選び直してください。"))
+                    .setPositiveButton(tr("Copy to App Storage", "Salin ke Penyimpanan Aplikasi", "アプリ領域にコピー"), (d, w) -> startFolderImport(uri, overlay, game, titleHint))
+                    .setNeutralButton(tr("Storage access", "Akses penyimpanan", "ストレージ権限"), (d, w) -> ensureStorageAccess())
+                    .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
         } else if (game == null) { notifyUser("Select the game again before importing or exporting."); }
         else if (request == PICK_FONT) {
             runFileTask(tr("Importing font", "Mengimpor font", "フォントを追加中"), () -> importFont(uri, game),

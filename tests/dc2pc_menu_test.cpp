@@ -283,6 +283,24 @@ void native_pc_saves(const char* data) {
     }
     std::filesystem::remove_all(root);
 }
+void legacy_quick_save(const char* data) {
+    const char* path=std::getenv("DC2PC_LEGACY_SAVE");
+    if(!path)return;
+    dc4scene::SceneRunner scene(data);
+    CHECK(scene.load_ui_script(std::string(data)+"/MES/start.mes"));
+    CHECK(scene.load_state(path));
+    CHECK(scene.script_name()=="fst_1216_b1_cmn.mes");
+    CHECK(!scene.sprite(0).visible && !scene.sprite(1).visible);
+    CHECK(scene.sprite(0).cur_x==-240 && scene.sprite(1).cur_x==160);
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.sprite(0).visible && scene.sprite(1).visible);
+    CHECK(scene.sprite(0).image=="bst\\sgn_0a_000" && scene.sprite(1).image=="bst\\wtr_0a_101");
+    CHECK(scene.sprite(0).cur_x==-240 && scene.sprite(1).cur_x==160);
+    capture_scene(scene,"recorded-load-fixed");
+    std::vector<uint8_t> repaired;std::string error;
+    CHECK(scene.capture_state(&repaired));scene.draw(-1);const auto frame=scene.frame();
+    CHECK(scene.restore_state(repaired,&error));scene.draw(-1);CHECK(scene.frame()==frame);
+}
 } // namespace
 int main(int argc, char** argv) {
     const char* data = argc > 1 ? argv[1] : std::getenv("DC2PC_TEST_DATA");
@@ -292,6 +310,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 2) dc4::configure_resources(data, argv[2]);
     native_pc_saves(data);
+    legacy_quick_save(data);
     save_interactions(data);
     sprite_scenarios(data);
     using Page = dc4ui::SystemMenuPage;
@@ -563,6 +582,45 @@ int main(int argc, char** argv) {
                 menu.pointer_move(x,top);CHECK(menu.variable(206,80)==0);
                 menu.pointer_up(x,top);
                 capture(menu,"scene-slider-top");
+                // A pixel move within the same row still moves the authored thumb.
+                dc4scene::FontRenderer font;
+                std::vector<uint8_t> first,second;
+                menu.pointer_down(x,top);menu.draw(-1,-1,false,font,&first);
+                bool subrow_motion=false;
+                int previous=menu.variable(206,80);
+                for(int pixel=1;pixel<=12;++pixel) {
+                    menu.pointer_move(x,top+pixel);menu.draw(-1,-1,false,font,&second);
+                    const int value=menu.variable(206,80);
+                    subrow_motion|=value==previous && first!=second;
+                    previous=value;first.swap(second);
+                }
+                CHECK(subrow_motion);
+                menu.pointer_up(x,top);CHECK(menu.variable(206,80)==0);
+                for(int pass=0;pass<3;++pass) {
+                    const auto controls=menu.controls();
+                    const auto down=std::find_if(controls.begin(),controls.end(),[](const auto& c){return c.tag=="sel_statdown";});
+                    CHECK(down!=controls.end());
+                    if(down!=controls.end()) {
+                        menu.pointer_down(down->x+down->w/2,down->y+down->h/2);
+                        menu.pointer_up(down->x+down->w/2,down->y+down->h/2);
+                        CHECK(menu.variable(206,80)==(pass+1)*2);
+                    }
+                }
+                auto controls=menu.controls();
+                const auto up=std::find_if(controls.begin(),controls.end(),[](const auto& c){return c.tag=="sel_statup";});
+                CHECK(up!=controls.end());
+                if(up!=controls.end()) {
+                    menu.pointer_down(up->x+up->w/2,up->y+up->h/2);
+                    menu.pointer_up(up->x+up->w/2,up->y+up->h/2);
+                    CHECK(menu.variable(206,80)==4);
+                }
+                for(int i=0;i<100;++i)menu.activate("sel_statdown");
+                const int maximum=menu.variable(206,80);CHECK(maximum>4);
+                menu.activate("sel_statdown");CHECK(menu.variable(206,80)==maximum);
+                for(int i=0;i<100;++i)menu.activate("sel_statup");
+                CHECK(menu.variable(206,80)==0);
+                menu.activate("sel_statup");CHECK(menu.variable(206,80)==0);
+                CHECK(menu.controls().size()==before.size());
             }
         }
         menu.activate("return"); CHECK(menu.page()==Page::Extras);

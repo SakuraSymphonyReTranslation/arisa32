@@ -681,6 +681,16 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             candidate.load_layer(index, name);
             if (!candidate.layers_.count(index)) throw std::runtime_error("saved image is unavailable: " + name);
         }
+        if (version <= 4 && candidate.mes_.version == 0x9969) {
+            // Early DC2PC snapshots stored default placement even for hidden
+            // layers. Later body loads rely on that placement remaining intact.
+            // Recover transforms only; never replay story or progress changes.
+            dc4::MesStream scan(candidate.mes_);
+            dc4::MesCommand command;
+            while (scan.next(&command) && command.pos < vm.pc)
+                if (command.op == 0x64 || command.op == 0x65)
+                    candidate.dispatch_sprite_command(dc4::mes_engine_command(command));
+        }
         if (in.count(16) != 16) throw std::runtime_error("invalid saved sprite count");
         for (size_t i = 0; i < 16; ++i) {
             const std::string name = in.str(255), image = in.str(255);
@@ -698,7 +708,9 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             }
             auto& sprite = candidate.sprites_[i];
             sprite.name = name; sprite.image = image; sprite.scale = float(scale); sprite.x = x; sprite.y = y; sprite.alpha = alpha; sprite.z = z; sprite.visible = visible;
-            sprite.cur_x = cur_x; sprite.cur_y = cur_y;
+            if (version > 4 || candidate.mes_.version != 0x9969) {
+                sprite.cur_x = cur_x; sprite.cur_y = cur_y;
+            }
         }
         const auto audio = read_audio(in);
         uint16_t camera_duration = 5;

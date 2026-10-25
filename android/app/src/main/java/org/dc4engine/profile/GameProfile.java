@@ -34,6 +34,14 @@ public interface GameProfile {
     /** Resolves quicksave file in savesDir. */
     File resolveQuickSaveFile(File savesDir);
 
+    /** Fresh picker scan: quicksave at index 0, numbered slots at index 1..count. */
+    default File[] resolveSaveFiles(File savesDir, int count) {
+        File[] files = new File[count + 1];
+        files[0] = resolveQuickSaveFile(savesDir);
+        for (int i = 0; i < count; ++i) files[i + 1] = resolveSlotSaveFile(savesDir, i);
+        return files;
+    }
+
     /** Checks if a file is a valid native save file for this profile. */
     boolean isNativeSaveFile(String filename);
 

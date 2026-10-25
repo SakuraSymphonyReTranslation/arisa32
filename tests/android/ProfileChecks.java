@@ -6,11 +6,27 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import org.dc4engine.profile.GameProfile;
 import org.dc4engine.profile.GameProfileRegistry;
 
 public final class ProfileChecks {
     private static int assertions;
+    private static final Map<String,Integer> directoryReads = new HashMap<>();
+    private static final class CountedFile extends File {
+        CountedFile(String path) { super(path); }
+        @Override public File getParentFile() {
+            File parent = super.getParentFile();
+            return parent == null ? null : new CountedFile(parent.getPath());
+        }
+        @Override public File[] listFiles() {
+            directoryReads.merge(getAbsolutePath(),1,Integer::sum);
+            File[] files = super.listFiles();
+            if (files != null) for (int i=0;i<files.length;++i) files[i]=new CountedFile(files[i].getPath());
+            return files;
+        }
+    }
     private static void check(boolean condition, String message) {
         ++assertions;
         if (!condition) throw new AssertionError(message);
@@ -48,6 +64,21 @@ public final class ProfileChecks {
             Path androidSlot = namespace.resolve("SLOT1.DC4SAV");
             Files.write(androidSlot, new byte[]{2});
             check(dc2pc.resolveSlotSaveFile(namespace.toFile(), 0).toPath().equals(androidSlot), "Android snapshot takes priority");
+            directoryReads.clear();
+            File[] picker = dc2pc.resolveSaveFiles(new CountedFile(namespace.toString()),100);
+            check(picker.length == 101 && picker[0].toPath().equals(pcQuick), "batch includes native quicksave");
+            check(picker[1].toPath().equals(androidSlot), "batch preserves mixed-case snapshot priority");
+            check(picker[100].getName().equals("slot100.dc4sav"), "batch empty slot target");
+            check(directoryReads.values().stream().allMatch(n -> n == 1), "picker scans each directory only once");
+            Files.delete(androidSlot);
+            picker = dc2pc.resolveSaveFiles(namespace.toFile(),100);
+            check(picker[1].toPath().equals(pcSlot), "fresh batch detects snapshot removed outside app");
+            Path newPcSlot = nativeSaves.resolve("DC2PC02.DAT");
+            Files.write(newPcSlot,new byte[]{1});
+            picker = dc2pc.resolveSaveFiles(namespace.toFile(),100);
+            check(picker[2].toPath().equals(newPcSlot), "fresh batch detects newly imported PC slot");
+            for(int i=0;i<100;++i)
+                check(picker[i+1].equals(dc2pc.resolveSlotSaveFile(namespace.toFile(),i)), "batch keeps resolution order for slot " + (i+1));
             check(Files.readAllBytes(pcSlot)[0] == 1, "PC saves are never replaced");
             check(dc2pc.extractSlotNumber("slot99999999999999999999.dc4sav") == -1, "slot overflow");
             check(dc2pc.isNativeSaveFile("system-profile.dat"), "progress file retained");

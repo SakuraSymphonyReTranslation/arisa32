@@ -4,6 +4,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -65,24 +67,68 @@ public final class Dc2PlusCommunicationProfile implements GameProfile {
     }
     private static File resolveSave(File dir, String snapshotName, int nativeSlot) {
         if (dir == null) return null;
-        File snapshot = child(dir, snapshotName);
-        if (snapshot.isFile()) return snapshot;
-        // Android writes exclusively to arisa32-saves/dc2pc. PC saves are a
-        // read fallback in the native game folders, including mixed casing.
-        File data = dir;
-        if (dir.getName().equalsIgnoreCase("dc2pc") && dir.getParentFile() != null
-                && dir.getParentFile().getName().equalsIgnoreCase("arisa32-saves"))
-            data = dir.getParentFile().getParentFile();
-        String filename = String.format(Locale.ROOT, "DC2PC%02d.dat", nativeSlot);
-        for (File root : new File[]{dir, data, data == null ? null : data.getParentFile()}) {
-            if (root == null) continue;
-            for (File folder : new File[]{root, child(root, "SaveData"),
-                    child(child(root, "AdvData"), "SaveData")}) {
+        return new SaveLookup(dir).resolve(snapshotName, nativeSlot);
+    }
+    @Override public File[] resolveSaveFiles(File dir, int count) {
+        File[] files = new File[count + 1];
+        if (dir == null) return files;
+        SaveLookup lookup = new SaveLookup(dir);
+        files[0] = lookup.resolve("quicksave.dc4sav", 0);
+        for (int i = 0; i < count; ++i)
+            files[i + 1] = lookup.resolve("slot" + (i + 1) + ".dc4sav", i + 1);
+        return files;
+    }
+    private static final class SaveLookup {
+        final File dir;
+        final List<File> nativeFolders = new ArrayList<>();
+        final Map<File, Map<String, File>> indices = new HashMap<>();
+
+        File child(File root, String name) {
+            if (root == null) return null;
+            Map<String, File> index = indices.get(root);
+            if (index == null) {
+                index = new HashMap<>();
+                File[] files = root.listFiles();
+                if (files != null) {
+                    for (File file : files) index.putIfAbsent(file.getName().toLowerCase(Locale.ROOT), file);
+                    for (File file : files) index.put(file.getName(), file);
+                }
+                indices.put(root, index);
+            }
+            File exact = index.get(name);
+            if (exact != null) return exact;
+            File insensitive = index.get(name.toLowerCase(Locale.ROOT));
+            return insensitive != null ? insensitive : new File(root, name);
+        }
+        SaveLookup(File dir) {
+            this.dir = dir;
+        }
+        void findNativeFolders() {
+            if (!nativeFolders.isEmpty()) return;
+            // Android writes exclusively to arisa32-saves/dc2pc. PC saves are a
+            // read fallback in the native game folders, including mixed casing.
+            File data = dir;
+            if (dir.getName().equalsIgnoreCase("dc2pc") && dir.getParentFile() != null
+                    && dir.getParentFile().getName().equalsIgnoreCase("arisa32-saves"))
+                data = dir.getParentFile().getParentFile();
+            for (File root : new File[]{dir, data, data == null ? null : data.getParentFile()}) {
+                if (root == null) continue;
+                for (File folder : new File[]{root, child(root, "SaveData"),
+                        child(child(root, "AdvData"), "SaveData")})
+                    if (folder != null && !nativeFolders.contains(folder)) nativeFolders.add(folder);
+            }
+        }
+        File resolve(String snapshotName, int nativeSlot) {
+            File snapshot = child(dir, snapshotName);
+            if (snapshot.isFile()) return snapshot;
+            findNativeFolders();
+            String filename = String.format(Locale.ROOT, "DC2PC%02d.dat", nativeSlot);
+            for (File folder : nativeFolders) {
                 File nativeSave = child(folder, filename);
                 if (nativeSave != null && nativeSave.isFile()) return nativeSave;
             }
+            return snapshot;
         }
-        return snapshot;
     }
     @Override public boolean isNativeSaveFile(String name) {
         if (name == null) return false;

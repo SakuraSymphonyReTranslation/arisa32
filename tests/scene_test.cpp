@@ -531,6 +531,45 @@ void dc2pc_dialogue_regressions(const fs::path& root) {
     for (size_t i=0;i<4;++i) CHECK(!scene.sprite(i).visible);
     CHECK(scene.sprite(4).visible); // raw30 only dismisses native layers 1..4
 
+    ClassicScript hidden;
+    hidden.words(0x64,uint16_t(-240),0,0,0);hidden.words(0x64,160,0,1,0);
+    hidden.words(0x5C,9,40,99,0);hidden.text(0x4C,"HIDDEN");
+    for(uint8_t i=0;i<2;++i) {
+        hidden.words(0x65,100,441,277,16+i);hidden.sprite(0x2B,i,"bst\\body");
+    }
+    hidden.text(0x4C,"VISIBLE");
+    write_file(data / "MES/hidden.mes",hidden.bytes);
+    CHECK(scene.load_script((data / "MES/hidden.mes").string()));CHECK(scene.advance_to_next_text());
+    auto old_hidden=snapshot();
+    // Build an early v4 fixture whose absent body layers have default coords.
+    size_t cursor=24;
+    auto read32=[&]() { uint32_t n=0;for(int i=0;i<4;++i)n|=uint32_t(old_hidden[cursor++])<<(8*i);return n; };
+    auto skip_string=[&]() {const auto length=read32();cursor+=length;};
+    skip_string();cursor+=16;const auto variables=read32();cursor+=variables*12;skip_string();
+    const auto choices=read32();for(uint32_t i=0;i<choices;++i){skip_string();skip_string();}
+    cursor+=3;skip_string();skip_string();cursor+=31;
+    const auto layers=read32();for(uint32_t i=0;i<layers;++i){cursor+=4;skip_string();}
+    CHECK(read32()==16);
+    for(int i=0;i<16;++i) {
+        skip_string();skip_string();cursor+=25;
+        std::fill(old_hidden.begin()+cursor,old_hidden.begin()+cursor+8,0);cursor+=8;
+    }
+    old_hidden.erase(old_hidden.end()-69,old_hidden.end()-5);old_hidden[8]=4;
+    const auto size=uint32_t(old_hidden.size()-24);
+    for(int i=0;i<4;++i)old_hidden[12+i]=uint8_t(size>>(8*i));
+    uint64_t hash=14695981039346656037ull;
+    for(size_t i=24;i<old_hidden.size();++i){hash^=old_hidden[i];hash*=1099511628211ull;}
+    for(int i=0;i<8;++i)old_hidden[16+i]=uint8_t(hash>>(8*i));
+    CHECK(scene.restore_state(old_hidden,&error));
+    CHECK(scene.current_line()=="HIDDEN" && !scene.sprite(0).visible && !scene.sprite(1).visible);
+    CHECK(scene.sprite(0).cur_x==-240 && scene.sprite(1).cur_x==160);
+    scene.set_variable(9,40,12);
+    auto repaired=snapshot();CHECK(scene.restore_state(repaired,&error));
+    CHECK(scene.variable(9,40)==12); // recovery must not execute earlier assignments
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.sprite(0).visible && scene.sprite(1).visible);
+    CHECK(scene.sprite(0).cur_x==-240 && scene.sprite(1).cur_x==160);
+
     // Character names below are fixture dialogue, not game identifiers or
     // a whitelist: the importer reads arbitrary speakers from the scenario.
     ClassicScript pc;

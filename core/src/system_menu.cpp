@@ -68,6 +68,7 @@ struct Widget {
     std::vector<int> slider_stops;
     bool vertical = false;
     std::string slider_image;
+    int thumb_position = -1;
 };
 struct Caption { int x, y, size, control = -1, state = 99; std::string text; int max_width = 0; };
 struct MenuProfile {
@@ -140,9 +141,12 @@ struct SystemMenu::Impl {
     struct LegacyItem { Chip chip; std::string tag; std::vector<Caption> captions; };
     std::map<int, LegacyItem> legacy_items;
     std::vector<int> legacy_rows;
+    size_t catalogue_chips = 0, catalogue_captions = 0;
+    bool catalogue_drawn = false;
     std::set<int> playlist;
     int music_top = 0, music_selected = -1;
     int pressed = -1;
+    int thumb_grab = 0;
     bool held = false, gallery_view = false, movie_menu = false;
     std::vector<int> gallery_variants;
     size_t gallery_variant = 0;
@@ -262,7 +266,7 @@ struct SystemMenu::Impl {
             if (seen_music.count(k)) put(96, int(i), 1);
         }
     }
-    void clear_layout() { widgets.clear(); chips.clear(); captions.clear(); list_rects.clear(); list_titles.clear(); legacy_items.clear(); legacy_rows.clear(); }
+    void clear_layout() { widgets.clear(); chips.clear(); captions.clear(); list_rects.clear(); list_titles.clear(); legacy_items.clear(); legacy_rows.clear(); catalogue_drawn=false; }
     int hit(int x,int y) const {
         for (int i = int(widgets.size()) - 1; i >= 0; --i)
             if (widgets[size_t(i)].enabled && widgets[size_t(i)].hit.has(x, y))
@@ -739,6 +743,12 @@ struct SystemMenu::Impl {
     }
     void legacy_list_rows() {
         if (legacy_items.empty() || legacy_rows.empty()) return;
+        // Retain the authored controls/artwork and replace only catalogue rows.
+        if (!catalogue_drawn) {
+            catalogue_chips=chips.size(); catalogue_captions=captions.size(); catalogue_drawn=true;
+        } else {
+            chips.resize(catalogue_chips); captions.resize(catalogue_captions);
+        }
         const int top = std::clamp(page==Page::Music?get(3,25):get(206,80),0,
             std::max(0,int(legacy_items.size())-int(legacy_rows.size())));
         if(page==Page::Music)put(3,25,top);else put(206,80,top);
@@ -886,12 +896,14 @@ struct SystemMenu::Impl {
         if (widget.slider_bank < 0 || widget.slider_right <= widget.slider_left) return {};
         if (widget.vertical) {
             const int maximum = std::max(0,widget.slider_count-1);
-            const int value = std::clamp(int(std::lround(double(y-widget.hit.w/2-widget.slider_left)*maximum /
+            const int position = std::clamp(y-thumb_grab,widget.slider_left,widget.slider_right);
+            widgets[size_t(id)].thumb_position=position;
+            const int value = std::clamp(int(std::lround(double(position-widget.slider_left)*maximum /
                               (widget.slider_right-widget.slider_left))),0,maximum);
-            put(widget.slider_bank,widget.slider_index,value);
-            // Refresh rows without releasing the captured scrollbar while dragging.
-            const int captured = pressed; const bool dragging = held;
-            rebuild(); pressed = captured; held = dragging;
+            if (value != get(widget.slider_bank,widget.slider_index)) {
+                put(widget.slider_bank,widget.slider_index,value);
+                legacy_list_rows();
+            }
             return {};
         }
         if(!widget.slider_stops.empty()) {
@@ -980,7 +992,20 @@ void SystemMenu::set_save_available(bool latest,bool quick,bool automatic) {
 }
 void SystemMenu::set_config_page(int n) { if(confirming())return;p_->put(100,54,std::clamp(n,0,6)); if(p_->page==Page::Config)p_->rebuild(); }
 int SystemMenu::config_page() const { return p_->get(100,54); }
-void SystemMenu::pointer_down(int x,int y) { if(confirming()){p_->confirm.pointer_down(x,y);return;}p_->held=true; p_->pressed=p_->hit(p_->input_x(x),p_->input_y(y)); }
+void SystemMenu::pointer_down(int x,int y) {
+    if(confirming()){p_->confirm.pointer_down(x,y);return;}
+    x=p_->input_x(x);y=p_->input_y(y);
+    p_->held=true; p_->pressed=p_->hit(x,y);
+    if(p_->pressed>=0) {
+        const auto& widget=p_->widgets[size_t(p_->pressed)];
+        if(widget.vertical) {
+            const int top=widget.thumb_position>=0?widget.thumb_position:widget.slider_left+
+                p_->get(widget.slider_bank,widget.slider_index)*(widget.slider_right-widget.slider_left)/std::max(1,widget.slider_count-1);
+            p_->thumb_grab=(y>=top && y<top+widget.hit.w)?y-top:widget.hit.w/2;
+            p_->slider(p_->pressed,x,y);
+        }
+    }
+}
 Action SystemMenu::pointer_move(int x,int y) {
     if(confirming())return {};
     if (!p_->held || p_->pressed < 0) return {};
@@ -1031,7 +1056,8 @@ void SystemMenu::scroll(int delta) {
     } else if (p_->page==Page::Gallery || p_->page==Page::Scenes) {
         if(p_->dc2pc && p_->page==Page::Scenes) {
             p_->put(206,80,std::clamp(p_->get(206,80)+delta*2,0,std::max(0,int(p_->legacy_items.size())-int(p_->legacy_rows.size()))));
-            p_->rebuild();return;
+            for(auto& widget:p_->widgets)if(widget.vertical)widget.thumb_position=-1;
+            p_->legacy_list_rows();return;
         }
         if(p_->dc2pc && p_->page==Page::Gallery) {
             p_->run(p_->script_name,delta>0?"page++":"page--",true);return;
@@ -1058,6 +1084,9 @@ Action SystemMenu::back() {
 }
 Action SystemMenu::activate(const std::string& tag) {
     if(confirming())return {};
+    if(p_->dc2pc && p_->page==Page::Scenes && (tag=="sel_statup" || tag=="sel_statdown")) {
+        cancel_pointer();scroll(tag=="sel_statup"?-1:1);return {};
+    }
     ConfirmKind kind=ConfirmKind::Count;
     if(tag=="prologue"||tag=="sce_start"||tag=="start"||(tag=="dc"&&p_->get(100,100)))kind=ConfirmKind::NewGame;
     else if(tag=="end"||tag=="gomenu05")kind=ConfirmKind::Quit;
@@ -1282,8 +1311,9 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
         // arrow buttons. Keep that original artwork and centre it on raw55.
         if(auto* img=p_->image(widget.slider_image)) {
             const int size=24, inset=(widget.hit.w-size)/2;
-            const Rect knob{widget.hit.x+inset,widget.slider_left+inset+
-                value*(widget.slider_right-widget.slider_left)/count,size,size};
+            const int top=widget.thumb_position>=0?widget.thumb_position:
+                widget.slider_left+value*(widget.slider_right-widget.slider_left)/count;
+            const Rect knob{widget.hit.x+inset,top+inset,size,size};
             blit(*img,{img->w-size,0,size,size},p_->destination(knob),frame);
         }
     }

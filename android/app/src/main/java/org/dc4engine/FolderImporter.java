@@ -61,6 +61,10 @@ final class FolderImporter {
                 String childId = cursor.getString(0), name = cursor.getString(1), mime = cursor.getString(2);
                 if (name == null || name.isEmpty() || name.equals(".") || name.equals("..") || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 ||
                         name.indexOf('\0') >= 0 || !names.add(name)) throw new IOException("Folder contains an unsafe or duplicate filename.");
+                // Translation tools retain original assets here; the runtime
+                // reads the patched assets instead of these duplicate backups.
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)
+                        && (".original_cache".equalsIgnoreCase(name) || ".git".equalsIgnoreCase(name))) continue;
                 File target = new File(dir, name);
                 if (!target.getCanonicalPath().startsWith(destination.getCanonicalPath() + File.separator)) throw new IOException("Unsafe folder path.");
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
