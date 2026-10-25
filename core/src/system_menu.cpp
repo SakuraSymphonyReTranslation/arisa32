@@ -508,6 +508,7 @@ struct SystemMenu::Impl {
         } else if (context.pending.opcode() == Opcode::CHIP_POSITION) {
             chip.control = -1;
             chips.push_back(chip);
+
         } else if (context.pending.opcode() == Opcode::LIST_BACKGROUND_POSITION && chip_state >= 0)
             list_back[chip_state == 99 ? 0 : std::min(chip_state, 2)] = chip;
         else if (context.pending.opcode() == Opcode::LIST_TITLE_POSITION && context.list_id >= 0 &&
@@ -668,7 +669,7 @@ struct SystemMenu::Impl {
                 {Opcode::LIST_RECT, &Impl::menu_list_rect},
                 {Opcode::LIST_ID, &Impl::menu_list_id},
                 {Opcode::LEGACY_LIST_ITEM, &Impl::menu_legacy_list_item},
-                {Opcode::CHOICE, &Impl::menu_choice},
+                {Opcode::LIST_TAG, &Impl::menu_choice},
                 {Opcode::PLAY_BGM_ONCE, &Impl::menu_bgm},
                 {Opcode::CONTROL_CAPTION, &Impl::menu_caption},
                 {Opcode::CAPTION, &Impl::menu_caption},
@@ -733,6 +734,23 @@ struct SystemMenu::Impl {
             Chip chip=item->second.chip;
             chip.dst=widget.hit; chip.dst.w=chip.src.w; chip.dst.h=chip.src.h;
             chips.push_back(chip);
+            if (page == Page::Scenes && widget.enabled && item->first >= 0 &&
+                size_t(item->first) < scene_names.size()) {
+                const auto name = key(scene_names[size_t(item->first)]);
+                // DC2PC's replay catalogue uses route_MMDD_section names.
+                // The global list ID points at that same NAMES.DAT entry.
+                const auto underscore = name.find('_');
+                if (underscore != std::string::npos && underscore + 5 < name.size() && name[underscore+5] == '_') {
+                    const auto date = name.substr(underscore+1, 4);
+                    if (std::all_of(date.begin(), date.end(), [](unsigned char c){return std::isdigit(c);})) {
+                        const int month=std::stoi(date.substr(0,2)), day=std::stoi(date.substr(2));
+                        if (month>=1 && month<=12 && day>=1 && day<=31) {
+                            const std::string text=std::to_string(month)+"\x8c\x8e"+std::to_string(day)+"\x93\xfa";
+                            captions.push_back({widget.hit.x+70,widget.hit.y+2,16,control,99,text,std::max(1,widget.hit.w-74)});
+                        }
+                    }
+                }
+            }
             for(auto caption:item->second.captions) {
                 caption.max_width=std::max(1,widget.hit.w-caption.x-4);
                 caption.x+=widget.hit.x;caption.y+=widget.hit.y;
@@ -1337,12 +1355,59 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
 }
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
+    if (p_->dc2pc) {
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(path, ec);
+        if (!ec && (size < 0xCF4 || size > 32 * 1024 * 1024)) {
+            if (error) *error = "Unsupported or truncated DC2PC system data";
+            return false;
+        }
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         if (error) *error = "Cannot open system.dat";
         return false;
     }
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (p_->dc2pc) {
+        // DC2PC's native system block (619CD0) is independent of the newer
+        // Circus layout. The detected MES profile supplies game identity;
+        // native files need no text signature or exact file length.
+        if (data.size() < 0xCF4 || data.size() > 32 * 1024 * 1024) {
+            if (error) *error = "Unsupported or truncated DC2PC system data";
+            return false;
+        }
+        // Catalogue bytes are native boolean flags. Validate before merging
+        // anything, so an unrelated/corrupt file cannot unlock random routes.
+        for (size_t at = 0xD8; at < 0xCF4; ++at) {
+            if (data[at] > 1) {
+                if (error) *error = "Unsupported DC2PC system data layout";
+                return false;
+            }
+        }
+        for (int i = 0; i < 23; ++i) if (data[0x74+i] > 1) {
+            if (error) *error = "Invalid DC2PC route-clear flags";
+            return false;
+        }
+        for (int i = 0; i < 100; ++i)
+            p_->vars[{100,i}] = std::max(p_->get(100,i), int(data[0x74+i]));
+        const auto catalogue = [&](int bank, size_t offset, int count,
+                                   const std::vector<std::string>& names,
+                                   std::set<std::string>& seen) {
+            for (int i = 0; i < count; ++i) {
+                const int value = data[offset+i];
+                p_->vars[{bank,i}] = std::max(p_->get(bank,i), value);
+                if (value && size_t(i) < names.size()) seen.insert(key(names[i]));
+            }
+        };
+        catalogue(97, 0xD8, 1500, p_->cg_names, p_->seen_cg);
+        catalogue(98, 0x6B4, 1500, p_->scene_names, p_->seen_scene);
+        // Host BGM flags use 96; native bank 95 must not replace voice settings.
+        catalogue(96, 0xC90, 100, p_->bgm_names, p_->seen_music);
+        p_->progress_vars(); p_->rebuild();
+        if (error) error->clear();
+        return true;
+    }
     if (data.size() < 0x4B80) {
         if (error) *error = "system.dat too small";
         return false;
@@ -1421,7 +1486,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     while(std::getline(in,line)) {
         if(++lines>120000||line.size()>4096){if(error)*error="Emulator profile exceeds limits";return false;}
         std::istringstream row(line);char type=0;row>>type;
-        if(type=='v'){int b,i,value;if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}vars[{b,i}]=value;}
+        if(type=='v'){int b,i,value;if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}vars[{b,i}]=p_->dc2pc&&b==100&&i<23?std::max(vars[{b,i}],value):value;}
         else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
         else if(type=='p'){int id;if(!(row>>id)||id<0||id>1000){if(error)*error="Invalid playlist entry";return false;}playlist.insert(id);}
         else if(type){if(error)*error="Unknown profile record";return false;}

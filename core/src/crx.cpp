@@ -1,4 +1,5 @@
 #include "arisa32/crx.h"
+#include "arisa32/mem_safe.h"
 
 #include <cstring>
 
@@ -211,6 +212,11 @@ bool crx_decode_raw(const uint8_t* data, size_t size, std::vector<uint8_t>* pixe
     }
     if (i.compression >= 3) {
         uint32_t count = s.u32();
+        if (count && s.p + 16 <= size) {
+            i.canvas_width = read_u16_le(data + s.p + 4);
+            i.canvas_height = read_u16_le(data + s.p + 6);
+            *info = i;
+        }
         s.p += size_t(count) * 0x10;
     }
     if (i.flags & 0x10) s.u32();

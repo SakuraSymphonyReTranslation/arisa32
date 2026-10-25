@@ -23,6 +23,7 @@
 #include "arisa32/voice.h"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -85,6 +86,7 @@ struct Image {
 struct BstSprite {
     std::string name;      // last script name, for "--" reuse
     std::string image;     // last resolved reference
+    std::string expression; // DC2PC partial face overlay; body reference stays intact
     Image img;
     float scale = 1.0f;    // 0x8B operand 0, percent
     int x = kScreenW / 2, y = kScreenH / 2;
@@ -94,6 +96,7 @@ struct BstSprite {
     int cur_x = 0, cur_y = 0;
     // Canvas centre in the 1280-tall BST frame (inner offset + size/2).
     float frame_cx = 0, frame_cy = 0;
+    int canvas_w = 0, canvas_h = 0;
     int alpha = 255;
     bool visible = false;
     int z = 0;
@@ -212,7 +215,7 @@ public:
     // Hosts keep updating while a script wait is pending, then advance once
     // script_ready() is true. Input can finish a skippable wait/credit sequence.
     bool waiting_for_time() const { return script_wait_pending_ && script_wait_ms_ != 0; }
-    bool script_ready() const { return script_wait_pending_ && script_wait_ms_ == 0; }
+    bool script_ready() const { return !sidebar_visible_ && !reviewing_dialogue() && script_wait_pending_ && script_wait_ms_ == 0; }
     void finish_script_wait();
     bool credits_active() const { return credits_active_; }
     bool effect_pck_active() const { return effect_pck_.active; }
@@ -230,12 +233,21 @@ public:
 
     const std::string& current_line() const { return current_line_; }
     const std::string& speaker() const { return speaker_; }
+    // DC2PC's textbox history is a presentation cursor; the live VM stays put.
+    bool browse_dialogue(int direction);
+    bool reviewing_dialogue() const { return dialogue_cursor_ >= 0; }
+    void return_to_dialogue() { dialogue_cursor_ = -1; }
+    const std::string& displayed_line() const;
+    const std::string& displayed_speaker() const;
+    bool set_sidebar_visible(bool visible);
+    bool sidebar_visible() const { return sidebar_visible_; }
     bool scene_ended() const { return scene_end_; }
     const std::string& next_script() const { return next_script_; }
     const std::string& last_error() const { return last_error_; }
     bool waiting_for_choice() const { return vm_.waiting_for_choice(); }
     const std::vector<dc4::MesChoice>& choices() const { return vm_.choices(); }
     bool choose(size_t index) {
+        if (sidebar_visible_ || reviewing_dialogue()) return false;
         bool ok = vm_.choose(index);
         if (ok) scene_dirty_ = true;
         return ok;
@@ -299,15 +311,22 @@ private:
     bool load_grp_crx(const std::string& rel, Image* out, std::string* err) const;
     void load_slot(int slot, const std::string& raw);
     void load_bst(int idx, const std::string& name, int slot);
+    bool load_bst_expression(int idx, const std::string& name);
     void load_preload(int slot, const std::string& name);
     void load_layer(int layer, const std::string& path);
     void load_sheet(int id, const std::string& path);
     void set_sprite_transform(uint16_t scale_pct, uint16_t x, uint16_t y,
                               uint16_t mode);
     void draw_message_window(int reveal_chars);
+    void load_dc2pc_sidebar();
+    void reset_dialogue_history();
+    void record_dialogue();
     void blit_chip(const UiChip& ch, int alpha);
     void draw_text_line(const std::string& sjis, int reveal);
     void draw_choices();
+    void load_dc2pc_choices(dc4::MesStream& stream);
+    void draw_dc2pc_choices();
+    UiButton dc2pc_choice_button(size_t index) const;
     void apply_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, uint16_t y);
     void reset_camera();
     // 0x8E queues a sprite slide (sub_447620/700); update() interpolates.
@@ -331,6 +350,7 @@ private:
     void draw_transition(uint8_t* dst);
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
+    bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
     bool dispatch_timing_command(const dc4::MesCommand& c);
     bool dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers);
     bool dispatch_ui_chip_command(const dc4::MesCommand& c);
@@ -377,6 +397,15 @@ private:
     bool pending_has_button_ = false;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
+    bool sidebar_visible_ = false;
+    UiChip sidebar_background_;
+    std::vector<UiButton> sidebar_buttons_;
+    struct ChoiceUi {
+        UiButton button;
+        std::vector<UiChip> state[3];
+        int text_x = 0, text_y = 0;
+    };
+    std::vector<ChoiceUi> dc2pc_choices_;
     int ui_bar_top_ = 690;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
@@ -408,6 +437,10 @@ private:
     double transition_elapsed_ms_ = 0, transition_duration_ms_ = 0;
     std::string current_line_;
     std::string speaker_;
+    struct Dialogue { std::string text, name; };
+    std::deque<Dialogue> dialogue_history_;
+    int dialogue_cursor_ = -1;
+    bool preserving_dialogue_history_ = false;
     std::string effect_movie_;
     bool scene_end_ = false;
     std::string next_script_;

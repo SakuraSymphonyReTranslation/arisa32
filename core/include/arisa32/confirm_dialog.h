@@ -79,6 +79,7 @@ public:
 private:
     bool active_ = false;
     bool loaded_ = false;
+    bool dc2pc_ = false;
     dc4scene::Image chip_; // GRP/SYSTEM/ADVMENUCHIP.CRX
     std::u16string message_;
     std::u16string title_;

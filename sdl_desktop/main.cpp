@@ -445,6 +445,59 @@ struct SaveSlots {
     int latest_slot = -1;  // Most recent numbered save, or -1 when none exist.
     std::vector<dc4ui::SaveSlot> entries{dc4ui::SaveScreen::kSlotCount};
 
+    static dc4ui::SaveSlot read(const fs::path& path) {
+        dc4ui::SaveSlot entry;
+        std::error_code ec;
+        entry.occupied = fs::is_regular_file(path, ec);
+        if (!entry.occupied) return entry;
+        entry.timestamp = u"Saved snapshot";
+        const auto modified = fs::last_write_time(path, ec);
+        if (!ec) {
+            const auto time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                modified - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+            const auto stamp = std::chrono::system_clock::to_time_t(time);
+            if (const auto* local = std::localtime(&stamp)) {
+                char formatted[64]{};
+                std::strftime(formatted, sizeof(formatted), "%Y %m/%d %H:%M:%S", local);
+                entry.timestamp.assign(formatted, formatted + std::strlen(formatted));
+            }
+        }
+        std::ifstream icon_file(path.string()+".icon");
+        std::string icon_marker; std::getline(icon_file,icon_marker);
+        int icon=-1;
+        if(icon_marker=="DC4ICON1 "+save_fingerprint(path) && icon_file>>icon && icon>=0 && icon<16)
+            entry.character_icon=icon;
+        const fs::path preview_text = path.string() + ".preview.txt";
+        const auto text_size = fs::file_size(preview_text, ec);
+        if (ec || text_size > 4096) return entry;
+        std::ifstream preview(preview_text, std::ios::binary);
+        std::string marker; std::getline(preview, marker);
+        const auto fingerprint = save_fingerprint(path);
+        if (fingerprint.empty() || marker != "DC4PREVIEW1 " + fingerprint) return entry;
+        std::string excerpt((std::istreambuf_iterator<char>(preview)), {});
+        entry.excerpt = from_utf8(excerpt);
+        const fs::path preview_image = path.string() + ".preview.bmp";
+        if (fs::file_size(preview_image, ec) > 100000 || ec) return entry;
+        std::ifstream bmp_header(preview_image, std::ios::binary);
+        uint8_t header[26]{};
+        if (!bmp_header.read(reinterpret_cast<char*>(header), sizeof(header)) || header[0] != 'B' || header[1] != 'M') return entry;
+        auto dimension = [&](size_t offset) {
+            return uint32_t(header[offset]) | (uint32_t(header[offset + 1]) << 8) |
+                (uint32_t(header[offset + 2]) << 16) | (uint32_t(header[offset + 3]) << 24);
+        };
+        if (dimension(18) != 128 || dimension(22) != 72) return entry;
+        Surface loaded(SDL_LoadBMP(preview_image.string().c_str()), SDL_FreeSurface);
+        if (!loaded || loaded->w != 128 || loaded->h != 72) return entry;
+        Surface rgba(SDL_ConvertSurfaceFormat(loaded.get(), SDL_PIXELFORMAT_RGBA32, 0), SDL_FreeSurface);
+        if (!rgba) return entry;
+        entry.thumbnail.w = 128;
+        entry.thumbnail.h = 72;
+        entry.thumbnail.rgba.resize(128 * 72 * 4);
+        for (int y = 0; y < 72; ++y) std::memcpy(entry.thumbnail.rgba.data() + y * 128 * 4,
+            static_cast<const uint8_t*>(rgba->pixels) + y * rgba->pitch, 128 * 4);
+        return entry;
+    }
+
     void refresh(const fs::path& directory, dc4ui::SaveScreen* screen) {
         latest_slot = -1;
         fs::file_time_type latest_time = fs::file_time_type::min();
@@ -457,59 +510,16 @@ struct SaveSlots {
             }
         };
         for (int i = 0; i < dc4ui::SaveScreen::kSlotCount; ++i) {
-            auto& entry = entries[size_t(i)];
-            entry = dc4ui::SaveSlot{};
-            const auto path = directory / ("slot" + std::to_string(i + 1) + ".dc4sav");
-            std::error_code ec;
-            entry.occupied = fs::is_regular_file(path, ec);
-            screen->set_slot_occupied(i, entry.occupied);
-            if (!entry.occupied) continue;
-            consider_latest(path, i);
-            entry.timestamp = u"Saved snapshot";
-            const auto modified = fs::last_write_time(path, ec);
-            if (!ec) {
-                const auto time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                    modified - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-                const auto stamp = std::chrono::system_clock::to_time_t(time);
-                if (const auto* local = std::localtime(&stamp)) {
-                    char formatted[64]{};
-                    std::strftime(formatted, sizeof(formatted), "%Y %m/%d %H:%M:%S", local);
-                    entry.timestamp.assign(formatted, formatted + std::strlen(formatted));
-                }
-            }
-            const fs::path preview_text = path.string() + ".preview.txt";
-            const auto text_size = fs::file_size(preview_text, ec);
-            if (ec || text_size > 4096) continue;
-            std::ifstream preview(preview_text, std::ios::binary);
-            std::string marker; std::getline(preview, marker);
-            const auto fingerprint = save_fingerprint(path);
-            if (fingerprint.empty() || marker != "DC4PREVIEW1 " + fingerprint) continue;
-            std::string excerpt((std::istreambuf_iterator<char>(preview)), {});
-            entry.excerpt = from_utf8(excerpt);
-            const fs::path preview_image = path.string() + ".preview.bmp";
-            if (fs::file_size(preview_image, ec) > 100000 || ec) continue;
-            std::ifstream bmp_header(preview_image, std::ios::binary);
-            uint8_t header[26]{};
-            if (!bmp_header.read(reinterpret_cast<char*>(header), sizeof(header)) || header[0] != 'B' || header[1] != 'M') continue;
-            auto dimension = [&](size_t offset) {
-                return uint32_t(header[offset]) | (uint32_t(header[offset + 1]) << 8) |
-                    (uint32_t(header[offset + 2]) << 16) | (uint32_t(header[offset + 3]) << 24);
-            };
-            if (dimension(18) != 128 || dimension(22) != 72) continue;
-            Surface loaded(SDL_LoadBMP(preview_image.string().c_str()), SDL_FreeSurface);
-            if (!loaded || loaded->w != 128 || loaded->h != 72) continue;
-            Surface rgba(SDL_ConvertSurfaceFormat(loaded.get(), SDL_PIXELFORMAT_RGBA32, 0), SDL_FreeSurface);
-            if (!rgba) continue;
-            entry.thumbnail.w = 128;
-            entry.thumbnail.h = 72;
-            entry.thumbnail.rgba.resize(128 * 72 * 4);
-            for (int y = 0; y < 72; ++y) std::memcpy(entry.thumbnail.rgba.data() + y * 128 * 4,
-                static_cast<const uint8_t*>(rgba->pixels) + y * rgba->pitch, 128 * 4);
+            const auto path=directory/("slot"+std::to_string(i+1)+".dc4sav");
+            entries[size_t(i)]=read(path);
+            screen->set_slot_occupied(i,entries[size_t(i)].occupied);
+            if(entries[size_t(i)].occupied)consider_latest(path,i);
         }
         std::error_code ec;
         const fs::path quicksave = directory / "quicksave.dc4sav";
         const bool quick = fs::is_regular_file(quicksave, ec);
         screen->set_shortcuts(latest_slot >= 0, false, quick);
+        screen->set_special_slots(read(quicksave),latest_slot>=0?entries[size_t(latest_slot)]:dc4ui::SaveSlot{});
     }
 };
 
@@ -821,7 +831,10 @@ int run(const Options& o) {
         } else if(!scene->last_error().empty())notify(scene->last_error());
     };
     auto advance = [&]() {
-        if (!scene || menu_open || backlog.open || slots.open || scene->waiting_for_choice()) return;
+        if (!scene || menu_open || backlog.open || slots.open) return;
+        if (scene->sidebar_visible()) { scene->set_sidebar_visible(false); return; }
+        if (scene->reviewing_dialogue()) { scene->return_to_dialogue(); return; }
+        if (scene->waiting_for_choice()) return;
         if (scene->waiting_for_time()) {
             if (scene->effect_pck_active()) return;
             scene->finish_script_wait();
@@ -877,7 +890,7 @@ int run(const Options& o) {
         mouse_down = false;
         status.clear(); update_title();
     };
-    auto persist_state = [&](bool load, int slot) {
+    auto persist_state = [&](bool load, int slot, int character_icon=-1) {
         if (!scene || slot >= dc4ui::SaveScreen::kSlotCount) return;
         auto_mode = skip_mode = false;
         mouse_down = false;
@@ -909,11 +922,13 @@ int run(const Options& o) {
             } else {
                 fs::create_directories(directory);
                 if (!scene->save_state(path.string())) { notify(operation + " failed: " + scene->last_error()); return; }
-                preview_ok = write_save_preview(*scene, path);
+                std::ofstream icon_file(path.string()+".icon",std::ios::trunc);
+                icon_file << "DC4ICON1 " << save_fingerprint(path) << '\n' << character_icon;
+                preview_ok = write_save_preview(*scene, path) && bool(icon_file);
             }
             // The native SAVE script returns to its menu after writing.
             // Quick save/load keep their existing close-on-success behavior.
-            if (!load && slot >= 0 && slots.open) slots.refresh(directory, &save_screen);
+            if (!load && slots.open) slots.refresh(directory, &save_screen);
             else slots.open = false;
             backlog.open = false;
             slots.refresh(directory,&save_screen);
@@ -949,7 +964,7 @@ int run(const Options& o) {
         if (index < 0 || index >= dc4ui::SaveScreen::kSlotCount) return;
         const bool load = save_screen.mode() == dc4ui::SaveMode::Load;
         if (load && !slots.entries[size_t(index)].occupied) return;
-        persist_state(load, index);
+        persist_state(load, index, save_screen.selected_icon());
     };
     std::function<void()> pending_confirm;
     auto prompt = [&](dc4ui::ConfirmKind kind,std::function<void()> accepted) {
@@ -1083,6 +1098,7 @@ int run(const Options& o) {
             if (slots.latest_slot >= 0) persist_state(true, slots.latest_slot);
             break;
         case dc4ui::SaveActionType::QuickLoad: persist_state(true, -1); break;
+        case dc4ui::SaveActionType::QuickSave: persist_state(false, -1, save_screen.selected_icon()); break;
         case dc4ui::SaveActionType::Config:open_system(dc4ui::SystemMenuPage::Config);break;
         case dc4ui::SaveActionType::Title:open_system(dc4ui::SystemMenuPage::Title);break;
         case dc4ui::SaveActionType::Quit:run_loop=false;break;
@@ -1098,18 +1114,31 @@ int run(const Options& o) {
         } else if (tag == ":rapid" || tag == ":skip") {
             skip_mode = !scene->waiting_for_choice() && !skip_mode; auto_mode = false; status.clear();
         }
-        else if (tag == ":backlog" || tag==":aalog" || tag==":up") toggle_backlog();
-        else if (tag == ":down") { advance(); }
+        else if (tag == ":backlog" || tag==":aalog") toggle_backlog();
+        else if (tag == ":up" || tag == ":down") {
+            auto_mode = skip_mode = false;
+            scene->browse_dialogue(tag == ":up" ? -1 : 1);
+        }
+        else if (tag == ":sidebar") {
+            auto_mode = skip_mode = false;
+            scene->set_sidebar_visible(!scene->sidebar_visible());
+        }
+        else if (tag == ":sidebarclose") scene->set_sidebar_visible(false);
+        else if (tag == ":sidebarwin" || tag == ":full") {
+            scene->set_sidebar_visible(false); auto_mode = skip_mode = false;
+            const bool full = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+            if (SDL_SetWindowFullscreen(window.get(), full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) < 0) notify(SDL_GetError());
+        }
         else if (tag == ":n") {
             scene->toggle_taskbar();
         } else if (tag == ":off" || tag == ":close" || tag == ":clear" || tag == ":change") {
             scene->set_message_visible(!scene->message_visible()); auto_mode = skip_mode = false;
         } else if (tag == ":qs" || tag==":aaqsave" || tag==":qsave") prompt_quick(false);
         else if (tag == ":ql" || tag==":aaqload") prompt_quick(true);
-        else if (tag == ":ds" || tag==":aasave") open_slots(false);
-        else if (tag == ":dl" || tag==":aaload") open_slots(true);
-        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":full" || tag==":menu") open_system(dc4ui::SystemMenuPage::Config);
-        else if(tag==":aatitle") prompt_title();
+        else if (tag == ":ds" || tag==":aasave") { scene->set_sidebar_visible(false); open_slots(false); }
+        else if (tag == ":dl" || tag==":aaload") { scene->set_sidebar_visible(false); open_slots(true); }
+        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":menu") { scene->set_sidebar_visible(false); open_system(dc4ui::SystemMenuPage::Config); }
+        else if(tag==":aatitle") { scene->set_sidebar_visible(false); prompt_title(); }
         else if(tag==":aaskip"){skip_mode=!skip_mode;auto_mode=false;}
         update_title();
     };
@@ -1394,7 +1423,8 @@ int run(const Options& o) {
                     if (pressed_widget && over_widget && !tag) notify("This menu item is not available yet");
                 } else if (mx >= 0 && mx < dc4scene::kScreenW && my >= 0 && my < dc4scene::kScreenH) {
                     auto_mode = skip_mode = false;
-                    if (scene && scene->waiting_for_choice()) {
+                    if (scene && scene->sidebar_visible()) scene->set_sidebar_visible(false);
+                    else if (scene && scene->waiting_for_choice()) {
                         const int choice = scene->choice_at(mx, my);
                         if (choice >= 0) select_choice(size_t(choice));
                     } else advance();
@@ -1462,11 +1492,16 @@ int run(const Options& o) {
                 const bool full = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
                 if (SDL_SetWindowFullscreen(window.get(), full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) < 0) notify(SDL_GetError());
             } else if (key == SDLK_ESCAPE) {
-                if (auto_mode || skip_mode) { auto_mode = skip_mode = false; update_title(); }
+                if (scene && scene->sidebar_visible()) scene->set_sidebar_visible(false);
+                else if (scene && scene->reviewing_dialogue()) scene->return_to_dialogue();
+                else if (auto_mode || skip_mode) { auto_mode = skip_mode = false; update_title(); }
                 else prompt_quit();
             } else if (key == SDLK_F8) prompt_quit();
             else if (key == SDLK_F1) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "dc4engine controls", kHelp, window.get());
             else if (key == SDLK_b) toggle_backlog();
+            else if (key == SDLK_UP) action(":up");
+            else if (key == SDLK_DOWN) action(":down");
+            else if (key == SDLK_TAB) action(":sidebar");
             else if (scene && scene->waiting_for_choice() && key >= SDLK_1 && key <= SDLK_9) select_choice(size_t(key - SDLK_1));
             else if (key == SDLK_SPACE || key == SDLK_RETURN) { auto_mode = skip_mode = false; advance(); update_title(); }
             else if (key == SDLK_a) action(":auto");
@@ -1492,7 +1527,7 @@ int run(const Options& o) {
             system_menu.set_music_position(int(audio.engine.channel_fraction(0)*100));
             if(music_running&&!audio.engine.channel_playing(0)){music_running=false;menu_action(system_menu.activate("next"));}
         }
-        if (scene && !global_confirm.active() && !menu_open && !movie.active() && !backlog.open && !slots.open && scene->message_visible() && !scene->waiting_for_choice() && !scene->waiting_for_time() && !scene->scene_ended()) {
+        if (scene && !global_confirm.active() && !menu_open && !movie.active() && !backlog.open && !slots.open && !scene->sidebar_visible() && !scene->reviewing_dialogue() && scene->message_visible() && !scene->waiting_for_choice() && !scene->waiting_for_time() && !scene->scene_ended()) {
             const Uint32 now = SDL_GetTicks();
             const bool focused = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS) != 0;
             const bool skip = focused && (skip_mode || (SDL_GetModState() & KMOD_CTRL));

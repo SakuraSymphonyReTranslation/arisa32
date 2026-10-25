@@ -16,12 +16,13 @@
 //
 // CRXD layout (the payload of most entries):
 //   0x00 char[4] "CRXD"
-//   0x04 u32     flags (0x11 in every DC4 file)
+//   0x04 u32     authoring metadata (varies among DC2PC entries)
 //   0x08 u32     base offset inside this archive, or 0
 //   0x0C char[20] base file name (used when the base is a loose file)
 //   0x20 "CRXG" + a plain CRXG image -> the diff, decoded with no canvas
 //   0x20 "CRXJ" + u32 offset -> the diff lives in another CRXD at that offset
-// Decoding adds the diff to the base (RGB) and subtracts it (alpha).
+// Decoding adds the diff to RGB and subtracts decoded opacity; raw alpha
+// arithmetic depends on the base and diff CRXG mode fields.
 #pragma once
 #include "arisa32/crx.h"
 
@@ -78,7 +79,8 @@ struct BstRef {
     char marker = 0;       // ',', '*', '@' or 0
     bool valid = false;
 };
-BstRef bst_parse_name(const std::string& name);
+// DC2PC keeps _B as a real variant and infers the archive from the outfit.
+BstRef bst_parse_name(const std::string& name, bool dc2pc = false);
 
 // Case-insensitive filename lookup inside a directory (the game ships mixed
 // case: "GRP/BST/nin_b.CRM" is referenced from scripts as "BST\\NIN_B").
@@ -88,6 +90,7 @@ std::string find_file_ci(const std::string& dir, const std::string& name);
 // Loads a script BST/CUT reference (e.g. "BST\\NIN_B1_A08,BST\\NIN_B") to
 // RGBA, opening either the named .CRM archive or a loose .CRX.
 bool bst_load(const std::string& grp_dir, const std::string& ref,
-              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err = nullptr);
+              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err = nullptr,
+              bool dc2pc = false);
 
 }  // namespace dc4

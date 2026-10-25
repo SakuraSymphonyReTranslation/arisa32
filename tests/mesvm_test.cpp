@@ -144,7 +144,9 @@ void checkpoints_and_labels() {
     dc4::MesVm vm(script.file);
     CHECK(messages(vm) == (std::vector<std::string>{"first"}));
     CHECK(vm.error().empty());
-    CHECK(!vm.jump("GO"));  // original strcmp is case-sensitive
+    // The host accepts case variants when resolving exported script labels.
+    CHECK(vm.has_label("GO")); CHECK(vm.jump("GO"));
+    CHECK(messages(vm) == (std::vector<std::string>{"first"}));
 }
 
 void choices_and_transfers() {

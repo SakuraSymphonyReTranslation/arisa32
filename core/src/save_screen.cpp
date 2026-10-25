@@ -2,6 +2,7 @@
 #include "arisa32/resource.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -180,6 +181,19 @@ bool SaveScreen::load(const std::string& data_dir, std::string* error) {
     if (error) error->clear();
     cancel_pointer();
     dc4scene::Image save_back, load_back, chip, system_goto;
+    dc4::MesFile start;
+    dc2pc_ = start.load_file(data_dir+"/MES/start.mes") &&
+        dc4::mes_opcode_profile(start.dialect,start.version).id==dc4::MesProfileId::DC2PC;
+    choosing_icon_=false;selected_icon_=-1;
+    if(dc2pc_) {
+        if(!read_crx(data_dir,"save_BG00.CRX",800,600,&save_back,error) ||
+           !read_crx(data_dir,"load_BG00.CRX",800,600,&load_back,error) ||
+           !read_crx(data_dir,"saveandload_chip00.CRX",576,288,&chip,error) ||
+           !read_crx(data_dir,"charactericom.CRX",896,480,&system_goto,error) ||
+           !read_crx(data_dir,"common_load_chip00.CRX",456,272,&common_chip_,error))return false;
+        save_back_=std::move(save_back);load_back_=std::move(load_back);
+        chip_=std::move(chip);system_goto_=std::move(system_goto);loaded_=true;return true;
+    }
     if (!read_crx(data_dir, "SAVEBACK.CRX", 1280, 720, &save_back, error) ||
         !read_crx(data_dir, "LOADBACK.CRX", 1280, 720, &load_back, error) ||
         !read_crx(data_dir, "SLCHIP.CRX", 447, 627, &chip, error) ||
@@ -236,6 +250,11 @@ int SaveScreen::slot_index(int page, int visible_index) {
 }
 
 int SaveScreen::slot_hit(int x, int y) const {
+    if(dc2pc_) {
+        const int nx=int(std::floor((x-160)/1.2)),ny=int(std::floor(y/1.2));
+        for(int row=0;row<3;++row)if(contains(nx,ny,444,267+row*85,732,339+row*85))return page_*3+row;
+        return -1;
+    }
     for (int visible = 0; visible < kSlotsPerPage; ++visible) {
         const int left = visible < 5 ? 152 : 617;
         const int top = 95 + (visible % 5) * 117;
@@ -250,6 +269,15 @@ SaveAction SaveScreen::hit_test(int x, int y) const {
     const int slot = slot_hit(x, y);
     if (slot >= 0 && (mode_ == SaveMode::Save || occupied_[size_t(slot)]))
         return {SaveActionType::Slot, slot};
+    if(dc2pc_) {
+        const int nx=int(std::floor((x-160)/1.2)),ny=int(std::floor(y/1.2));
+        if(contains(nx,ny,171,437,243,477))return {SaveActionType::Page,(page_+9)%10};
+        if(contains(nx,ny,280,437,352,477))return {SaveActionType::Page,(page_+1)%10};
+        if(contains(nx,ny,233,531,345,563))return {SaveActionType::Back};
+        if(contains(nx,ny,444,97,732,169) && (mode_==SaveMode::Save || quick_))return {mode_==SaveMode::Save?SaveActionType::QuickSave:SaveActionType::QuickLoad};
+        if(contains(nx,ny,444,182,732,254) && mode_==SaveMode::Load && latest_)return {SaveActionType::LatestLoad};
+        return {};
+    }
     if (contains(x, y, 772, 28, 798, 56))
         return {SaveActionType::Page, (page_ + kPageCount - 1) % kPageCount};
     if (contains(x, y, 1234, 28, 1260, 56))
@@ -292,6 +320,7 @@ void SaveScreen::pointer_down(int x, int y) {
         confirm_dialog_.pointer_down(x, y);
         return;
     }
+    if(choosing_icon_){pressed_icon_=icon_hit(x,y);pressed_=hit_test(x,y);pointer_held_=true;return;}
     pressed_ = hit_test(x, y);
     pressed_control_ = control_id(x, y);
     pointer_held_ = true;
@@ -304,6 +333,21 @@ SaveAction SaveScreen::pointer_up(int x, int y) {
             return finish_confirmation(true);
         } else if (res == ConfirmResult::No) {
             return finish_confirmation(false);
+        }
+        return {};
+    }
+    if(choosing_icon_) {
+        const int icon=icon_hit(x,y);
+        const bool accepted=pointer_held_ && icon>=0 && icon==pressed_icon_;
+        const bool back=pointer_held_ && pressed_.type==SaveActionType::Back && hit_test(x,y).type==SaveActionType::Back;
+        pointer_held_=false;pressed_icon_=-1;pressed_={};
+        if(accepted) {
+            selected_icon_=icon;
+            const bool occupied=pending_action_.type==SaveActionType::QuickSave?quick_:occupied_[size_t(pending_action_.index)];
+            if(!confirm_enabled_ || !confirm_dialog_.open(occupied?ConfirmKind::Overwrite:ConfirmKind::Save))
+                return finish_confirmation(true);
+        } else if(back) {
+            cancel_confirm();
         }
         return {};
     }
@@ -322,7 +366,8 @@ SaveAction SaveScreen::answer_confirmation(bool yes) {
 }
 SaveAction SaveScreen::finish_confirmation(bool yes) {
     auto action=pending_action_;pending_action_={};
-    if(!yes)return {};
+    choosing_icon_=false;
+    if(!yes){selected_icon_=-1;return {};}
     if(action.type==SaveActionType::Slot&&mode_==SaveMode::Load&&
        (action.index<0||action.index>=kSlotCount||!occupied_[size_t(action.index)]))return {};
     if((action.type==SaveActionType::QuickLoad&&!quick_)||
@@ -332,7 +377,7 @@ SaveAction SaveScreen::finish_confirmation(bool yes) {
 }
 
 SaveAction SaveScreen::activate(SaveAction released) {
-    if(confirming())return {};
+    if(confirming() || choosing_icon_)return {};
     if(released.type==SaveActionType::Slot &&
        (released.index<0||released.index>=kSlotCount||
         (mode_==SaveMode::Load&&!occupied_[size_t(released.index)])))return {};
@@ -342,6 +387,9 @@ SaveAction SaveScreen::activate(SaveAction released) {
     if (released.type == SaveActionType::Page) set_page(released.index);
     if (released.type == SaveActionType::Mode)
         set_mode(released.index == 1 ? SaveMode::Load : SaveMode::Save);
+    if(dc2pc_ && mode_==SaveMode::Save && (released.type==SaveActionType::Slot || released.type==SaveActionType::QuickSave)) {
+        cancel_pointer();pending_action_=released;choosing_icon_=true;selected_icon_=-1;return {};
+    }
 
     ConfirmKind kind=ConfirmKind::Count;
     if(released.type==SaveActionType::Slot)kind=mode_==SaveMode::Load?ConfirmKind::Load:
@@ -361,7 +409,8 @@ void SaveScreen::cancel_pointer() {
     pressed_ = {};
     pressed_control_ = 0;
     pointer_held_ = false;
-    if (!confirm_dialog_.active()) pending_action_ = {};
+    pressed_icon_=-1;
+    if (!confirm_dialog_.active() && !choosing_icon_) pending_action_ = {};
     confirm_dialog_.cancel_pointer();
 }
 
@@ -369,6 +418,7 @@ void SaveScreen::draw(const std::vector<SaveSlot>& slots, int mouse_x, int mouse
                       bool down, const dc4scene::FontRenderer& font,
                       std::vector<uint8_t>* frame) const {
     if (!frame) return;
+    if(dc2pc_ && loaded_){draw_dc2pc(slots,mouse_x,mouse_y,down,font,frame);return;}
     if (frame->size() != kFrameBytes || !loaded_) {
         frame->resize(kFrameBytes);
         fill_rect(0, 0, kWidth, kHeight, 0x042344, frame);
@@ -490,6 +540,63 @@ void SaveScreen::draw(const std::vector<SaveSlot>& slots, int mouse_x, int mouse
     if (confirm_dialog_.active()) {
         confirm_dialog_.draw(mouse_x, mouse_y, down, font, frame);
     }
+}
+
+int SaveScreen::icon_hit(int x,int y) const {
+    const int nx=int(std::floor((x-160)/1.2)),ny=int(std::floor(y/1.2));
+    for(int i=0;i<16;++i)if(contains(nx,ny,80+(i%4)*64,191+(i/4)*64,136+(i%4)*64,247+(i/4)*64))return i;
+    return -1;
+}
+
+void SaveScreen::draw_dc2pc(const std::vector<SaveSlot>& slots,int mx,int my,bool down,
+                          const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
+    frame->resize(kFrameBytes);fill_rect(0,0,kWidth,kHeight,0,frame);
+    auto native_blit=[&](const dc4scene::Image& image,int sx,int sy,int w,int h,int x,int y) {
+        const int dx=160+int(std::lround(x*1.2)),dy=int(std::lround(y*1.2));
+        const int dw=int(std::lround(w*1.2)),dh=int(std::lround(h*1.2));
+        for(int py=0;py<dh;++py)for(int px=0;px<dw;++px) {
+            const int ix=sx+std::min(w-1,int(px/1.2)),iy=sy+std::min(h-1,int(py/1.2));
+            if(ix>=0 && iy>=0 && ix<image.w && iy<image.h && dx+px>=0 && dx+px<kWidth && dy+py>=0 && dy+py<kHeight)
+                blend(image.rgba.data()+(size_t(iy)*image.w+ix)*4,frame->data()+(size_t(dy+py)*kWidth+dx+px)*4);
+        }
+    };
+    native_blit(mode_==SaveMode::Save?save_back_:load_back_,0,0,800,600,0,0);
+    const auto hover=confirming()||choosing_icon_?SaveAction{}:hit_test(mx,my);
+    const auto active=[&](SaveAction a){return same_action(hover,a) && a.type!=SaveActionType::None;};
+    for(int row=0;row<5;++row) {
+        const int index=page_*3+row-2,y=97+row*85;
+        const SaveSlot* slot=row==0?&quick_slot_:row==1?&latest_slot_:
+            size_t(index)<slots.size()?&slots[size_t(index)]:nullptr;
+        const bool occupied=slot && slot->occupied;
+        SaveAction action=row==0?SaveAction{mode_==SaveMode::Save?SaveActionType::QuickSave:SaveActionType::QuickLoad}:
+            row==1?SaveAction{SaveActionType::LatestLoad}:SaveAction{SaveActionType::Slot,index};
+        const int sy=row==0?0:row==1?72:144;
+        native_blit(chip_,active(action)?288:0,sy,288,72,444,y);
+        if(occupied && slot->character_icon>=0 && slot->character_icon<16)
+            native_blit(system_goto_,slot->character_icon*56,312,56,56,454,y+8);
+        const std::u16string title=occupied?(slot->excerpt.empty()?dc4::translate_ui(u"Saved data"):slot->excerpt):dc4::translate_ui(u"No Data");
+        draw_text(font,title,160+int(518*1.2),int((y+7)*1.2),250,19,frame,0xFFFFFF);
+        if(occupied)draw_text(font,slot->timestamp,160+int(518*1.2),int((y+47)*1.2),250,17,frame,0xFFFFFF);
+    }
+    const int nx=int(std::floor((mx-160)/1.2)),ny=int(std::floor(my/1.2));
+    const bool prev=!confirming()&&!choosing_icon_&&contains(nx,ny,171,437,243,477);
+    const bool next=!confirming()&&!choosing_icon_&&contains(nx,ny,280,437,352,477);
+    const bool back=!confirming()&&contains(nx,ny,233,531,345,563);
+    native_blit(common_chip_,112,prev?(down?80:40):0,72,40,171,437);
+    native_blit(common_chip_,184,next?(down?80:40):0,72,40,280,437);
+    native_blit(common_chip_,0,back?(down?64:32):0,112,32,233,531);
+    // The authored page label uses a 16x24 digit atlas.
+    const std::string label=std::to_string(page_+1);
+    for(size_t i=0;i<label.size();++i)native_blit(common_chip_,(label[i]-'0')*16,120,16,24,235+int(i)*16,422);
+    native_blit(common_chip_,160,120,16,24,251+int(label.size()-1)*16,422);
+    native_blit(common_chip_,16,120,16,24,267+int(label.size()-1)*16,422);
+    native_blit(common_chip_,0,120,16,24,283+int(label.size()-1)*16,422);
+    if(choosing_icon_) {
+        native_blit(system_goto_,0,0,312,312,48,160);
+        const int hovered=confirming()?-1:icon_hit(mx,my);
+        for(int i=0;i<16;++i)native_blit(system_goto_,i*56,312+(i==hovered?(down?112:56):0),56,56,80+(i%4)*64,191+(i/4)*64);
+    }
+    if(confirming())confirm_dialog_.draw(mx,my,down,font,frame);
 }
 
 }  // namespace dc4ui

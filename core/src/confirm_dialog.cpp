@@ -4,6 +4,7 @@
 #include "arisa32/resource.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -105,8 +106,11 @@ void draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
 } // namespace
 
 bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
+    close(); loaded_=false; chip_={};
+    if(error)error->clear();
     const std::string dir = data_dir + "/GRP/SYSTEM";
-    const std::string name = "ADVMENUCHIP.CRX";
+    dc2pc_ = dc4::asset_exists(dir + "/common_load_chip00.crx");
+    const std::string name = dc2pc_ ? "common_load_chip00.crx" : "ADVMENUCHIP.CRX";
     const std::string resolved = dc4::find_file_ci(dir, name);
     const std::string path = dc4::resolve_asset(dir + "/" + (resolved.empty() ? name : resolved));
     std::ifstream in(path, std::ios::binary);
@@ -119,17 +123,18 @@ bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
     dc4::CrxInfo info;
     std::string decode_error;
     if (!dc4::crx_decode(bytes.data(), bytes.size(), &chip_.rgba, &info, &decode_error)) {
-        if (error) *error = "Cannot decode ADVMENUCHIP.CRX: " + decode_error;
+        if (error) *error = "Cannot decode " + name + ": " + decode_error;
         return false;
     }
     chip_.name = name;
     chip_.w = info.width;
     chip_.h = info.height;
-    loaded_ = chip_.valid() && chip_.w >= kBoxW && chip_.h >= kBoxH;
+    loaded_ = chip_.valid() && chip_.w >= (dc2pc_ ? 456 : kBoxW) && chip_.h >= (dc2pc_ ? 272 : kBoxH);
     return loaded_;
 }
 
 void ConfirmDialog::set_chip(const dc4scene::Image& chip) {
+    dc2pc_=false;
     chip_ = chip;
     loaded_ = chip_.valid() && chip_.w >= kBoxW && chip_.h >= kBoxH;
 }
@@ -181,6 +186,7 @@ void ConfirmDialog::close() {
 }
 
 bool ConfirmDialog::hit_yes(int x, int y) const {
+    if(dc2pc_)return x>=515 && x<640 && y>=378 && y<416;
     const int bx = kBoxX + kYesRelX;
     const int by = kBoxY + kYesRelY;
     if (x >= bx && x < bx + kYesW && y >= by && y < by + kYesH) return true;
@@ -188,6 +194,7 @@ bool ConfirmDialog::hit_yes(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_no(int x, int y) const {
+    if(dc2pc_)return x>=640 && x<765 && y>=378 && y<416;
     const int bx = kBoxX + kNoRelX;
     const int by = kBoxY + kNoRelY;
     if (x >= bx && x < bx + kNoW && y >= by && y < by + kNoH) return true;
@@ -195,6 +202,7 @@ bool ConfirmDialog::hit_no(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_checkbox(int x, int y) const {
+    if(dc2pc_)return false;
     const int bx = kBoxX + kChkRelX;
     const int by = kBoxY + kChkRelY;
     return x >= bx && x < bx + kChkW && y >= by && y < by + kChkH;
@@ -236,6 +244,26 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
                          const dc4scene::FontRenderer& font,
                          std::vector<uint8_t>* frame) const {
     if (!active_ || !frame || frame->size() != size_t(kW) * kH * 4) return;
+    if(dc2pc_) {
+        auto native_blit=[&](int sx,int sy,int w,int h,int x,int y) {
+            dc4scene::Image scaled;scaled.w=int(std::lround(w*1.2));scaled.h=int(std::lround(h*1.2));
+            scaled.rgba.resize(size_t(scaled.w)*scaled.h*4);
+            for(int py=0;py<scaled.h;++py)for(int px=0;px<scaled.w;++px) {
+                const int ix=sx+std::min(w-1,int(px/1.2)),iy=sy+std::min(h-1,int(py/1.2));
+                if(ix>=0 && ix<chip_.w && iy>=0 && iy<chip_.h)
+                    std::copy_n(chip_.rgba.data()+(size_t(iy)*chip_.w+ix)*4,4,scaled.rgba.data()+(size_t(py)*scaled.w+px)*4);
+            }
+            blit_subimage(scaled,0,0,scaled.w,scaled.h,160+int(std::lround(x*1.2)),int(std::lround(y*1.2)),frame);
+        };
+        native_blit(208,144,248,128,276,236);
+        const bool yes=hit_yes(mouse_x,mouse_y),no=hit_no(mouse_x,mouse_y);
+        native_blit(0,144+(yes?(down?64:32):0),104,32,296,315);
+        native_blit(104,144+(no?(down?64:32):0),104,32,400,315);
+        int size=29;
+        while(size>12 && font.text_width(message_,float(size))>260)--size;
+        draw_text(font,message_,640-font.text_width(message_,float(size))/2,312,size,0xFFFFFF,frame);
+        return;
+    }
 
     // 1. Draw Dialog Box Frame (431x223 from ADVMENUCHIP.CRX)
     if (chip_.valid() && chip_.w >= kBoxW && chip_.h >= kBoxH) {

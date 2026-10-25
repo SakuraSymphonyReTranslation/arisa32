@@ -70,6 +70,7 @@ struct Engine {
     dc4ui::SaveScreen save_screen;
     std::vector<dc4ui::SaveSlot> save_slots =
         std::vector<dc4ui::SaveSlot>(dc4ui::SaveScreen::kSlotCount);
+    dc4ui::SaveSlot quick_slot, latest_slot;
     std::vector<uint8_t> save_frame;
     int save_mx = -1, save_my = -1;
     bool save_down = false;
@@ -1059,29 +1060,56 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->log_loaded = e->log.load(e->data_dir);
     e->log.set_latin_mode(dc4::is_latin());
     if (!e->log_loaded) LOGE("log screen artwork unavailable");
+    bool imported_pc_progress = false;
     if (!menu_ok) {
         LOGI("system menus unavailable (%s); using in-game flow", err.c_str());
         e->menu_open = false;
         e->in_game = true;
     } else {
         std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
-        for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
-            if (dir.empty()) continue;
-            for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
-                if (std::filesystem::exists(dir + sub)) {
-                    e->menu.load_system_dat(dir + sub);
-                }
+        const bool dc2pc = e->menu.scene_ui_script() == "start.mes";
+        const auto load_android_profiles = [&] {
+            for (const auto& dir : {e->data_dir, e->save_dir})
+                if (std::filesystem::exists(dir + "/system-profile.dat"))
+                    e->menu.load_profile(dir + "/system-profile.dat");
+        };
+        if (dc2pc) load_android_profiles();
+        else {
+            // Retain the existing import order and discovery for other games.
+            for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
+                if (dir.empty()) continue;
+                for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"})
+                    if (std::filesystem::exists(dir + sub)) e->menu.load_system_dat(dir + sub);
             }
+            load_android_profiles();
         }
-        if (std::filesystem::exists(e->data_dir + "/system-profile.dat")) {
-            e->menu.load_profile(e->data_dir + "/system-profile.dat");
-        }
-        if (std::filesystem::exists(e->save_dir + "/system-profile.dat")) {
-            e->menu.load_profile(e->save_dir + "/system-profile.dat");
+        const auto child_ci = [](const std::filesystem::path& root, const std::string& name) {
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+                auto candidate = entry.path().filename().string();
+                std::transform(candidate.begin(), candidate.end(), candidate.begin(),
+                               [](unsigned char c) { return char(std::tolower(c)); });
+                if (candidate == name) return entry.path();
+            }
+            return root / name;
+        };
+        for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
+            if (!dc2pc || dir.empty()) continue;
+            const std::filesystem::path root(dir);
+            for (const auto& folder : {root, child_ci(root, "savedata"),
+                    child_ci(child_ci(root, "advdata"), "savedata")}) {
+                const auto path = child_ci(folder, "system.dat");
+                std::string import_error;
+                if (!std::filesystem::is_regular_file(path)) continue;
+                if (e->menu.load_system_dat(path.string(), &import_error)) {
+                    imported_pc_progress = true;
+                    LOGI("Imported PC progress: %s", path.string().c_str());
+                } else LOGE("PC progress rejected: %s (%s)", path.string().c_str(), import_error.c_str());
+            }
         }
     }
     if (menu_ok) e->confirm.load(e->data_dir);
-    if (!e->save_dir.empty() && !std::filesystem::exists(e->save_dir + "/system-profile.dat")) {
+    if (!e->save_dir.empty() && (imported_pc_progress || !std::filesystem::exists(e->save_dir + "/system-profile.dat"))) {
         save_profile(e);
     }
     std::ifstream read_file(e->save_dir + "/read-lines.txt",std::ios::binary);
@@ -1274,7 +1302,7 @@ Java_org_dc4engine_Dc4Activity_dc4CancelConfirmation(JNIEnv*,jobject) {
     Engine* e=g_engine;if(!e)return JNI_FALSE;
     if(e->confirm.active()){answer_confirm(e,false);return JNI_TRUE;}
     if(e->menu.confirming()){e->menu.answer_confirmation(false);return JNI_TRUE;}
-    if(e->save_screen.confirming()){e->save_screen.cancel_confirm();return JNI_TRUE;}
+    if(e->save_screen.confirming() || e->save_screen.choosing_icon()){e->save_screen.cancel_confirm();return JNI_TRUE;}
     return JNI_FALSE;
 }
 
@@ -1326,6 +1354,8 @@ JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Advance(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused || e->menu_open) return JNI_FALSE;
+    if (e->scene->sidebar_visible()) { e->scene->set_sidebar_visible(false); return JNI_TRUE; }
+    if (e->scene->reviewing_dialogue()) { e->scene->return_to_dialogue(); return JNI_TRUE; }
     if (e->movie.active()) {
         const double movie_time = e->movie.time();
         const double movie_duration = e->movie.duration();
@@ -1386,7 +1416,7 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
         return env->NewStringUTF("");
     }
     std::string message;
-    if (e->scene->waiting_for_choice()) {
+    if (e->scene->waiting_for_choice() && !e->scene->sidebar_visible()) {
         const int choice = e->scene->choice_at(x, y);
         if (choice >= 0 && (e->pressed_choice < 0 || choice == e->pressed_choice) && e->scene->choose(size_t(choice))) {
             e->pressed_choice = -1;
@@ -1407,6 +1437,7 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
                        *tag == ":aaload" || *tag == ":aasave" || *tag == ":aaqload" ||
                        *tag == ":aaqsave" || *tag == ":aaskip" || *tag == ":qsave" ||
                        *tag == ":full" || *tag == ":menu" || *tag == ":change" ||
+                       *tag == ":sidebarclose" || *tag == ":sidebarwin" ||
                        *tag == ":up" || *tag == ":down" || *tag == ":aalog") {
                 // Shell-level actions (auto/skip/backlog/save UI) dispatch in Java.
                 e->pressed_action.clear();
@@ -1496,14 +1527,16 @@ Java_org_dc4engine_Dc4Activity_dc4Status(JNIEnv* env, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene) return env->NewStringUTF("0;0;0;0;1;0;1");
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "%zu;%d;%d;%d;%d;%d;%d",
+    std::snprintf(buf, sizeof(buf), "%zu;%d;%d;%d;%d;%d;%d;%d;%d",
                   e->line_serial,
                   e->scene->waiting_for_choice() ? 1 : 0,
                   e->scene->voice_playing() ? 1 : 0,
                   (e->scene->animating() || e->scene->waiting_for_time() || e->movie.active() || e->movie_playing_in_java) ? 1 : 0,
                   (e->fully_revealed || reveal_count(e) < 0) ? 1 : 0,
                   e->scene->message_visible() ? 1 : 0,
-                  e->scene->scene_ended() ? 1 : 0);
+                  e->scene->scene_ended() ? 1 : 0,
+                  e->scene->reviewing_dialogue() ? 1 : 0,
+                  e->scene->sidebar_visible() ? 1 : 0);
     return env->NewStringUTF(buf);
 }
 
@@ -1521,6 +1554,7 @@ JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4SkipAdvance(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused) return JNI_FALSE;
+    if (e->scene->sidebar_visible() || e->scene->reviewing_dialogue()) return JNI_TRUE;
     if (e->menu_open || e->movie.active() || e->scene->waiting_for_time()) return JNI_TRUE;
     if (!e->menu.config().skip_unread && !e->current_was_read) return JNI_FALSE;
     if (e->scene->scene_ended()) return JNI_FALSE;
@@ -1578,6 +1612,7 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(JNIEnv* env, jobject, jboolean loadi
     e->save_screen.set_language(dc4::get_language());
     e->save_screen.set_mode(loading ? dc4ui::SaveMode::Load : dc4ui::SaveMode::Save);
     e->save_screen.set_shortcuts(latest, false, quick);
+    e->save_screen.set_special_slots(e->quick_slot,e->latest_slot);
     e->save_screen.set_navigation(true,true,true);
     if (e->menu_open) { e->menu_return = true; e->return_page = e->menu.page(); }
     e->menu_open = false;
@@ -1698,6 +1733,7 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(JNIEnv* env, jobject, jint action, 
             return env->NewStringUTF("close");
         case Action::LatestLoad: return env->NewStringUTF("latest");
         case Action::QuickLoad: return env->NewStringUTF("quick");
+        case Action::QuickSave: return env->NewStringUTF("quicksave");
         case Action::Config: return env->NewStringUTF("config");
         case Action::Title: return env->NewStringUTF("title");
         case Action::Quit: return env->NewStringUTF("quit");
@@ -1892,6 +1928,40 @@ JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4Advance(JNIEnv* env, jobject thiz) {
     return Java_org_dc4engine_Dc4Activity_dc4Advance(env, thiz);
 }
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4BrowseDialogue(JNIEnv*, jobject, jint direction) {
+    Engine* e = g_engine;
+    return e && e->scene && !e->paused && !e->menu_open && e->scene->browse_dialogue(direction);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SetSidebarVisible(JNIEnv*, jobject, jboolean visible) {
+    Engine* e = g_engine;
+    return e && e->scene && !e->paused && e->in_game && !e->menu_open &&
+        !e->movie.active() && e->scene->set_sidebar_visible(visible);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SidebarVisible(JNIEnv*, jobject) {
+    Engine* e = g_engine;
+    return e && e->scene && e->scene->sidebar_visible();
+}
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, jboolean slots, jboolean backlog) {
+    Engine* e = g_engine;
+    if (!e || !e->scene || e->paused) return env->NewStringUTF("");
+    if (Java_org_dc4engine_Arisa32Activity_dc4CancelConfirmation(env, thiz)) return env->NewStringUTF("");
+    if (slots) {
+        if (e->save_screen.choosing_icon()) { e->save_screen.cancel_confirm(); return env->NewStringUTF(""); }
+        if (e->menu_return) { open_menu(e,e->return_page); e->menu_return=false; }
+        e->tick=Clock::now(); return env->NewStringUTF("close");
+    }
+    if (backlog) { e->tick=Clock::now(); return env->NewStringUTF("close"); }
+    if (e->menu_open) return env->NewStringUTF(menu_action(e,e->menu.back()).c_str());
+    if (e->in_game && !e->movie.active() && !e->movie_playing_in_java) {
+        e->scene->return_to_dialogue();
+        e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
+    }
+    return env->NewStringUTF("");
+}
 JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
     return Java_org_dc4engine_Dc4Activity_dc4Touch(env, thiz, action, x, y);
@@ -1937,8 +2007,25 @@ Java_org_dc4engine_Arisa32Activity_dc4SlotsOpen(JNIEnv* env, jobject thiz, jbool
     return Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(env, thiz, loading, latest, quick);
 }
 JNIEXPORT void JNICALL
-Java_org_dc4engine_Arisa32Activity_dc4SlotInfo(JNIEnv* env, jobject thiz, jint index, jboolean occupied, jstring timestamp, jstring excerpt, jobject thumbnail) {
-    Java_org_dc4engine_Dc4Activity_dc4SlotInfo(env, thiz, index, occupied, timestamp, excerpt, thumbnail);
+Java_org_dc4engine_Arisa32Activity_dc4SlotInfo(JNIEnv* env, jobject thiz, jint index, jboolean occupied, jstring timestamp, jstring excerpt, jobject thumbnail, jint icon) {
+    Engine* e=g_engine;
+    if(!e || index < -2 || index >= dc4ui::SaveScreen::kSlotCount)return;
+    icon=icon>=0 && icon<16?icon:-1;
+    if(index>=0) {
+        Java_org_dc4engine_Dc4Activity_dc4SlotInfo(env, thiz, index, occupied, timestamp, excerpt, thumbnail);
+        e->save_slots[size_t(index)].character_icon=icon;
+    } else {
+        auto& slot=index==-1?e->quick_slot:e->latest_slot;
+        slot={};slot.occupied=occupied;slot.character_icon=icon;
+        slot.timestamp=jstr_to_utf16(env,timestamp,64);
+        slot.excerpt=jstr_to_utf16(env,excerpt,256);
+        if(occupied && thumbnail)copy_thumbnail_bitmap(env,thumbnail,&slot.thumbnail);
+        e->save_screen.set_special_slots(e->quick_slot,e->latest_slot);
+    }
+}
+JNIEXPORT jint JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SelectedSaveIcon(JNIEnv*, jobject) {
+    return g_engine && g_engine->save_screen.dc2pc()?g_engine->save_screen.selected_icon():-1;
 }
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4SlotsFrame(JNIEnv* env, jobject thiz, jobject bitmap) {

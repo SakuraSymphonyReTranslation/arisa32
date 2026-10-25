@@ -86,6 +86,7 @@ enum class Opcode : uint8_t {
     LIST_RECT = 0x7E,
     LIST_ID = 0x7F,
     LEGACY_LIST_ITEM = 0x80,
+    LIST_TAG = 0x81,
 
     ASSIGN = 0x82,
     COPY = 0x83,

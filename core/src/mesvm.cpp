@@ -221,7 +221,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     const auto previous_opcode = mes_engine_command(previous).opcode();
     if (snapshot.transferring && previous_opcode != Opcode::TRANSFER && previous_opcode != Opcode::TRANSFER_ALT)
         return reject("MES VM snapshot transfer is not positioned after a script-transfer command");
-    if (snapshot.waiting_for_choice && (previous.opcode() != Opcode::WAIT_INPUT || previous.p1 != 0))
+    if (snapshot.waiting_for_choice &&
+        ((previous_opcode != Opcode::WAIT_INPUT && previous_opcode != Opcode::WAIT_INPUT_ALT) || previous.p1 != 0))
         return reject("MES VM snapshot choice wait is not positioned after a choice command");
     if (snapshot.ended && !(snapshot.pc > header_size && previous.opcode() == Opcode::END)
         && snapshot.pc != mes_->code.size())
@@ -609,6 +610,8 @@ bool MesVm::next(MesCommand* out) {
                 if (!consume_companion(&caption, "choice text")) return false;
                 if (caption.kind != CmdKind::Text && caption.kind != CmdKind::Str && caption.kind != CmdKind::ParamStr)
                     return fail("expected choice text", caption.pos);
+                if (raw.dc2pc && caption.op != 0x4D)
+                    return fail("expected DC2PC choice caption", caption.pos);
                 choices_.push_back({command.str, caption.str});
                 continue;
             }

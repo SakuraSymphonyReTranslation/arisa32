@@ -100,6 +100,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native String dc4PlaybackSettings();
     private native String dc4ValidateSaveFile(String base, String overlay, String encoding, String path);
     private native boolean dc4Advance();
+    private native boolean dc4BrowseDialogue(int direction);
+    private native boolean dc4SetSidebarVisible(boolean visible);
+    private native String dc4BackOrSidemenu(boolean slots, boolean backlog);
+    private native boolean dc4SidebarVisible();
     private native void dc4Render(Bitmap bitmap);
     private native String dc4CurrentLine();
     private native String dc4Touch(int action, int x, int y);
@@ -116,7 +120,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native void dc4LogClear();
     private native String dc4SlotsOpen(boolean loading, boolean latest, boolean quick);
     private native void dc4SlotInfo(int index, boolean occupied, String timestamp,
-                                   String excerpt, Bitmap thumbnail);
+                                   String excerpt, Bitmap thumbnail, int characterIcon);
+    private native int dc4SelectedSaveIcon();
     private native boolean dc4SlotsFrame(Bitmap bitmap);
     private native String dc4SlotsTouch(int action, int x, int y);
     private native String dc4RequestConfirm(String action);
@@ -129,6 +134,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private SurfaceView surface;
     private FrameLayout gameLayout;
     private TextView bubble;
+    private TextView backSidemenu;
     private FrameLayout movieContainer;
     private VLCVideoLayout vlcVideoLayout;
     private TextureView movieTextureView;
@@ -650,6 +656,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     // Parsed dc4Status fields.
     private int stLine;
     private boolean stChoice, stVoice, stAnim, stRevealed, stVisible, stEnded;
+    private boolean stReviewing, stSidebar;
+    private boolean gameFullscreen = true;
     private int autoDelayMs = 1200;
     private boolean waitVoice = true, stopAutoChoice = true, stopSkipChoice = true, skipAllowed = true;
 
@@ -1200,12 +1208,29 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 break;
             case ":backlog":
             case ":aalog":
-            case ":up":
                 openBacklog();
                 break;
+            case ":up":
             case ":down":
                 autoMode = skipMode = false;
-                dc4Advance();
+                dc4BrowseDialogue(tag.equals(":up") ? -1 : 1);
+                break;
+            case ":sidebarclose":
+                autoMode = skipMode = false;
+                dc4SetSidebarVisible(false);
+                break;
+            case ":sidebarwin":
+            case ":full":
+                autoMode = skipMode = false;
+                dc4SetSidebarVisible(false);
+                runOnUiThread(() -> {
+                    gameFullscreen = !gameFullscreen;
+                    if (gameFullscreen) getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                    else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                    getWindow().getDecorView().setSystemUiVisibility(gameFullscreen
+                            ? View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            : View.SYSTEM_UI_FLAG_VISIBLE);
+                });
                 break;
             case ":qs":
             case ":aaqsave":
@@ -1227,12 +1252,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             case ":option":
             case ":aaconfig":
             case ":aawin_size":
-            case ":full":
             case ":menu":
                 closeMenus();
+                dc4SetSidebarVisible(false);
+                autoMode = skipMode = false;
                 notifyUser(dc4OpenMenu("config"));
                 break;
             case ":aatitle":
+                dc4SetSidebarVisible(false);
                 autoMode=skipMode=false;handleOriginalAction(dc4RequestConfirm("title"));
                 break;
             case ":n":
@@ -1276,7 +1303,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (action.startsWith("slot:")) {
             final int slot = Integer.parseInt(action.substring(5));
             if (slot < 0 || slot >= SLOT_COUNT) return;
-            persistState(slotMenuLoading, slot);
+            persistState(slotMenuLoading, slot, dc4SelectedSaveIcon());
         } else if (action.equals("load") || action.equals("save")) {
             slotMenuLoading = action.equals("load");
         } else if (action.equals("close")) { closeMenus(); notifyUser(dc4OpenMenu("resume")); }
@@ -1284,6 +1311,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         else if (action.equals("title")) menuCommands.add(() -> { closeMenus(); notifyUser(dc4OpenMenu("title")); });
         else if (action.equals("quit")) runOnUiThread(() -> leaveGame(true));
         else if (action.equals("quick")) persistState(true, -1);
+        else if (action.equals("quicksave")) persistState(false, -1, dc4SelectedSaveIcon());
         else if (action.equals("latest") && latestSlot >= 0) persistState(true, latestSlot);
     }
 
@@ -1315,6 +1343,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void openSlots(boolean loading) {
+        dc4SetSidebarVisible(false);
         autoMode = false;
         skipMode = false;
         backlogOpen = false;
@@ -1592,13 +1621,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private String readScriptFromDat(File saveFile) {
         try (FileInputStream in = new FileInputStream(saveFile)) {
-            byte[] hdr = new byte[72];
+            byte[] hdr = new byte[132];
             int n = in.read(hdr);
             if (n >= 16) {
+                int offset = "dc2pc".equals(currentProfile().getId()) ? 4 : 8;
                 int len = 0;
-                while (8 + len < n && hdr[8 + len] != 0 && len < 64) len++;
+                while (offset + len < n && hdr[offset + len] != 0 && len < 128) len++;
                 if (len > 0) {
-                    return new String(hdr, 8, len, StandardCharsets.ISO_8859_1).trim();
+                    return new String(hdr, offset, len, StandardCharsets.ISO_8859_1).trim();
                 }
             }
         } catch (Throwable ignored) {}
@@ -1635,6 +1665,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void persistState(boolean load, int slot) {
+        persistState(load,slot,-1);
+    }
+
+    private void persistState(boolean load, int slot, int characterIcon) {
         if (slot < -1 || slot >= SLOT_COUNT) return;
         autoMode = false;
         skipMode = false;
@@ -1655,8 +1689,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         } else {
             final String error = dc4Save(file.getAbsolutePath());
             if (!error.isEmpty()) { notifyUser(error); return; }
+            try (FileOutputStream out = new FileOutputStream(file.getAbsolutePath() + ".icon")) {
+                out.write(Integer.toString(characterIcon >= 0 && characterIcon < 16 ? characterIcon : -1).getBytes(StandardCharsets.UTF_8));
+            } catch (IOException errorWritingIcon) { Log.w(TAG,"save icon unavailable",errorWritingIcon); }
             writePreview(file);
-            if (slot >= 0 && slotMenuOpen) {
+            if (slotMenuOpen) {
                 refreshSlots();
                 File quick = resolveQuickSaveFile(dir);
                 notifyUser(dc4SlotsOpen(false, latestSlot >= 0,
@@ -1696,18 +1733,37 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         for (int i = 0; i < SLOT_COUNT; ++i) {
             final File file = resolveSlotSaveFile(dir, i);
             final boolean occupied = file != null && file.isFile();
-            String timestamp = "", excerpt = "";
-            Bitmap thumbnail = null;
             if (occupied) {
                 final long modified = file.lastModified();
                 if (modified > newest) { newest = modified; latestSlot = i; }
-                timestamp = dateFormat.format(new Date(modified));
-                excerpt = resolveSlotExcerpt(file, i + 1);
-                thumbnail = resolveSlotThumbnail(file);
             }
-            dc4SlotInfo(i, occupied, timestamp, excerpt, thumbnail);
-            if (thumbnail != null) thumbnail.recycle();
+            publishSlotInfo(i,file);
         }
+        publishSlotInfo(-1,resolveQuickSaveFile(dir));
+        publishSlotInfo(-2,latestSlot>=0?resolveSlotSaveFile(dir,latestSlot):null);
+    }
+
+    private void publishSlotInfo(int index, File file) {
+        final boolean occupied=file!=null && file.isFile();
+        String timestamp="",excerpt=""; Bitmap thumbnail=null; int icon=-1;
+        if(occupied) {
+            timestamp=dateFormat.format(new Date(file.lastModified()));
+            excerpt=resolveSlotExcerpt(file,index+1);
+            thumbnail=resolveSlotThumbnail(file);
+            try { icon=Integer.parseInt(readSmallFile(file.getAbsolutePath()+".icon").trim()); }
+            catch(NumberFormatException ignored) {}
+            if (icon < 0 && "dc2pc".equals(currentProfile().getId())
+                    && file.getName().toLowerCase(Locale.ROOT).endsWith(".dat")) {
+                try (java.io.RandomAccessFile nativeSave = new java.io.RandomAccessFile(file, "r")) {
+                    if (nativeSave.length() >= 0x2B20 && Integer.reverseBytes(nativeSave.readInt()) == 1) {
+                        nativeSave.seek(0xFF0 + 9 * 100 + 20);
+                        icon = nativeSave.readUnsignedByte();
+                    }
+                } catch (IOException ignored) {}
+            }
+        }
+        dc4SlotInfo(index,occupied,timestamp,excerpt,thumbnail,icon);
+        if(thumbnail!=null)thumbnail.recycle();
     }
 
     private static String readSmallFile(String path) {
@@ -1747,6 +1803,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         stRevealed = "1".equals(parts[4]);
         stVisible = "1".equals(parts[5]);
         stEnded = "1".equals(parts[6]);
+        stReviewing = parts.length > 7 && "1".equals(parts[7]);
+        stSidebar = parts.length > 8 && "1".equals(parts[8]);
         if (stLine != lastLineSerial) {
             lastLineSerial = stLine;
             wasRevealed = false;
@@ -1758,6 +1816,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     /** Auto/skip drivers, mirroring the desktop shell's timings. */
     private void driveModes(long now) {
         if (!autoMode && !skipMode) return;
+        if (stReviewing || stSidebar) { autoMode = skipMode = false; return; }
         if (skipMode && !skipAllowed) skipMode = false;
         if (backlogOpen || slotMenuOpen || dc4MenuActive() || dc4ConfirmActive()) return;
         if (stEnded) {
@@ -2564,6 +2623,22 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         bubble.setContentDescription(settingsTitle());
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(48), dp(48)); gameLayout.addView(bubble, params);
         bubble.setX(dp(12)); bubble.setY(dp(12));
+        backSidemenu = null;
+        if (currentProfile().getId().equals("dc2pc")) {
+            backSidemenu = text("Back /\nSidemenu", 10, ArisaUi.CYAN);
+            backSidemenu.setGravity(Gravity.CENTER);
+            backSidemenu.setPadding(0, 0, 0, 0);
+            backSidemenu.setMaxLines(2);
+            if (Build.VERSION.SDK_INT >= 26)
+                backSidemenu.setAutoSizeTextTypeUniformWithConfiguration(8, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+            backSidemenu.setBackground(ArisaUi.ripple(this, 0xe514243b, 18));
+            backSidemenu.setElevation(dp(6)); backSidemenu.setFocusable(true);
+            backSidemenu.setContentDescription("Back / Sidemenu");
+            gameLayout.addView(backSidemenu, new FrameLayout.LayoutParams(dp(64), dp(48)));
+            backSidemenu.setOnClickListener(v -> {
+                if (!ioBusy) menuCommands.add(this::backOrSidemenu);
+            });
+        }
         final float[] drag = new float[4]; final boolean[] moved = {false};
         bubble.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
@@ -2591,16 +2666,60 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
     private void clampBubble() {
         if (bubble == null || gameLayout == null) return;
-        bubble.setX(Math.max(dp(4), Math.min(bubble.getX(), gameLayout.getWidth() - bubble.getWidth() - dp(4))));
+        int safeLeft = 0, safeRight = 0, safeTop = 0, safeBottom = 0;
+        if (Build.VERSION.SDK_INT >= 28 && gameLayout.getRootWindowInsets() != null) {
+            android.view.DisplayCutout cutout = gameLayout.getRootWindowInsets().getDisplayCutout();
+            if (cutout != null) {
+                safeLeft = cutout.getSafeInsetLeft(); safeRight = cutout.getSafeInsetRight();
+                safeTop = cutout.getSafeInsetTop(); safeBottom = cutout.getSafeInsetBottom();
+            }
+        }
+        float navWidth = backSidemenu == null ? bubble.getWidth() : Math.max(bubble.getWidth(), backSidemenu.getWidth());
+        float minX = safeLeft + dp(4);
+        float maxX = gameLayout.getWidth() - safeRight - navWidth - dp(4);
+        if (backSidemenu != null) {
+            // DC2PC is fitted as 4:3; keep navigation in its left black margin.
+            float margin = (gameLayout.getWidth() - gameLayout.getHeight()*4f/3f)/2f;
+            if (margin >= safeLeft+navWidth+dp(8)) maxX = margin-navWidth-dp(4);
+        }
+        bubble.setX(Math.max(minX, Math.min(bubble.getX(), maxX)));
         // The game's message-window buttons occupy the lower half of the viewport.
-        bubble.setY(Math.max(dp(4), Math.min(bubble.getY(), Math.min(gameLayout.getHeight() - bubble.getHeight() - dp(4), gameLayout.getHeight() * .4f))));
+        bubble.setY(Math.max(safeTop+dp(4), Math.min(bubble.getY(), Math.min(gameLayout.getHeight() - safeBottom - bubble.getHeight() - dp(4), gameLayout.getHeight() * .4f))));
+        if (backSidemenu != null) {
+            backSidemenu.setX(bubble.getX());
+            backSidemenu.setY(Math.min(bubble.getY()+bubble.getHeight()+dp(8),
+                    gameLayout.getHeight()-safeBottom-backSidemenu.getHeight()-dp(4)));
+        }
+    }
+    private void backOrSidemenu() {
+        autoMode = skipMode = false;
+        final String action = dc4BackOrSidemenu(slotMenuOpen, backlogOpen);
+        if ("close".equals(action)) closeMenus();
+        else if (action != null && !action.isEmpty()) notifyUser(action);
     }
     private void showExtras() {
-        menuCommands.add(() -> { autoMode = false; skipMode = false; });
+        menuCommands.add(() -> {
+            autoMode = skipMode = false;
+            final boolean visible = dc4SidebarVisible();
+            runOnUiThread(() -> showExtras(visible));
+        });
+    }
+    private void showExtras(boolean sidebarVisible) {
         LinearLayout body = ArisaUi.column(this);
         section(body, tr("NOW PLAYING", "SEDANG DIMAINKAN", "プレイ中"));
         setting(body, tr("Game settings", "Pengaturan game", "ゲーム設定"), tr("Audio, text speed and playback", "Audio, kecepatan teks dan pemutaran", "音声・文字速度・再生設定"),
-                () -> menuCommands.add(() -> { closeMenus(); notifyUser(dc4OpenMenu("config")); }));
+                () -> menuCommands.add(() -> { closeMenus(); dc4SetSidebarVisible(false); notifyUser(dc4OpenMenu("config")); }));
+        if (currentProfile().getId().equals("dc2pc")) {
+            setting(body, sidebarVisible
+                    ? tr("Hide sidebar", "Sembunyikan sidebar", "サイドバーを隠す")
+                    : tr("Show sidebar", "Tampilkan sidebar", "サイドバーを表示"),
+                    tr("Save, Load, Config and Title", "Save, Load, Config dan Title", "セーブ・ロード・設定・タイトル"),
+                    () -> menuCommands.add(() -> {
+                        closeMenus(); autoMode = skipMode = false;
+                        if (!dc4SetSidebarVisible(!sidebarVisible))
+                            notifyUser(tr("Sidebar unavailable", "Sidebar belum tersedia", "サイドバーを表示できません"));
+                    }));
+        }
         setting(body, tr("Manage game", "Kelola game", "ゲーム管理"), selected.title + " · " + contentName(selected.language), () -> showGameSettings(selected));
         setting(body, tr("App language", "Bahasa aplikasi", "アプリの言語"), null, this::chooseUiLanguage);
         section(body, tr("NAVIGATION", "NAVIGASI", "移動"));
@@ -3183,6 +3302,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             return;
         }
         if (inLibrary) super.onBackPressed();
+        else if (currentProfile().getId().equals("dc2pc")) menuCommands.add(this::backOrSidemenu);
         else menuCommands.add(() -> {if(!dc4CancelConfirmation())runOnUiThread(this::showExtras);});
     }
 

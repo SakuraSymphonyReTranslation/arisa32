@@ -8,7 +8,7 @@
 namespace dc4 {
 
 struct VoiceEntry {
-    char name[56];     // zero-padded, e.g. "SE\0000SILENT24.PCM"
+    char name[61]{};   // DC4 names use 56 bytes; DC2PC uses 60, plus a safe terminator.
     uint32_t offset;   // absolute file offset of XPCM blob
     uint32_t size;     // blob size in bytes
 

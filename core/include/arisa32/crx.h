@@ -10,6 +10,7 @@ namespace dc4 {
 struct CrxInfo {
     int16_t offset_x = 0, offset_y = 0;
     uint16_t width = 0, height = 0;
+    uint16_t canvas_width = 0, canvas_height = 0; // compression-3 registration frame
     uint16_t compression = 0;   // 1 = LZ77, 2/3 = zlib
     uint16_t flags = 0;         // bit 0x10: int32 compressed-size field present
     uint16_t colors = 0;        // 0 = 24bpp, 1 = 32bpp, else 8bpp palette (0x102 = RGBA pal)

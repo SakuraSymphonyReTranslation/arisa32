@@ -13,6 +13,7 @@ struct MesCommand {
     CmdKind kind = CmdKind::Nop;
     uint32_t pos = 0;      // offset of the opcode byte within `code`
     uint8_t op = 0;
+    uint8_t raw_op = 0;    // original DC2PC opcode after service translation
     uint8_t p1 = 0, p2 = 0;             // Param2 / ParamStr param
     uint16_t words[4] = {};             // Words4
     std::string str;                    // Str / ParamStr / Text (decoded)

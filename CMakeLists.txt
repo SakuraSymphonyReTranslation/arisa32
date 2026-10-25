@@ -86,6 +86,9 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(crm_test tests/crm_test.cpp)
+    target_link_libraries(crm_test PRIVATE dc4core)
+    add_test(NAME crm_test COMMAND crm_test)
     add_executable(dc2pc_flow_test tests/dc2pc_flow_test.cpp)
     target_link_libraries(dc2pc_flow_test PRIVATE dc4core)
     add_test(NAME dc2pc_flow_test COMMAND dc2pc_flow_test)

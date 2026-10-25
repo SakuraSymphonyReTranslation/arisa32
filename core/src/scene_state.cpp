@@ -136,6 +136,8 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.number(motion.to_x); out.number(motion.to_y);
             out.number(motion.elapsed_ms); out.number(motion.duration_ms);
         }
+        // v5: face overlays retain their clean body asset across Save/Load.
+        for (const auto& sprite : sprites_) out.str(sprite.expression);
         // v4: COMU phone chat state (visibility + timeline in scene order).
         out.flag(comu_visible_);
         out.u32(uint32_t(comu_items_.size()));
@@ -147,7 +149,7 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(4); header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
+        header.u32(5); header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
         if (capture_error) capture_error->clear();
@@ -187,7 +189,7 @@ bool SceneRunner::load_state(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary | std::ios::ate);
         if (!file) throw std::runtime_error("save not found: " + filename);
         const auto size = file.tellg();
-        if (size < 24) throw std::runtime_error("invalid save size");
+        if (size < 24 || size > std::streamoff(kMaxSave + 24)) throw std::runtime_error("invalid save size");
         file.seekg(0);
         std::vector<uint8_t> bytes(size_t(size), 0);
         if (!file.read(reinterpret_cast<char*>(bytes.data()), size)) throw std::runtime_error("cannot read complete save");
@@ -205,6 +207,10 @@ bool SceneRunner::load_state(const std::string& filename) {
 }
 
 bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
+    dc4::MesFile identity;
+    if (mes_.version == 0x9969 ||
+        (identity.load_file(dc4::resolve_asset(data_ + "/MES/main.mes")) && identity.version == 0x9969))
+        return restore_dc2pc_pc_save(bytes, restore_error);
     try {
         if (bytes.size() < 0x1000) throw std::runtime_error("save file too small to be a PC save");
 
@@ -299,11 +305,21 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
 
             dc4::MesStream scan(mes_);
             dc4::MesCommand c;
+            std::string scanned_speaker;
             while (scan.next(&c)) {
                 if (c.pos > pc) break;
                 if (c.pos == pc) {
                     if (c.kind == dc4::CmdKind::Text) {
-                        if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+                        if (c.dc2pc) {
+                            if (dc4::mes_engine_command(c).opcode() == dc4::Opcode::SPEAKER) {
+                                scanned_speaker = c.str;
+                            } else if (dc4::mes_engine_command(c).opcode() == dc4::Opcode::DIALOGUE) {
+                                current_line_ = c.str;
+                                speaker_ = scanned_speaker;
+                                final_seek_pc = scan.pos();
+                                break;
+                            }
+                        } else if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
                             speaker_ = c.str;
                         } else {
                             current_line_ = c.str;
@@ -408,7 +424,16 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
                     std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
                 } else if (c.kind == K::Text) {
                     std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-                    if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
+                    if (c.dc2pc) {
+                        const auto normalized = dc4::mes_engine_command(c);
+                        if (normalized.opcode() == dc4::Opcode::SPEAKER) {
+                            scanned_speaker = c.str;
+                        } else if (normalized.opcode() == dc4::Opcode::DIALOGUE) {
+                            current_line_ = c.str;
+                            speaker_ = std::move(scanned_speaker);
+                            scanned_speaker.clear();
+                        }
+                    } else if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
                         speaker_ = c.str;
                     } else if (c.op == 0x6B || c.op == 0x4B || c.op == 0x4E) {
                         current_line_ = c.str;
@@ -484,6 +509,128 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         transition_snap_.clear();
         scene_chips_.clear();
         pending_scene_blit_ = false;
+        sidebar_visible_ = false;
+        reset_dialogue_history();
+        if (restore_error) restore_error->clear();
+        return true;
+    } catch (const std::exception& error) {
+        if (restore_error) *restore_error = error.what();
+        return false;
+    }
+}
+
+bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
+    try {
+        if (bytes.size() < 0x2B20 || bytes.size() > kMaxSave)
+            throw std::runtime_error("truncated or unsupported DC2PC PC save");
+        const auto integer = [&](size_t offset) { Reader in{bytes, offset}; return in.u32(); };
+        const auto name = [&](size_t offset) {
+            size_t end = offset;
+            while (end < offset + 128 && bytes[end]) ++end;
+            if (end == offset + 128) throw std::runtime_error("unterminated DC2PC save resource");
+            std::string value(reinterpret_cast<const char*>(bytes.data()+offset), end-offset);
+            for (unsigned char c : value) if (c < 32 || c > 126)
+                throw std::runtime_error("invalid DC2PC save resource");
+            if (!value.empty() && !resource_name(value)) throw std::runtime_error("unsafe DC2PC save resource");
+            return value;
+        };
+        if (integer(0) != 1) throw std::runtime_error("unsupported DC2PC PC save version");
+        std::string script = name(4);
+        if (!resource_name(script, false)) throw std::runtime_error("invalid DC2PC saved scenario");
+        if (script.find('.') == std::string::npos) script += ".mes";
+        SceneRunner candidate(data_);
+        if (!candidate.load_script(data_ + "/MES/" + script)) throw std::runtime_error(candidate.last_error_);
+        if (candidate.mes_.version != 0x9969) throw std::runtime_error("PC save scenario is not DC2PC");
+        // Native PC offsets differ between translations. The raw03/raw04 line
+        // identifiers survive those changes, including saves paused at choice.
+        const uint32_t checkpoint = integer(0x814), stop = integer(0x81C);
+        if (checkpoint > 65535 || (stop != 7 && stop != 9))
+            throw std::runtime_error("unsupported DC2PC save checkpoint");
+        std::vector<dc4::MesCommand> commands;
+        dc4::MesStream scan(candidate.mes_);
+        dc4::MesCommand c;
+        size_t target = size_t(-1);
+        while (scan.next(&c)) {
+            if (c.op == (stop == 9 ? 4 : 3) && (uint32_t(c.p1) | uint32_t(c.p2)<<8) == checkpoint) {
+                if (target != size_t(-1)) throw std::runtime_error("ambiguous DC2PC save checkpoint");
+                target = commands.size();
+            }
+            commands.push_back(c);
+        }
+        if (target == size_t(-1)) throw std::runtime_error("saved DC2PC checkpoint is unavailable in this scenario");
+        // Only placement operations are reconstructed, never past story flow,
+        // assignments or achievement side effects. Saved assets are authoritative.
+        for (size_t i = 0; i < target; ++i)
+            if (commands[i].op == 0x64 || commands[i].op == 0x65)
+                candidate.dispatch_sprite_command(dc4::mes_engine_command(commands[i]));
+        for (int bank : {96,97,98,100}) {
+            const int count = bank == 97 || bank == 98 ? 1500 : bank == 100 ? 100 : 400;
+            for (int i = 0; i < count; ++i) candidate.set_variable(uint16_t(bank), uint16_t(i), variable(uint16_t(bank), uint16_t(i)));
+        }
+        for (int bank = 0; bank < 10; ++bank) for (int i = 0; i < 100; ++i)
+            candidate.set_variable(uint16_t(bank), uint16_t(i), bytes[0xFF0+bank*100+i]);
+        candidate.set_variable(9, 7, 0);
+        candidate.set_variable(3, 30, 0);
+        uint32_t resume = commands[target].pos + uint32_t(commands[target].size);
+        if (stop == 7) {
+            for (size_t i = target+1; i < commands.size(); ++i) {
+                const auto& raw = commands[i];
+                if (raw.op == 3 || raw.op == 4 || raw.op == 0) break;
+                if (raw.op == 0x64 || raw.op == 0x65)
+                    candidate.dispatch_sprite_command(dc4::mes_engine_command(raw));
+                candidate.dispatch_text_command(dc4::mes_engine_command(raw));
+                resume = raw.pos + uint32_t(raw.size);
+                if (raw.op == 7) break;
+            }
+            if (candidate.current_line_.empty()) throw std::runtime_error("DC2PC saved dialogue is unavailable");
+            candidate.vm_.seek_to_pc(resume);
+        } else {
+            // Retain the dialogue behind the choice without running its branch.
+            for (size_t i = 0; i < target; ++i) {
+                if (commands[i].op == 3) candidate.speaker_.clear();
+                candidate.dispatch_text_command(dc4::mes_engine_command(commands[i]));
+            }
+            candidate.vm_.seek_to_pc(resume);
+            size_t budget = 0;
+            while (candidate.vm_.next(&c)) {
+                if (++budget > 256 || c.op == 0x2E || c.op == 0x4C)
+                    throw std::runtime_error("invalid DC2PC saved choice block");
+            }
+            if (!candidate.vm_.waiting_for_choice()) throw std::runtime_error("DC2PC saved choice is unavailable");
+        }
+        const std::string bg = name(0x84);
+        if (!bg.empty()) {
+            candidate.load_layer(1, bg);
+            if (!candidate.layers_.count(1)) throw std::runtime_error("saved DC2PC background is unavailable: " + bg);
+        }
+        for (int i = 0; i < 5; ++i) {
+            // Native hide clears the first byte but leaves stale bytes behind.
+            // Never recover that stale tail as a visible character.
+            const std::string body = name(0x104+i*128);
+            if (body.empty()) continue;
+            candidate.load_bst(i, body, i+4);
+            if (!candidate.sprites_[i].img.valid()) throw std::runtime_error("saved DC2PC sprite is unavailable: " + body);
+        }
+        auto audio = candidate.scene_audio_.capture_snapshot();
+        const uint32_t bgm = integer(0x804);
+        if (bgm != uint32_t(-1) && bgm != 255) {
+            if (bgm > 254) throw std::runtime_error("invalid DC2PC saved BGM");
+            audio.bgm_id = int(bgm); audio.bgm_playing = true;
+            audio.bgm_mode = 1;
+        }
+        std::string error;
+        if (!candidate.scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
+        candidate.message_visible_ = true;
+        candidate.scene_end_ = false;
+        std::vector<uint8_t> snapshot;
+        if (!candidate.capture_state(&snapshot, &error)) throw std::runtime_error(error);
+        if (!restore_state(snapshot, &error)) throw std::runtime_error(error);
+        if (sheets_.find(37) == sheets_.end()) {
+            load_sheets(data_ + "/MES/start.mes");
+            load_ui_script(data_ + "/MES/start.mes");
+            show_message_window("SYSTEM/MESWIN.CRX");
+        }
+        taskbar_visible_ = true;
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {
@@ -498,7 +645,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version != 1 && version != 2 && version != 3 && version != 4)
+        if (version < 1 || version > 5)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -574,6 +721,16 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 camera_motion.push_back(motion);
             }
         }
+        if (version >= 5) {
+            for (size_t i = 0; i < candidate.sprites_.size(); ++i) {
+                const auto expression = in.str(255);
+                if (expression.empty()) continue;
+                if (!resource_name(expression) ||
+                    dc4::mes_opcode_profile(candidate.mes_.dialect, candidate.mes_.version).id != dc4::MesProfileId::DC2PC ||
+                    !candidate.load_bst_expression(int(i), expression))
+                    throw std::runtime_error("saved expression is unavailable: " + expression);
+            }
+        }
         bool restored_comu_visible = false;
         std::vector<ComuItem> restored_comu;
         if (version >= 4) {
@@ -615,6 +772,8 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         effect_pck_.clear();
         transition_active_ = transition_pending_ = false; transition_snap_.clear();
         scene_chips_.clear(); pending_scene_blit_ = false;
+        sidebar_visible_ = false;
+        reset_dialogue_history();
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {

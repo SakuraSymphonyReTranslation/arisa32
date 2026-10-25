@@ -44,6 +44,7 @@ bool MesStream::next(MesCommand* out) {
 MesCommand mes_engine_command(const MesCommand& raw) {
     if (!raw.dc2pc) return raw;
     MesCommand c = raw;
+    c.raw_op = raw.op;
     const auto& opcode = mes_opcode_profile(MesDialect::ClassicDC2, 0x9969).opcodes[raw.op];
     c.op = opcode_byte(Opcode::UNKNOWN);
     if (raw.kind != opcode.kind) return c;

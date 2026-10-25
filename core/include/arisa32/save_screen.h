@@ -17,11 +17,12 @@ struct SaveSlot {
     std::u16string timestamp;
     std::u16string excerpt;
     dc4scene::Image thumbnail;  // Any valid RGBA size; scaled into native crop.
+    int character_icon = -1;    // DC2PC's authored character badge (0..15).
 };
 
 enum class SaveActionType {
     None, Back, Slot, Page, Mode, LatestLoad, AutoLoad, QuickLoad,
-    Config, Title, Quit
+    Config, Title, Quit, QuickSave
 };
 
 struct SaveAction {
@@ -44,6 +45,10 @@ public:
 
     SaveMode mode() const { return mode_; }
     int page() const { return page_; }
+    bool dc2pc() const { return dc2pc_; }
+    int selected_icon() const { return selected_icon_; }
+    bool choosing_icon() const { return choosing_icon_; }
+    void set_special_slots(const SaveSlot& quick, const SaveSlot& latest) { quick_slot_=quick; latest_slot_=latest; }
     void set_mode(SaveMode mode);
     void set_page(int page);       // Clamp to 0..9.
     void change_page(int delta);   // Wrap as in the original scripts.
@@ -63,7 +68,7 @@ public:
     void set_confirm_enabled(bool enabled) { confirm_enabled_ = enabled; }
     bool confirm_enabled() const { return confirm_enabled_; }
     bool confirming() const { return confirm_dialog_.active(); }
-    void cancel_confirm() { confirm_dialog_.close(); pending_action_ = {}; }
+    void cancel_confirm() { confirm_dialog_.close(); pending_action_ = {}; choosing_icon_=false; selected_icon_=-1; }
     const ConfirmDialog& confirm_dialog() const { return confirm_dialog_; }
     ConfirmDialog& confirm_dialog() { return confirm_dialog_; }
 
@@ -85,11 +90,17 @@ public:
               std::vector<uint8_t>* frame) const;
 
 private:
+    void draw_dc2pc(const std::vector<SaveSlot>& slots, int x, int y, bool down,
+                   const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
+    int icon_hit(int x, int y) const;
     SaveAction finish_confirmation(bool yes);
     int control_id(int x, int y) const;
     SaveMode mode_ = SaveMode::Save;
     int page_ = 0;
     bool loaded_ = false;
+    bool dc2pc_ = false, choosing_icon_ = false;
+    int selected_icon_ = -1, pressed_icon_ = -1;
+    SaveSlot quick_slot_, latest_slot_;
     bool latest_ = false, automatic_ = false, quick_ = false;
     bool config_ = false, title_ = false, quit_ = false;
     bool confirm_enabled_ = false;
@@ -99,7 +110,7 @@ private:
     bool pointer_held_ = false;
     SaveAction pending_action_;
     mutable ConfirmDialog confirm_dialog_;
-    dc4scene::Image save_back_, load_back_, chip_, system_goto_;
+    dc4scene::Image save_back_, load_back_, chip_, system_goto_, common_chip_;
     dc4::Language language_ = dc4::Language::Japanese;
 };
 

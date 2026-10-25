@@ -38,8 +38,8 @@ range so the script can compute it.
 Android and desktop use `AdvData/arisa32-saves/dc2pc` for emulator-owned DC2PC
 saves. The desktop `DC4_SAVE_DIR` override still takes precedence. Existing
 DC4, Plus Harmony and generic profile selection remains ordered and keeps its
-previous save behavior. Original game save records are not converted by this
-change; unlock tests use VM progress and emulator-owned profiles.
+previous save behavior. Native DC2PC saves can be read through the DC2PC
+importer; all new saves remain in the emulator namespace.
 
 ## Verification on 2026-10-23
 
@@ -125,13 +125,140 @@ thumbnail targets group CG variants; cycling stays within the selected group
 and excludes unseen variants.
 
 The progress observer normalizes DC2PC commands before classifying them:
-raw dialogue 0x4B..0x4D marks the current scenario, raw background 0x30 marks
+raw dialogue 0x4C marks the current scenario, raw background 0x30 marks
 matching CG catalogue assets, and raw BGM 0x05 marks music. Emulator profiles
 store asset names and reconstruct flags from the catalogue on load. This is
 host unlock timing; native scenario unlock timing is not yet fully recovered.
 The installed-data regression checks opening continuation, replay return,
 local/global ID mapping, scroll restoration, four route transfers, high CG and
 scenario flags, alias snapshot round trips, CG variants, and profile persistence.
+
+### DC2PC nameplate, dialogue history and sidebar
+
+Installed Japanese and Indonesian scripts use raw `0x4B` for the speaker and
+`0x4C` for dialogue; `0x4D` supplies a choice caption. A speaker command and its following dialogue are
+consumed together. The floral message frame is drawn in full for narration
+as well as named dialogue, because the flowers cross the nameplate/body
+boundary. Speaker text is centered separately and shrinks to fit the plate.
+
+The original textbox Up/Down buttons browse up to 4,000 previous lines while
+retaining the live VM, flags and save position. Down stops at the current
+line. A plain tap returns to the current line without advancing. History
+survives story transfers, resets after loading a save or scenario, and pauses
+auto/skip while it is displayed.
+
+DC2PC's Arisa32 settings offer Show/Hide Sidebar. The drawer uses the original
+`advmenu.mes` controls and `quickoption_chip00.crx` artwork, with WIN/FULL,
+Save, Load, Config, Title and Close routed to the host. Title retains its
+confirmation. Desktop also supports Tab to toggle the drawer and Up/Down to
+browse dialogue. The drawer pauses story progression and is never serialized
+into a save.
+
+### DC2PC choices, sprites, voice and saves
+
+Choices use the original panel fill at alpha 128, the selection flower and
+cyan border at full opacity (including touch-down), and authored
+choice labels at 28px before fitting long captions into the native 480px row.
+Classic BST references such as `bst\\sgn_0a_000` resolve to the shared
+`sgn_0a.CRM` archive, without requiring a delimiter in the script. `_b`
+suffixes remain real variant names; they are removed only when deriving the
+archive name. Loose CRX sprites retain priority. Character
+placement uses the DC2PC canvas. Raw `0x30` background changes dismiss body
+layers 1..4, matching native 0x425884; between changes bodies persist until
+raw `0x2B` hides or replaces them. Raw `0x64` selects the sprite
+through word 2, sets its signed position and resets scale; raw `0x65` modes
+0..4 set positions, 16..19 set scale and anchor, and 255 changes the first
+two scales. Raw `0x64` index 255 swaps bodies while retaining each layer's
+transform. Translation retains the raw opcode to distinguish these paths.
+The current renderer applies position changes immediately; native stepped
+movement animation is not yet reproduced.
+
+Compression-3 registration metadata supplies the full sprite canvas rather
+than its cropped image bounds: ordinary bodies use 882x756 and close-ups
+1260x1080. Native helper 0x41C000 adjusts the close-up anchor at scale 100.
+DC2PC backgrounds fit the original 800x600 viewport. Sprite and UI layers
+are clipped to that viewport so they cannot spill into the black margins.
+Lighting marker `@`
+multiplies RGB by 3/4 and adds 16 to blue; `*` multiplies RGB by 7/8.
+Raw `0x2C` restores the clean body and composites a partial expression at its
+registered offset, adapting the `_b` suffix to the body canvas. Save format
+v5 persists expression references; versions 1..4 remain readable.
+
+CRM expression patches add RGB deltas and subtract decoded opacity modulo
+256. The CRXG mode selects each block's alpha convention: DC2PC uses inverted
+alpha in its bases (mode 0), direct alpha in its patches (mode 2), so raw
+alpha is added rather than subtracted. The decoder applies this to all CRM
+characters, including linked CRXJ patches. Synthetic regressions exercise
+all base/diff mode combinations and clipping; `DC2PC_CRM_DATA` enables a
+complete installed BST archive sweep.
+
+DC2PC `VOICE.DAT` uses its own index layout. Scenario and menu voice requests
+resolve through that index and decode XPCM audio. Scene Replay captions
+include the scenario's authored date.
+
+The save/load picker uses the original backgrounds, Quick and Latest rows,
+and three numbered slots on each of ten pages. Save selection opens the
+original 16-character icon chooser, then confirmation when enabled. Cancel
+does not write a save. A successful save persists its selected icon in a
+sidecar; desktop sidecars carry the save fingerprint to reject stale icons.
+Quick Save stays in the picker, while Load resumes the selected scene.
+Quick, Latest and numbered rows use the green, blue and cyan atlas rows.
+Row captions and timestamps are white, matching the PC picker.
+
+Android's DC2PC-only Back / Sidemenu button sits below the three-dot control
+in the left black margin, clear of display cutouts. Its label uses exactly
+two lines, `Back /` and `Sidemenu`. It cancels confirmation or icon selection first,
+returns from Save/Load and native menus, and toggles the sidebar during a
+scene. Hardware Back shares this route. The same button closes the sidebar.
+The drawer artwork and hit rectangles share the scenario's centred 4:3
+origin, retaining the authored positions without a second margin offset.
+
+Validation includes synthetic multi-character persistence, signed positions,
+scale reset, lighting, partial expression replacement and Save/Load, plus
+installed b1/b11/b2/c1 scenarios for left/right placement, the three-character
+scene, Maya's close-up, room changes, and retained Suginami. Render
+captures compare choices and save rows with the supplied PC screenshots.
+
+### DC2PC PC save import
+
+DC2PC / Plus Communication is a specific Da Capo II variant. Its profile
+uses identifier `dc2pc`; the base game, Spring Celebration, To You, Fall in
+Love and Dearest Marriage are not selected by the family name alone. Speaker
+names in synthetic tests are sample dialogue, never game identifiers or a
+character whitelist. Sprite assets and speakers come from each scenario/save.
+
+Native `system.dat` has no embedded title string. Import therefore requires
+the detected DC2PC profile and a validated native structure, rather than a
+filename or exact length alone. The known native block is at least 0xCF4:
+global bank 100 at 0x74 (100 bytes), CG at 0xD8 (1500), scenario flags at
+0x6B4 (1500), and BGM flags at 0xC90 (100). Trailing extensions are allowed;
+truncation and invalid catalogue flags are rejected before mutation. Imported
+clear flags merge with Android progress and survive an older empty profile.
+Native title scripts determine bonus-story unlocks from those clear flags.
+
+Android searches game roots and `SaveData` case-insensitively. Numbered PC
+files `DC2PC01.dat` onward and Quick `DC2PC00.dat` are read fallbacks; Android
+snapshots take priority. Import never overwrites PC saves or `system.dat`.
+The merged achievements persist in `system-profile.dat` in the emulator
+namespace. Native slot script names start at 4, backgrounds at 0x84, five
+body records at 0x104, BGM at 0x804 and local byte banks at 0xFF0. Hidden
+records have a zero first byte, even when stale asset bytes remain behind it.
+
+Version-1 PC slots use raw03 dialogue and raw04 choice checkpoint identifiers
+to find the equivalent position across Japanese/Indonesian script lengths.
+Restore reconstructs placement and reads saved assets/local variables without
+executing previous story assignments or granting additional clear flags.
+Choice lists resume at their wait command and retain working branch targets.
+Validation uses an independent scene before committing to live state.
+Unknown binary layouts/checkpoints remain unsupported instead of guessing
+offsets from a title string. Prefix reconstruction currently covers sprite
+transforms; native stepped motion is still settled immediately.
+
+Portable checks cover corruption, hidden stale bodies, local-variable
+preservation, different speakers and choice branches. `DC2PC_PC_SAVES`
+enables installed-data checks for copied PC files; those saves and proprietary
+assets are not checked in. Real tests run against both language resource sets
+and launch the unlocked bonus stories.
 
 ### DC2PC System Config sliders
 

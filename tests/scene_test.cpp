@@ -106,6 +106,7 @@ void graphics_and_text_regressions(const fs::path& root) {
     script.string(0x49, "BG\\test"); script.text("COMMIT");
     script.string(0x49, ":r"); script.slot(1, "BG\\test");
     script.slot(4, "--"); script.string(0x49, "BG\\test"); script.text("QUEUED");
+    // 0x80 explicitly hides the retained sprite.
     script.words(0x8B, 0, 0, 0, 128); script.text("OPCODE_HIDE");
     script.slot(4, "--"); script.words(0x8B, 100, uint16_t(-10), 360, 16); script.text("SIGNED");
     script.bytes.push_back(0);
@@ -130,7 +131,8 @@ void graphics_and_text_regressions(const fs::path& root) {
     CHECK(scene.frame() == zoom);
     CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(0).visible);
     CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(0).visible);
-    CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(0).visible); CHECK(scene.camera_scale() == 1.6f);
+    CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "COMMIT");
+    CHECK(scene.sprite(0).visible); CHECK(scene.camera_scale() == 1.6f); // :n preserves the retained sprite
     CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(0).visible); CHECK(scene.camera_scale() == 1);
     CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(0).visible);
     CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(0).x == -10);
@@ -267,6 +269,15 @@ void memory_snapshot_regressions(const fs::path& root) {
     write_file(root / "MES/memory.mes", revised);
     unchanged_after_failure(snapshot);
     write_file(root / "MES/memory.mes", script.bytes);
+    // v4 predates the sixteen expression strings added in v5. Its empty
+    // COMU footer remains intact, and old saves must reproduce the same frame.
+    auto legacy = snapshot;
+    CHECK(legacy[8] == 5);
+    legacy.erase(legacy.end() - 69, legacy.end() - 5);
+    legacy[8] = 4; reseal(legacy);
+    CHECK(scene.restore_state(legacy, &error)); CHECK(error.empty());
+    CHECK(scene.current_line() == "CAPTURED");
+    scene.draw(-1); CHECK(scene.frame() == captured_frame);
     CHECK(scene.restore_state(snapshot, &error)); CHECK(error.empty()); CHECK(scene.current_line() == "CAPTURED");
     CHECK(scene.camera_scale() == 1.4f); scene.draw(-1); CHECK(scene.frame() == captured_frame);
     CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "LIVE");
@@ -356,11 +367,231 @@ void chip_regressions(const fs::path& root) {
     const uint8_t* cleared = &scene.frame()[(size_t(405) * 1280 + 105) * 4];
     CHECK(cleared[0] == 240 && cleared[1] == 50 && cleared[2] == 240);
 }
+void dc2pc_dialogue_regressions(const fs::path& root) {
+    struct ClassicScript {
+        std::vector<uint8_t> bytes{1,0,0,0,2,0,0,0,0x69,0x99};
+        void text(uint8_t op, const std::string& value) {
+            bytes.push_back(op);
+            for (unsigned char ch : value) bytes.push_back(uint8_t(ch - 0x20));
+            bytes.push_back(0);
+        }
+        void string(uint8_t op, const std::string& value) {
+            bytes.push_back(op);
+            if (op == 0x2E) bytes.push_back(0);
+            bytes.insert(bytes.end(), value.begin(), value.end()); bytes.push_back(0);
+        }
+        void sprite(uint8_t op, uint8_t index, const std::string& value) {
+            bytes.push_back(op); bytes.push_back(index);
+            bytes.insert(bytes.end(), value.begin(), value.end()); bytes.push_back(0);
+        }
+        void words(uint8_t op, uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
+            bytes.push_back(op);
+            for (uint16_t value : {a,b,c,d}) {
+                bytes.push_back(uint8_t(value)); bytes.push_back(uint8_t(value >> 8));
+            }
+        }
+    };
+    const fs::path data = root / "dc2pc";
+    ClassicScript ui;
+    write_file(data / "MES/start.mes", ui.bytes);
+    ClassicScript first;
+    first.text(0x4B, "Otome"); first.text(0x4C, "FIRST");
+    first.text(0x4C, "NARRATION");
+    first.text(0x4B, "Yume"); first.text(0x4C, "THIRD");
+    first.string(0x2E, "second");
+    write_file(data / "MES/first.mes", first.bytes);
+    ClassicScript second;
+    second.text(0x4B, "OtomeYume"); second.text(0x4C, "FOURTH");
+    write_file(data / "MES/second.mes", second.bytes);
+    dc4scene::SceneRunner scene(data.string());
+    CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+    CHECK(scene.load_script((data / "MES/first.mes").string()));
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.speaker() == "Otome" && scene.current_line() == "FIRST");
+    CHECK(!scene.browse_dialogue(-1)); CHECK(!scene.browse_dialogue(1));
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.speaker().empty() && scene.current_line() == "NARRATION");
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.speaker() == "Yume" && scene.current_line() == "THIRD");
+    std::vector<uint8_t> live;
+    CHECK(scene.capture_state(&live));
+    auto snapshot = [&]() { std::vector<uint8_t> bytes; CHECK(scene.capture_state(&bytes)); return bytes; };
+    CHECK(scene.browse_dialogue(-1));
+    CHECK(scene.displayed_line() == "NARRATION" && scene.displayed_speaker().empty());
+    CHECK(scene.browse_dialogue(-1));
+    CHECK(scene.displayed_line() == "FIRST" && scene.displayed_speaker() == "Otome");
+    CHECK(!scene.browse_dialogue(-1)); CHECK(!scene.advance_to_next_text());
+    scene.update(1000);
+    CHECK(snapshot() == live);
+    CHECK(scene.current_line() == "THIRD" && scene.speaker() == "Yume");
+    CHECK(scene.browse_dialogue(1)); CHECK(scene.browse_dialogue(1));
+    CHECK(!scene.reviewing_dialogue()); CHECK(!scene.browse_dialogue(1));
+    CHECK(scene.browse_dialogue(-1)); scene.return_to_dialogue();
+    CHECK(!scene.reviewing_dialogue()); CHECK(snapshot() == live);
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.script_name() == "second.mes" && scene.current_line() == "FOURTH");
+    CHECK(scene.browse_dialogue(-1)); CHECK(scene.displayed_line() == "THIRD");
+    std::string error;
+    CHECK(!scene.restore_state({1,2,3}, &error));
+    CHECK(scene.reviewing_dialogue() && scene.displayed_line() == "THIRD");
+    CHECK(scene.restore_state(live, &error));
+    CHECK(scene.current_line() == "THIRD" && scene.speaker() == "Yume");
+    CHECK(!scene.reviewing_dialogue()); CHECK(!scene.browse_dialogue(-1));
+    CHECK(scene.advance_to_next_text()); CHECK(scene.browse_dialogue(-1));
+    CHECK(scene.displayed_line() == "THIRD");
+    CHECK(scene.load_script((data / "MES/first.mes").string()));
+    CHECK(!scene.reviewing_dialogue()); CHECK(!scene.browse_dialogue(-1));
+    CHECK(scene.advance_to_next_text()); CHECK(!scene.browse_dialogue(-1));
+    ClassicScript choice;
+    choice.text(0x4C, "QUESTION");
+    choice.bytes.insert(choice.bytes.end(), {0x08,1,0});
+    for (const auto& entry : {std::pair<const char*,const char*>{"01","FIRSTOPTION"}, {"02","SECONDOPTION"}, {"03","THIRDOPTION"}}) {
+        choice.string(0x44, entry.first); choice.text(0x4D, entry.second);
+    }
+    choice.bytes.insert(choice.bytes.end(), {0x09,0,0});
+    for (const auto& entry : {std::pair<const char*,const char*>{"01","FIRSTBRANCH"}, {"02","SECONDBRANCH"}, {"03","THIRDBRANCH"}}) {
+        choice.string(0x35, entry.first); choice.text(0x4C, entry.second);
+    }
+    write_file(data / "MES/choice.mes", choice.bytes);
+    CHECK(scene.load_script((data / "MES/choice.mes").string()));
+    CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "QUESTION");
+    CHECK(!scene.advance_to_next_text()); CHECK(scene.waiting_for_choice());
+    CHECK(scene.current_line() == "QUESTION" && scene.choices().size() == 3);
+    CHECK(scene.choices()[2].text == "THIRDOPTION");
+    CHECK(scene.choice_at(450,260) == 0); CHECK(scene.choice_at(450,325) == 1);
+    CHECK(scene.choice_at(450,390) == 2); CHECK(scene.choice_at(450,550) == -1);
+    CHECK(scene.choice_at(450,295) == -1); CHECK(!scene.choose(3));
+    const auto pending = snapshot();
+    CHECK(scene.choose(2)); CHECK(scene.advance_to_next_text());
+    CHECK(scene.current_line() == "THIRDBRANCH");
+    CHECK(scene.restore_state(pending, &error)); CHECK(scene.waiting_for_choice());
+    CHECK(scene.current_line() == "QUESTION" && scene.choices()[0].text == "FIRSTOPTION");
+    CHECK(scene.choose(0)); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "FIRSTBRANCH");
+
+    write_image(data / "GRP/BST/body.CRX", 32, 24);
+    write_image(data / "GRP/BST/face.CRX", 8, 8);
+    // A partial face is registered at (4,4), inside the full body canvas.
+    std::ifstream face_file(data / "GRP/BST/face.CRX", std::ios::binary);
+    std::vector<uint8_t> face_bytes((std::istreambuf_iterator<char>(face_file)), {});
+    face_file.close(); face_bytes[4] = face_bytes[6] = 4;
+    write_file(data / "GRP/BST/face.CRX", face_bytes);
+    write_image(data / "GRP/BG/room.CRX", 64, 36);
+    ClassicScript sprites;
+    sprites.string(0x30, "bg\\room");
+    for (uint8_t i = 0; i < 3; ++i) {
+        sprites.words(0x65, 150, 10, 20, 16+i);
+        sprites.words(0x64, uint16_t(-40+i*80), 12, i, 0);
+        sprites.sprite(0x2B, i, i == 2 ? "bst\\body@" : "bst\\body");
+    }
+    sprites.text(0x4C, "BODIES");
+    sprites.sprite(0x2C, 0, "bst\\face"); sprites.text(0x4C, "FACE");
+    sprites.words(0x65, uint16_t(-125), 27, 0, 1);
+    sprites.words(0x65, 175, 10, 20, 17);
+    sprites.sprite(0x2C, 0, "-"); sprites.text(0x4C, "RESTOREDBODY");
+    sprites.sprite(0x2B, 0, "-"); sprites.text(0x4C, "HIDEBODY");
+    sprites.words(0x64, 0, 0, 255, 0); sprites.text(0x4C, "SWAPPED");
+    sprites.sprite(0x2B, 4, "bst\\body");
+    sprites.string(0x30, "bg\\room"); sprites.text(0x4C, "NEWROOM");
+    write_file(data / "MES/sprites.mes", sprites.bytes);
+    CHECK(scene.load_script((data / "MES/sprites.mes").string()));
+    CHECK(scene.advance_to_next_text());
+    for (size_t i=0;i<3;++i) {
+        CHECK(scene.sprite(i).visible && scene.sprite(i).img.valid());
+        CHECK(scene.sprite(i).scale == 1); // raw64 resets a previous zoom
+        CHECK(scene.sprite(i).cur_x == -40+int(i)*80);
+    }
+    const auto clean = scene.sprite(0).img.rgba;
+    CHECK(scene.sprite(2).img.rgba[0] == clean[0]*3/4);
+    CHECK(scene.sprite(2).img.rgba[2] == clean[2]*3/4+16);
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.sprite(0).image == "bst\\body");
+    CHECK(scene.sprite(0).expression == "bst\\face");
+    CHECK(scene.sprite(0).img.w == 32 && scene.sprite(0).img.h == 24);
+    const auto composited = scene.sprite(0).img.rgba;
+    CHECK(composited[0] == clean[0]);
+    const size_t inside = (10*32+10)*4;
+    CHECK(composited[inside] != clean[inside]);
+    const auto expression_save = snapshot();
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.sprite(0).visible && scene.sprite(0).expression.empty());
+    CHECK(scene.sprite(0).img.rgba == clean);
+    CHECK(scene.sprite(1).cur_x == -125 && scene.sprite(1).cur_y == 27);
+    CHECK(scene.sprite(1).scale == 1.75f);
+    CHECK(scene.restore_state(expression_save, &error));
+    CHECK(scene.sprite(0).img.rgba == composited);
+    CHECK(scene.sprite(0).image == "bst\\body" && scene.sprite(0).expression == "bst\\face");
+    CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(0).img.rgba == clean);
+    CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(0).visible);
+    CHECK(scene.sprite(1).visible && scene.sprite(2).visible);
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.sprite(0).visible && !scene.sprite(1).visible);
+    CHECK(scene.sprite(0).cur_x == -40 && scene.sprite(0).scale == 1);
+    CHECK(scene.sprite(1).cur_x == -125 && scene.sprite(1).scale == 1.75f);
+    CHECK(scene.advance_to_next_text());
+    for (size_t i=0;i<4;++i) CHECK(!scene.sprite(i).visible);
+    CHECK(scene.sprite(4).visible); // raw30 only dismisses native layers 1..4
+
+    // Character names below are fixture dialogue, not game identifiers or
+    // a whitelist: the importer reads arbitrary speakers from the scenario.
+    ClassicScript pc;
+    pc.string(0x30, "bg\\room");
+    pc.words(0x64, uint16_t(-77), 15, 0, 0);
+    pc.words(0x5C, 9, 40, 99, 0); // must not run when importing a save
+    pc.sprite(0x2B, 0, "bst\\body");
+    pc.bytes.insert(pc.bytes.end(), {3,77,0});
+    pc.text(0x4B, "Maya"); pc.text(0x4C, "SAVEDINANOTHERTRANSLATION");
+    pc.bytes.insert(pc.bytes.end(), {7,0,0,3,78,0}); pc.text(0x4B,"Sakura"); pc.text(0x4C, "NEXT");
+    pc.bytes.insert(pc.bytes.end(), {7,0,0,3,79,0}); pc.text(0x4B,"Yume"); pc.text(0x4C, "QUESTION");
+    pc.bytes.insert(pc.bytes.end(), {7,0,0,4,80,0,8,1,0});
+    pc.string(0x44, "01"); pc.text(0x4D, "FIRSTOPTION");
+    pc.string(0x44, "02"); pc.text(0x4D, "SECONDOPTION");
+    pc.bytes.insert(pc.bytes.end(), {9,0,0});
+    pc.string(0x35, "01"); pc.text(0x4C, "FIRSTBRANCH");
+    pc.string(0x35, "02"); pc.text(0x4C, "SECONDBRANCH");
+    pc.bytes.push_back(0);
+    write_file(data / "MES/pc.mes", pc.bytes);
+    std::vector<uint8_t> native(0x2B20, 0);
+    const auto u32 = [&](size_t at, uint32_t value) {
+        for (int i = 0; i < 4; ++i) native[at+i] = uint8_t(value>>(8*i));
+    };
+    const auto str = [&](size_t at, const std::string& value) {
+        std::copy(value.begin(), value.end(), native.begin()+at);
+    };
+    u32(0,1); str(4,"pc"); str(0x84,"bg\\room"); str(0x104,"bst\\body");
+    str(0x184,"bst\\body"); native[0x184]=0; // hidden stale record
+    u32(0x804,uint32_t(-1)); u32(0x810,0xFFFFFF); // other language's PC cannot be used
+    u32(0x814,77); u32(0x818,78); u32(0x81C,7);
+    native[0xFF0+9*100+40]=12;
+    scene.set_variable(100,7,1);
+    CHECK(scene.restore_pc_save(native,&error)); CHECK(error.empty());
+    CHECK(scene.current_line()=="SAVEDINANOTHERTRANSLATION" && scene.speaker()=="Maya");
+    CHECK(scene.variable(9,40)==12 && scene.variable(100,7)==1);
+    CHECK(scene.sprite(0).visible && scene.sprite(0).cur_x==-77 && scene.sprite(0).cur_y==15);
+    CHECK(!scene.sprite(1).visible); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line()=="NEXT" && scene.speaker()=="Sakura");
+    const auto before_import_error=snapshot();
+    auto damaged_pc=native; damaged_pc[0]=2;
+    CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
+    damaged_pc=native; damaged_pc.resize(0x2B1F);
+    CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
+    damaged_pc=native; damaged_pc[0x814]=200;
+    CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
+    damaged_pc=native; std::fill(damaged_pc.begin()+4,damaged_pc.begin()+132,'a');
+    CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
+    u32(0x814,80); u32(0x818,80); u32(0x81C,9);
+    CHECK(scene.restore_pc_save(native,&error)); CHECK(error.empty());
+    CHECK(scene.waiting_for_choice() && scene.choices().size()==2);
+    CHECK(scene.current_line()=="QUESTION" && scene.choices()[1].text=="SECONDOPTION");
+    u32(0x814,79); u32(0x818,80); u32(0x81C,7);
+    CHECK(scene.restore_pc_save(native,&error)); CHECK(scene.current_line()=="QUESTION" && scene.speaker()=="Yume");
+    u32(0x814,80); u32(0x81C,9); CHECK(scene.restore_pc_save(native,&error));
+    CHECK(scene.choose(1)); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line()=="SECONDBRANCH");
+}
 int main(int argc, char** argv) {
     try {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
+        dc2pc_dialogue_regressions(root);
         if (argc > 1) game_round_trip(argv[1], root);
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     std::cout << (failures ? "Scene regressions FAILED\n" : "Scene regressions passed\n");

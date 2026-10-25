@@ -232,10 +232,14 @@ bool decode_crxd(const uint8_t* blk, size_t blk_size, const CrmArchive* arc,
             int n = (x1 - x0) * ps;
             for (int i = 0; i + ps <= n; i += ps) {
                 if (ps == 4) {
-                    // 32bpp raw layout is (A,B,G,R): subtract the alpha byte,
-                    // add B/G/R. Adding bytes 0..2 instead wrapped the red
-                    // channel and turned every face diff teal.
-                    d[i] = uint8_t(d[i] - s[i]);
+                    // Raw channels are (A,B,G,R). CRXD subtracts decoded
+                    // opacity, so account for each CRXG's alpha convention.
+                    // DC2PC bases use inverted alpha (mode 0), while their
+                    // deltas use direct alpha (mode 2): raw alpha must ADD.
+                    const uint8_t alpha = diff.info.mode == 1 || diff.info.mode == 2
+                        ? s[i] : uint8_t(s[i] ^ 0xFF);
+                    d[i] = base.info.mode == 1 || base.info.mode == 2
+                        ? uint8_t(d[i] - alpha) : uint8_t(d[i] + alpha);
                     for (int c = 1; c < 4; ++c)
                         d[i + c] = uint8_t(d[i + c] + s[i + c]);
                 } else {
@@ -274,7 +278,7 @@ bool crxd_decode(const uint8_t* data, size_t size, const uint8_t* base_data,
     return true;
 }
 
-BstRef bst_parse_name(const std::string& name) {
+BstRef bst_parse_name(const std::string& name, bool dc2pc) {
     BstRef r;
     size_t cut = std::string::npos;
     for (size_t i = 0; i < name.size(); ++i) {
@@ -296,8 +300,19 @@ BstRef bst_parse_name(const std::string& name) {
         r.archive.resize(r.archive.size() - 4);
     // Sprite_BstParseName appends "_B" to the entry when the slot previously
     // used that outfit; the stored name then has it as a suffix.
-    if (r.entry.size() > 2 && r.entry.compare(r.entry.size() - 2, 2, "_B") == 0)
+    if (!dc2pc && r.entry.size() > 2 && r.entry.compare(r.entry.size() - 2, 2, "_B") == 0)
         r.entry.resize(r.entry.size() - 2);
+    if (dc2pc && r.archive.empty()) {
+        std::string stem = r.entry;
+        if (stem.size() > 4 && upper(stem).compare(stem.size() - 4, 4, ".CRX") == 0)
+            stem.resize(stem.size() - 4);
+        // _B is the larger close-up body in DC2PC's CRM table.
+        // Remove it only while deriving the archive, never from the entry.
+        if (stem.size() > 2 && upper(stem).compare(stem.size() - 2, 2, "_B") == 0)
+            stem.resize(stem.size() - 2);
+        const auto expression = stem.find_last_of('_');
+        if (expression != std::string::npos) r.archive = stem.substr(0, expression);
+    }
     r.valid = !r.entry.empty();
     return r;
 }
@@ -336,11 +351,25 @@ std::string find_file_ci(const std::string& dir, const std::string& name) {
 }
 
 bool bst_load(const std::string& grp_dir, const std::string& ref,
-              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err) {
-    BstRef r = bst_parse_name(ref);
+              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err, bool dc2pc) {
+    BstRef r = bst_parse_name(ref, dc2pc);
     if (!r.valid) {
         if (err) *err = "empty BST reference";
         return false;
+    }
+    if (dc2pc && ref.find(',') == std::string::npos) {
+        std::string entry = r.entry;
+        if (entry.size() > 4 && upper(entry).compare(entry.size() - 4, 4, ".CRX") == 0)
+            entry.resize(entry.size() - 4);
+        const std::string loose = find_file_ci(grp_dir, entry + ".CRX");
+        if (!loose.empty()) {
+            std::vector<uint8_t> blob;
+            if (!read_file(grp_dir + "/" + loose, &blob)) {
+                if (err) *err = "cannot read " + loose;
+                return false;
+            }
+            return crx_decode(blob.data(), blob.size(), rgba, info, err);
+        }
     }
     if (!r.archive.empty()) {
         std::string file = find_file_ci(grp_dir, r.archive + ".CRM");

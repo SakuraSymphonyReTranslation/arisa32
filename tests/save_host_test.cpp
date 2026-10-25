@@ -139,9 +139,11 @@ void slot_metadata(const fs::path& root) {
     const fs::path valid = directory / "slot1.dc4sav";
     write_fixture(valid.string() + ".preview.txt", "DC4PREVIEW1 " + save_fingerprint(valid) + "\nSpeaker: preview text");
     write_thumbnail(valid);
+    write_fixture(valid.string()+".icon","DC4ICON1 "+save_fingerprint(valid)+"\n7");
     const fs::path stale = directory / "slot2.dc4sav";
     write_fixture(stale.string() + ".preview.txt", "DC4PREVIEW1 stale-fingerprint\nOutdated preview");
     write_thumbnail(stale);
+    write_fixture(stale.string()+".icon","DC4ICON1 stale-fingerprint\n5");
     const fs::path bad_image = directory / "slot3.dc4sav";
     write_fixture(bad_image.string() + ".preview.txt", "DC4PREVIEW1 " + save_fingerprint(bad_image) + "\nText survives an invalid image");
     write_thumbnail(bad_image, 16, 9);
@@ -157,6 +159,10 @@ void slot_metadata(const fs::path& root) {
     CHECK(slots.entries.size() == 100);
     CHECK(std::all_of(slots.entries.begin(), slots.entries.end(), [](const dc4ui::SaveSlot& slot) { return slot.occupied; }));
     CHECK(slots.latest_slot == 99);  // A newer quicksave does not replace NEW.
+    CHECK(slots.entries[0].character_icon==7);
+    CHECK(slots.entries[1].character_icon==-1);
+    write_fixture(valid.string()+".icon","DC4ICON1 "+save_fingerprint(valid)+"\n16");
+    CHECK(SaveSlots::read(valid).character_icon==-1);
     CHECK(!slots.entries[99].timestamp.empty());
     CHECK(slots.entries[0].excerpt == u"Speaker: preview text");
     CHECK(slots.entries[0].thumbnail.w == 128 && slots.entries[0].thumbnail.h == 72);

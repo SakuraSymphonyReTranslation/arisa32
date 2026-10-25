@@ -28,12 +28,14 @@ void overlays(const fs::path& root) {
     put(base / "GRP/System/Window.CRX", "base-window");
     put(base / "MES/Opening.mes", "base-script");
     put(base / "MOVIE/Opening.MPG", "base-movie");
+    put(base / "MOVIE/Ending.MPG", "base-ending");
     put(base / "GRP/BG/Fallback.CRX", "base-fallback");
     put(base / "MUSIC/Track.dat", "base-music");
     put(base / "saves/slot1.dc4sav", "base-save");
     put(english / "grp/system/window.crx", "english-window");
     put(english / "mes/opening.MES", "english-script");
     put(english / "Movie/OPENING.mpg", "english-movie");
+    put(english / "Movie/ENDING.mpg", "english-ending");
     put(english / "MUSIC/Track.dat", "do-not-overlay-music");
     put(english / "saves/slot1.dc4sav", "do-not-overlay-save");
     put(indonesian / "MES/Opening.mes", "indonesian-script");
@@ -44,7 +46,9 @@ void overlays(const fs::path& root) {
     CHECK(dc4::prefers_utf8_text());
     CHECK(get(dc4::resolve_asset((base / "gRp/SYSTEM/WINDOW.crx").u8string())) == "english-window");
     CHECK(get(dc4::resolve_asset((base / "mes/OPENING.MES").u8string())) == "english-script");
-    CHECK(get(dc4::resolve_asset((base / "movie/opening.MPG").u8string())) == "english-movie");
+    // Opening movies retain the original audio; other movies use the overlay.
+    CHECK(get(dc4::resolve_asset((base / "movie/opening.MPG").u8string())) == "base-movie");
+    CHECK(get(dc4::resolve_asset((base / "movie/ending.MPG").u8string())) == "english-ending");
     CHECK(get(dc4::resolve_asset((base / "grp/bg/fallback.crx").u8string())) == "base-fallback");
     CHECK(get(dc4::resolve_asset((base / "music/track.DAT").u8string())) == "base-music");
     CHECK(get(dc4::resolve_asset((base / "saves/slot1.dc4sav").u8string())) == "base-save");
