@@ -619,18 +619,22 @@ bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::
             audio.bgm_mode = 1;
         }
         std::string error;
-        if (!candidate.scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
-        candidate.message_visible_ = true;
-        candidate.scene_end_ = false;
-        std::vector<uint8_t> snapshot;
-        if (!candidate.capture_state(&snapshot, &error)) throw std::runtime_error(error);
-        if (!restore_state(snapshot, &error)) throw std::runtime_error(error);
-        if (sheets_.find(37) == sheets_.end()) {
-            load_sheets(data_ + "/MES/start.mes");
-            load_ui_script(data_ + "/MES/start.mes");
-            show_message_window("SYSTEM/MESWIN.CRX");
-        }
-        taskbar_visible_ = true;
+        dc4::MesVmSnapshot vm;
+        if (!candidate.vm_.capture_snapshot(&vm, &error)) throw std::runtime_error(error);
+        // All assets and the checkpoint are validated in the detached runner.
+        // Commit them directly: serializing then restoring a second runner used
+        // to decode every background, sprite and music track twice on PC import.
+        if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
+        mes_ = std::move(candidate.mes_);
+        vm_.reset(); vm_.bind(mes_); vm_.restore_snapshot(vm);
+        layers_.swap(candidate.layers_); sprites_.swap(candidate.sprites_);
+        script_name_ = script; current_line_ = std::move(candidate.current_line_);
+        speaker_ = std::move(candidate.speaker_);
+        transition_type_ = 0;
+        reset_camera();
+        scene_dirty_ = true; scene_end_ = false; message_visible_ = true; preserve_scene_ = false;
+        comu_visible_ = comu_group_ = false; comu_items_.clear();
+        reset_restore_transients();
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {
@@ -764,21 +768,32 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         camera_duration_ = camera_duration; camera_motion_ = std::move(camera_motion);
         if (!animation_enabled_) finish_animations();
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
-        next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
-        pending_movie_.clear(); pending_movie_is_effect_ = false; input_skip_label_.clear();
-        script_wait_pending_ = false; script_wait_ms_ = 0;
-        credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
-        credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();
-        effect_pck_.clear();
-        transition_active_ = transition_pending_ = false; transition_snap_.clear();
-        scene_chips_.clear(); pending_scene_blit_ = false;
-        sidebar_visible_ = false;
-        reset_dialogue_history();
+        reset_restore_transients();
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {
         if (restore_error) *restore_error = error.what();
         return false;
     }
+}
+
+void SceneRunner::reset_restore_transients() {
+    next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
+    pending_movie_.clear(); pending_movie_is_effect_ = false; input_skip_label_.clear();
+    script_wait_pending_ = false; script_wait_ms_ = 0;
+    credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
+    credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();
+    effect_pck_.clear();
+    transition_active_ = transition_pending_ = false; transition_snap_.clear();
+    scene_chips_.clear(); pending_scene_blit_ = false;
+    sidebar_visible_ = false;
+    if (mes_.version == 0x9969) {
+        // Interview/other menu controls are ephemeral and never belong to a
+        // story save. Reload the authored story toolbar even if sheet37 exists.
+        load_ui_script(data_ + "/MES/start.mes");
+        show_message_window("SYSTEM/MESWIN.CRX");
+        taskbar_visible_ = true;
+    }
+    reset_dialogue_history();
 }
 } // namespace dc4scene

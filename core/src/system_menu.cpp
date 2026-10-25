@@ -66,6 +66,8 @@ struct Widget {
     bool enabled = true;
     int slider_bank = -1, slider_index = 0, slider_count = 0, slider_left = 0, slider_right = 0;
     std::vector<int> slider_stops;
+    bool vertical = false;
+    std::string slider_image;
 };
 struct Caption { int x, y, size, control = -1, state = 99; std::string text; int max_width = 0; };
 struct MenuProfile {
@@ -456,6 +458,23 @@ struct SystemMenu::Impl {
         const auto& w = c.words;
         if (context.pending.opcode() == Opcode::END)
             return;
+        if (context.source->dc2pc && context.pending.opcode() == Opcode::LIST_RECT) {
+            // raw55 owns the vertical catalogue scrollbar. The following
+            // raw52 is its redraw rectangle, not a sprite-sheet chip.
+            if (page != Page::Scenes) { context.pending = Command{}; return; }
+            const auto& p = context.pending.words;
+            Widget widget{{sw(p[0]),sw(p[1]),sw(p[2])-sw(p[0]),sw(p[3])-sw(p[1])},
+                          "#catalogue:scroll",true};
+            widget.slider_bank = 206;
+            widget.slider_index = 80;
+            widget.slider_left = widget.hit.y;
+            widget.slider_right = widget.hit.y + widget.hit.h - widget.hit.w;
+            widget.vertical = true;
+            widget.slider_image = sheets[8];
+            widgets.push_back(std::move(widget));
+            context.pending = Command{};
+            return;
+        }
         int chip_state = sw(w[3]);
         if(context.source->dc2pc && context.control>=0 && context.pending.opcode()==Opcode::BUTTON_POSITION && chip_state==20) {
             auto& widget=widgets[size_t(context.control)];
@@ -518,6 +537,7 @@ struct SystemMenu::Impl {
     }
 
     void menu_list_rect(RunState& context, const Command& c) {
+        if (context.source->dc2pc) { context.pending = c; return; }
         const auto& w = c.words;
         list_rects.push_back({sw(w[0]), sw(w[1]), sw(w[2]) - sw(w[0]), sw(w[3]) - sw(w[1])});
     }
@@ -581,8 +601,8 @@ struct SystemMenu::Impl {
                     run(dest, context.entry, context.action, context.transfer_depth + 1));
                 return;
             }
-            if (dest.rfind("cg_",0)==0 || dest.rfind("sce_",0)==0 || dest=="music") {
-                page = dest=="music" ? Page::Music : dest.rfind("cg_",0)==0 ? Page::Gallery : Page::Scenes;
+            if (dest.rfind("cg_",0)==0 || dest.rfind("sce_",0)==0 || dest=="music" || dest=="interview") {
+                page = dest=="interview" ? Page::Interview : dest=="music" ? Page::Music : dest.rfind("cg_",0)==0 ? Page::Gallery : Page::Scenes;
                 context.finish(run(dest,context.entry,false,context.transfer_depth+1));
                 return;
             }
@@ -723,6 +743,8 @@ struct SystemMenu::Impl {
             std::max(0,int(legacy_items.size())-int(legacy_rows.size())));
         if(page==Page::Music)put(3,25,top);else put(206,80,top);
         put(99,246,top);
+        for (auto& widget : widgets) if (widget.vertical)
+            widget.slider_count = std::max(1,int(legacy_items.size())-int(legacy_rows.size())+1);
         auto item=legacy_items.begin();
         std::advance(item,top);
         for (size_t row=0;row<legacy_rows.size();++row) {
@@ -806,7 +828,7 @@ struct SystemMenu::Impl {
             run("main", profile->title_entry, false);
             break;
         case Page::Extras:
-            run(dc2pc ? title_script : "main", profile->extras_entry, false);
+            run(dc2pc ? title_script : "main", dc2pc ? "rextra" : profile->extras_entry, false);
             break;
         case Page::Config:
             if (dc2pc) {
@@ -828,6 +850,9 @@ struct SystemMenu::Impl {
                 if (!movie_menu)
                     music_rows();
             }
+            break;
+        case Page::Interview:
+            run("interview", "menu", false);
             break;
         }
     }
@@ -859,6 +884,16 @@ struct SystemMenu::Impl {
             return {};
         }
         if (widget.slider_bank < 0 || widget.slider_right <= widget.slider_left) return {};
+        if (widget.vertical) {
+            const int maximum = std::max(0,widget.slider_count-1);
+            const int value = std::clamp(int(std::lround(double(y-widget.hit.w/2-widget.slider_left)*maximum /
+                              (widget.slider_right-widget.slider_left))),0,maximum);
+            put(widget.slider_bank,widget.slider_index,value);
+            // Refresh rows without releasing the captured scrollbar while dragging.
+            const int captured = pressed; const bool dragging = held;
+            rebuild(); pressed = captured; held = dragging;
+            return {};
+        }
         if(!widget.slider_stops.empty()) {
             int value=0;
             while(value+1<widget.slider_count && size_t(value+1)<widget.slider_stops.size() &&
@@ -1015,6 +1050,9 @@ Action SystemMenu::back() {
         open(p_->config_return); return {};
     }
     if(p_->page==Page::Title) return activate("end");
+    if(p_->dc2pc && (p_->page==Page::Scenes || p_->page==Page::Gallery ||
+                    p_->page==Page::Music || p_->page==Page::Interview))
+        return activate("return");
     if(p_->page==Page::Extras) open(Page::Title); else open(Page::Extras);
     return {};
 }
@@ -1237,6 +1275,18 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     };
     if(p_->movie_menu)for(const auto& chip:p_->music_underlay)render_chip(chip,true);
     for(const auto& chip:p_->chips)render_chip(chip,false);
+    if(p_->dc2pc) for (const auto& widget : p_->widgets) if (widget.vertical) {
+        const int count=std::max(1,widget.slider_count-1);
+        const int value=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,count);
+        // The native catalogue sheet ends with the circular thumb above its
+        // arrow buttons. Keep that original artwork and centre it on raw55.
+        if(auto* img=p_->image(widget.slider_image)) {
+            const int size=24, inset=(widget.hit.w-size)/2;
+            const Rect knob{widget.hit.x+inset,widget.slider_left+inset+
+                value*(widget.slider_right-widget.slider_left)/count,size,size};
+            blit(*img,{img->w-size,0,size,size},p_->destination(knob),frame);
+        }
+    }
     for(const auto& c:p_->captions) {
         if(c.control>=0 && c.state>=0 && state_for(c.control)!=c.state)continue;
         std::string line=c.text;

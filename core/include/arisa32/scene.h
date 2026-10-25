@@ -351,6 +351,7 @@ private:
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
+    void reset_restore_transients();
     bool dispatch_timing_command(const dc4::MesCommand& c);
     bool dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers);
     bool dispatch_ui_chip_command(const dc4::MesCommand& c);

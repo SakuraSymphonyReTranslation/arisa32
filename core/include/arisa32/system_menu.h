@@ -6,7 +6,7 @@
 #include <set>
 
 namespace dc4ui {
-enum class SystemMenuPage { Title, Extras, Config, Gallery, Music, Scenes };
+enum class SystemMenuPage { Title, Extras, Config, Gallery, Music, Scenes, Interview };
 enum class SystemMenuActionType {
     None, Back, NewGame, Load, LatestLoad, QuickLoad, AutoLoad, Save, Quit,
     SettingsChanged, PlayMusic, StopMusic, SeekMusic, PlayVoice, PlayMovie, StartScene,

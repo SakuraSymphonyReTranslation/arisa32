@@ -245,10 +245,31 @@ void native_pc_saves(const char* data) {
         menu.open(Page::Title);CHECK(has(menu,"dc") && has(menu,"alfine"));capture(menu,"pc-completed-title");
         for(const char* slot:{"00","01","02","03","04","08"}) {
             dc4scene::SceneRunner scene(data);menu.initialize_scene(scene,false);
-            CHECK(scene.load_script(std::string(data)+"/MES/main.mes"));
+            CHECK(scene.load_ui_script(std::string(data)+"/MES/start.mes"));
+            // Reproduce a runner that previously executed Interview controls.
+            CHECK(scene.load_script(std::string(data)+"/MES/interview.mes"));
+            scene.advance_to_next_text();
+            const auto started=std::chrono::steady_clock::now();
             const bool loaded=scene.load_state(std::string(saves)+"/DC2PC"+slot+".dat");
+            const auto imported=std::chrono::steady_clock::now();
             if(!loaded)std::cerr<<"PC save "<<slot<<": "<<scene.last_error()<<'\n';
             CHECK(loaded);CHECK(!scene.current_line().empty());CHECK(scene.variable(100,7)==1);
+            CHECK(scene.buttons().size()==7);
+            for(const auto& button:scene.buttons())CHECK(button.action!="return" && button.action!="page");
+            std::vector<uint8_t> snapshot;CHECK(scene.capture_state(&snapshot,&error));
+            CHECK(scene.load_script(std::string(data)+"/MES/interview.mes"));
+            scene.advance_to_next_text();
+            const auto restoring=std::chrono::steady_clock::now();
+            CHECK(scene.restore_state(snapshot,&error));
+            CHECK(scene.buttons().size()==7);
+            const auto restored=std::chrono::steady_clock::now();
+            const auto save_path=root/(std::string("slot-")+slot+".dc4sav");
+            CHECK(scene.save_state(save_path.string()));
+            const auto saved=std::chrono::steady_clock::now();
+            auto ms=[](auto a,auto b){return std::chrono::duration<double,std::milli>(b-a).count();};
+            std::cout<<"Save "<<slot<<" PC load="<<ms(started,imported)<<"ms snapshot restore="
+                     <<ms(restoring,restored)<<"ms write="<<ms(restored,saved)<<"ms\n";
+            if(std::string(slot)=="00")capture_scene(scene,"load-after-interview");
             if(std::string(slot)=="04") {
                 CHECK(scene.waiting_for_choice() && scene.choices().size()==3);
                 CHECK(scene.choose(1));CHECK(scene.advance_to_next_text());
@@ -479,8 +500,22 @@ int main(int argc, char** argv) {
     CHECK(has(menu, "talk"));
     capture(menu, "interview-extra");
     const auto interview = menu.activate("talk");
-    CHECK(interview.type == Type::NewGame);
-    CHECK(interview.asset == "interview");
+    CHECK(interview.type == Type::None);
+    CHECK(menu.page()==Page::Interview);
+    CHECK(has(menu,"otome") && has(menu,"anzu") && has(menu,"page") && has(menu,"return"));
+    CHECK(menu.controls().size()==7);
+    capture(menu,"interview-first");
+    const char* actors[]={"otome","yume","koko","minatu","anzu","akane","aisia","mahiru","sinobu","rino"};
+    for(int actor=0;actor<10;++actor) {
+        if(actor==5) {menu.activate("page");CHECK(has(menu,"akane") && !has(menu,"otome"));}
+        const auto play=menu.activate(actors[actor]);
+        CHECK(play.type==Type::PlayMusic && !play.asset.empty());
+        CHECK(menu.page()==Page::Interview && menu.controls().size()==6);
+        CHECK(!has(menu,actors[actor])); // active actor is an authored static chip
+        capture(menu,std::string("interview-")+actors[actor]);
+    }
+    menu.back();CHECK(menu.page()==Page::Extras && has(menu,"talk"));
+    CHECK(menu.error().empty());capture(menu,"interview-return");
     const auto path = std::filesystem::temp_directory_path() / ("arisa32-dc2pc-menu-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".profile");
     CHECK(menu.save_profile(path.string(), &error));
@@ -493,6 +528,8 @@ int main(int argc, char** argv) {
     restored.open(Page::Extras);
     CHECK(has(restored, "talk"));
     std::filesystem::remove(path);
+    if(const char* saves=std::getenv("DC2PC_PC_SAVES"))
+        CHECK(menu.load_system_dat(std::string(saves)+"/system.dat",&error));
     menu.open(Page::Extras);
     for (const auto& entry : {std::pair<const char*,Page>{"cg",Page::Gallery},{"scene",Page::Scenes},{"bgm",Page::Music}}) {
         const auto out=menu.activate(entry.first);
@@ -512,7 +549,26 @@ int main(int argc, char** argv) {
             CHECK(menu.activate("music12").asset=="music\\058");
             CHECK(menu.activate("all_play_mode").type==Type::PlayMusic);
         }
+        if(entry.second==Page::Scenes) {
+            menu.activate("nanaka");
+            CHECK(menu.page()==Page::Scenes);
+            const auto before=menu.controls();
+            const auto bar=std::find_if(before.begin(),before.end(),[](const auto& c){return c.tag=="#catalogue:scroll";});
+            CHECK(bar!=before.end());
+            if(bar!=before.end()) {
+                const int x=bar->x+bar->w/2,top=bar->y+bar->w/2,bottom=bar->y+bar->h-bar->w/2;
+                menu.pointer_down(x,top);menu.pointer_move(x,bottom);
+                CHECK(menu.variable(206,80)>0);
+                capture(menu,"scene-slider-bottom");
+                menu.pointer_move(x,top);CHECK(menu.variable(206,80)==0);
+                menu.pointer_up(x,top);
+                capture(menu,"scene-slider-top");
+            }
+        }
         menu.activate("return"); CHECK(menu.page()==Page::Extras);
+        CHECK(has(menu,"cg") && has(menu,"talk"));
+        menu.activate(entry.first);menu.back();CHECK(menu.page()==Page::Extras);
+        CHECK(has(menu,"cg") && has(menu,"talk"));
     }
     menu.open(Page::Config);
     CHECK(menu.activate("tr_off").type==Type::SettingsChanged);
