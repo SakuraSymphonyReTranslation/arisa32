@@ -4,7 +4,7 @@
 
 ### Dukungan D.C. II P.C. (Plus Communication)
 
-- **D.C. II P.C. ~Da Capo II Plus Communication~ resmi didukung.** Dukungan mencakup skrip dan teks, dialog/pilihan, gambar karakter dan ekspresi, musik/suara, title screen, sidebar, Save/Load, backlog, config, dan menu Extra/replay.
+- **D.C. II P.C. \~Da Capo II Plus Communication\~ resmi didukung.** Dukungan mencakup skrip dan teks, dialog/pilihan, gambar karakter dan ekspresi, musik/suara, title screen, sidebar, Save/Load, backlog, config, dan menu Extra/replay.
 - Perbaikan navigasi menu Extra, scrolling replay, pemulihan snapshot lama, dan tombol Back/sidebar Android.
 - Progres serta flag rute yang tersimpan dipulihkan tanpa mengubah flag nol menjadi unlock.
 
