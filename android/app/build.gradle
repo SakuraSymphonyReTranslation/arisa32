@@ -11,8 +11,8 @@ android {
         applicationId 'org.dc4engine'
         minSdk 21          // Android 5.0 (Lollipop)+
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 6
-        versionName '0.5.5'
+        versionCode 7
+        versionName '0.6.0'
         externalNativeBuild {
             cmake {
                 // Scene save/lifecycle snapshots use C++17 exceptions.

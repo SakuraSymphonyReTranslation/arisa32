@@ -71,101 +71,30 @@ public final class Dc4PlusHarmonyProfile implements GameProfile {
         return "DC4PHDL";
     }
 
-    @Override
-    public int extractSlotNumber(String filename) {
-        if (filename == null || filename.isEmpty()) return -1;
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("quicksave") || lower.equals("dc4phdl00.dat") || lower.equals("dc400.dat")) return 0;
-        if (lower.startsWith("slot") && lower.endsWith(".dc4sav")) {
-            try {
-                String num = lower.substring(4, lower.indexOf(".dc4sav"));
-                return Integer.parseInt(num);
-            } catch (Exception ignored) {}
-        }
-        if (lower.startsWith("dc4phdl") && lower.endsWith(".dat") && lower.length() >= 11) {
-            String digits = lower.substring(7, lower.length() - 4);
-            try {
-                return Integer.parseInt(digits);
-            } catch (Exception ignored) {}
-        }
-        // Fallback for migrated DC4 saves in PH
-        if (lower.startsWith("dc4") && lower.endsWith(".dat") && lower.length() >= 7) {
-            String digits = lower.substring(3, lower.length() - 4);
-            try {
-                return Integer.parseInt(digits);
-            } catch (Exception ignored) {}
-        }
-        return -1;
+    @Override public int extractSlotNumber(String name) {
+        return NativeSaveFiles.slot(name, "DC4PHDL", 3);
     }
-
-    @Override
-    public File resolveSlotSaveFile(File savesDir, int slotIndex) {
-        if (savesDir == null) return null;
-        int slotNum = slotIndex + 1;
-        // Priority 1: native dc4sav format
-        File dc4sav = new File(savesDir, "slot" + slotNum + ".dc4sav");
-        if (dc4sav.isFile()) return dc4sav;
-
-        // Priority 2: original Plus Harmony DC4PHDLxx.dat format
-        File datFormat = new File(savesDir, String.format(Locale.ROOT, "DC4PHDL%02d.dat", slotNum));
-        if (datFormat.isFile()) return datFormat;
-
-        // Priority 3: fallback DC4xx.dat format
-        File fallbackDat = new File(savesDir, String.format(Locale.ROOT, "DC4%02d.dat", slotNum));
-        if (fallbackDat.isFile()) return fallbackDat;
-
-        // Priority 4: Case-insensitive check in directory
-        File[] files = savesDir.listFiles();
-        if (files != null) {
-            for (File f : files) {
-                if (f.isFile() && extractSlotNumber(f.getName()) == slotNum) {
-                    return f;
-                }
-            }
-        }
-        return dc4sav;
+    @Override public File resolveSlotSaveFile(File dir, int index) {
+        return NativeSaveFiles.resolve(dir, "DC4PHDL", 3, index + 1);
     }
-
-    @Override
-    public File resolveQuickSaveFile(File savesDir) {
-        if (savesDir == null) return null;
-        File quickSav = new File(savesDir, "quicksave.dc4sav");
-        if (quickSav.isFile()) return quickSav;
-
-        File quickDatPH = new File(savesDir, "DC4PHDL00.dat");
-        if (quickDatPH.isFile()) return quickDatPH;
-
-        File quickDat = new File(savesDir, "DC400.dat");
-        if (quickDat.isFile()) return quickDat;
-
-        File[] files = savesDir.listFiles();
-        if (files != null) {
-            for (File f : files) {
-                if (!f.isFile()) continue;
-                String name = f.getName().toLowerCase(Locale.ROOT);
-                if (name.startsWith("system") || name.startsWith("uinst")) continue;
-                if (name.contains("quick") || extractSlotNumber(name) == 0) return f;
-            }
-        }
-        return quickSav;
+    @Override public File resolveQuickSaveFile(File dir) {
+        return NativeSaveFiles.resolve(dir, "DC4PHDL", 3, 0);
     }
-
-    @Override
-    public boolean isNativeSaveFile(String filename) {
-        if (filename == null || filename.isEmpty()) return false;
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (lower.equals("system.dat") || lower.equals("system-profile.dat") || lower.equals("read-lines.txt")) return true;
-        if (lower.startsWith("quicksave") || lower.startsWith("slot")) return true;
-        return lower.matches("^dc4phdl[0-9]{2,3}\\.dat(?:\\.(?:png|txt))?$") ||
-               lower.matches("^dc4phdl[0-9]{2,3}\\.(?:png|txt)$") ||
-               lower.matches("^dc4[0-9]{2,3}\\.dat(?:\\.(?:png|txt))?$") ||
-               lower.matches("^dc4[0-9]{2,3}\\.(?:png|txt)$");
+    @Override public File[] resolveSaveFiles(File dir, int count) {
+        return NativeSaveFiles.resolveAll(dir, "DC4PHDL", 3, count);
+    }
+    @Override public File saveTarget(File dir, int slot) {
+        return NativeSaveFiles.target(dir, "DC4PHDL", 3, slot + 1);
+    }
+    @Override public boolean isNativeSaveFile(String name) {
+        return NativeSaveFiles.accepts(name, "DC4PHDL");
     }
 
     @Override
     public String resolveScenarioTitle(String scriptName, String language, Map<String, String> exeTitles, Map<String, String> jpToIdTitles) {
         if (scriptName == null || scriptName.isEmpty()) return "";
         String sLower = scriptName.toLowerCase(Locale.ROOT);
+        if (sLower.endsWith(".mes")) sLower = sLower.substring(0, sLower.length() - 4);
         if (exeTitles != null) {
             String jp = exeTitles.get(sLower);
             if (jp != null && !jp.isEmpty()) {

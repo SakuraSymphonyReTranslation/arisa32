@@ -110,6 +110,7 @@ public final class GenericCircusProfile implements GameProfile {
     public String resolveScenarioTitle(String scriptName, String language, Map<String, String> exeTitles, Map<String, String> jpToIdTitles) {
         if (scriptName == null || scriptName.isEmpty()) return "";
         String sLower = scriptName.toLowerCase(Locale.ROOT);
+        if (sLower.endsWith(".mes")) sLower = sLower.substring(0, sLower.length() - 4);
         if (exeTitles != null) {
             String jp = exeTitles.get(sLower);
             if (jp != null && !jp.isEmpty()) {

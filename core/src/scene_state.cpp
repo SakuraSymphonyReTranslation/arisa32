@@ -4,6 +4,8 @@
 #include "arisa32/mem_safe.h"
 
 #include <cmath>
+#include <algorithm>
+#include <ctime>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,7 @@ namespace dc4scene {
 namespace {
 constexpr size_t kMaxSave = 2 * 1024 * 1024;
 constexpr char kMagic[8] = {'D','C','4','S','A','V','E','\0'};
+constexpr char kCompanionMagic[8] = {'A','R','I','S','A','P','C','\0'};
 uint64_t checksum(const std::vector<uint8_t>& bytes) {
     uint64_t value = 14695981039346656037ull;
     for (uint8_t b : bytes) { value ^= b; value *= 1099511628211ull; }
@@ -57,6 +60,30 @@ bool resource_name(const std::string& name, bool allow_separator = true) {
         name.find("..") != std::string::npos || name[0] == '/' || name[0] == '\\') return false;
     if (!allow_separator && name.find_first_of("/\\") != std::string::npos) return false;
     return true;
+}
+void atomic_write(const std::filesystem::path& target, const std::vector<uint8_t>& bytes) {
+    const std::filesystem::path temporary = target.string() + ".tmp";
+    if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    if (!file) throw std::runtime_error("cannot create save: " + temporary.string());
+    file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+    file.flush();
+    if (!file) throw std::runtime_error("cannot write complete save");
+    file.close();
+#ifdef _WIN32
+    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("cannot replace save (Windows error " + std::to_string(GetLastError()) + ")");
+#else
+    std::filesystem::rename(temporary, target);
+#endif
+}
+bool read_bytes(const std::string& path, std::vector<uint8_t>* bytes) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) return false;
+    const auto size = file.tellg();
+    if (size < 8 || size > std::streamoff(kMaxSave + 64)) return false;
+    bytes->assign(size_t(size), 0); file.seekg(0);
+    return bool(file.read(reinterpret_cast<char*>(bytes->data()), size));
 }
 void write_vm(Writer& out, const dc4::MesVmSnapshot& vm) {
     out.u32(vm.version); out.u64(vm.script_fingerprint); out.u32(vm.pc);
@@ -160,25 +187,190 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
     }
 }
 
+bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string* capture_error) {
+    try {
+        if (!destination) throw std::runtime_error("missing native save destination");
+        const bool classic = mes_.version == 0x9969;
+        if (!classic && mes_.version != 0xAAB6 && mes_.version != 0xABB6)
+            throw std::runtime_error("native saves are not supported for this game format");
+        if (current_line_.empty() || scene_end_ || comu_visible_ || !pending_movie_.empty() || script_wait_pending_)
+            throw std::runtime_error("save at a dialogue or choice after the current sequence finishes");
+        std::vector<dc4::MesCommand> commands;
+        dc4::MesStream stream(mes_); dc4::MesCommand c;
+        size_t target = size_t(-1);
+        while (stream.next(&c)) {
+            if (c.pos >= vm_.pos()) break;
+            if (c.op == 3 || (vm_.waiting_for_choice() && c.op == 4)) target = commands.size();
+            commands.push_back(c);
+        }
+        if (target == size_t(-1)) throw std::runtime_error("no native scenario checkpoint at this position");
+        const auto& marker = commands[target];
+        const uint16_t id = uint16_t(marker.p1 | uint16_t(marker.p2) << 8);
+        // Read the PC script directly, bypassing the selected translation overlay.
+        // Native byte offsets must point into the script used by the PC game.
+        dc4::MesFile original;
+        std::vector<uint8_t> source;
+        std::string original_path = dc4::find_file_ci(data_ + "/MES", script_name_);
+        if (original_path.empty()) original_path = data_ + "/MES/" + script_name_;
+        else original_path = data_ + "/MES/" + original_path;
+        if (!read_bytes(original_path, &source) || !original.load(source.data(), source.size()) || original.version != mes_.version)
+            throw std::runtime_error("original PC scenario is unavailable");
+        dc4::MesStream pc_stream(original);
+        uint32_t pc = 0; size_t matches = 0;
+        while (pc_stream.next(&c)) if (c.op == marker.op && uint16_t(c.p1 | uint16_t(c.p2) << 8) == id) { pc = c.pos; ++matches; }
+        if (matches != 1) throw std::runtime_error("native checkpoint is missing or ambiguous in the PC scenario");
+        std::vector<uint8_t> out(classic ? 0x2B20 : 0x56FE4, 0);
+        auto u32 = [&](size_t at, uint32_t value) { for(int i=0;i<4;++i) out.at(at+i)=uint8_t(value>>(8*i)); };
+        auto u16 = [&](size_t at, uint16_t value) { out.at(at)=uint8_t(value);out.at(at+1)=uint8_t(value>>8); };
+        auto number = [&](size_t at, float value) { uint32_t bits; std::memcpy(&bits,&value,4);u32(at,bits); };
+        auto name = [&](size_t at, size_t capacity, std::string value) {
+            if (value.empty()) return;
+            if (!resource_name(value) || value.size() >= capacity) throw std::runtime_error("resource name cannot fit the native save: " + value);
+            std::replace(value.begin(),value.end(),'/','\\');
+            std::copy(value.begin(),value.end(),out.begin()+at);
+        };
+        std::string script = script_name_;
+        if (script.size()>4 && script.substr(script.size()-4)==".mes") script.resize(script.size()-4);
+        name(classic ? 4 : 8, classic ? 128 : 160, script);
+        const auto audio = scene_audio_.capture_snapshot();
+        const auto now=std::time(nullptr);
+        std::tm local{};
+#ifdef _WIN32
+        localtime_s(&local,&now);
+#else
+        localtime_r(&now,&local);
+#endif
+        if (classic) {
+            for(const auto& layer:layers_)if(layer.first!=1)throw std::runtime_error("native DC2PC export does not support this image layer");
+            for(size_t i=5;i<sprites_.size();++i)if(sprites_[i].visible)throw std::runtime_error("native DC2PC export does not support this sprite layer");
+            if(!audio.looped_se.empty())throw std::runtime_error("native DC2PC export does not support looped sound effects");
+            u32(0,1);u32(0x804,audio.bgm_playing ? uint32_t(audio.bgm_id) : uint32_t(-1));
+            u32(0x808,1);u32(0x810,pc);u32(0x814,id);u32(0x81C,vm_.waiting_for_choice()?9:7);
+            // The PC loader redraws the last dialogue from this marker history.
+            std::vector<uint16_t> history;
+            for (const auto& raw : commands) if(raw.op==3) history.push_back(uint16_t(raw.p1 | uint16_t(raw.p2)<<8));
+            if(history.size()>1000) history.erase(history.begin(),history.end()-1000);
+            if(history.empty()) throw std::runtime_error("native dialogue history is unavailable");
+            u32(0x818,uint32_t(history.size()));
+            for(size_t i=0;i<history.size();++i) u16(0x820+i*2,history[i]);
+            if(layers_.count(1)) name(0x84,128,layers_.at(1).name);
+            for(size_t i=0;i<5;++i) {
+                const auto& sprite=sprites_[i];
+                if(sprite.visible) {name(0x104+i*128,128,sprite.image);name(0x384+i*128,128,sprite.expression);}
+                const size_t at=0x14D0+i*52;
+                u32(at,uint32_t(sprite.cur_x));u32(at+4,uint32_t(sprite.cur_y));u32(at+8,uint32_t(std::lround(sprite.scale*100)));
+                u32(at+12,uint32_t(sprite.cur_x));u32(at+16,uint32_t(sprite.cur_y));u32(at+20,uint32_t(std::lround(sprite.scale*100)));
+                u32(at+24,uint32_t(sprite.x));u32(at+28,uint32_t(sprite.y));
+                u32(at+32,uint32_t(std::lround(sprite.frame_cx-sprite.img.w/2.f)));
+                u32(at+36,uint32_t(std::lround(sprite.frame_cy-sprite.img.h/2.f)));
+                u32(at+40,uint32_t(sprite.canvas_w));u32(at+44,uint32_t(sprite.canvas_h));
+            }
+            for(int bank=0;bank<10;++bank) for(int i=0;i<100;++i) out[0xFF0+bank*100+i]=uint8_t(variable(bank,i));
+            // Native bank 9 fields 21..25 hold the slot date, populated after
+            // copying the local variables just as the PC save routine does.
+            out[0x1389]=uint8_t(local.tm_mon+1);out[0x138A]=uint8_t(local.tm_mday);
+            out[0x138B]=uint8_t(local.tm_hour);out[0x138C]=uint8_t(local.tm_min);out[0x138D]=uint8_t((local.tm_year+1900)%100);
+        } else {
+            u32(0xAF4,pc);u32(0xAFC,id);u32(0xB00,pc);
+            if(id>=original.labels.size()) throw std::runtime_error("native checkpoint metadata is unavailable");
+            u32(0xAF8,original.labels[id].id);
+            for(int bank=0;bank<=10;++bank) for(int i=0;i<100;++i) out[0x184EC+bank*100+i]=uint8_t(variable(bank,i));
+            out[0x1873A]=uint8_t(local.tm_mon+1);out[0x1873B]=uint8_t(local.tm_mday);
+            out[0x1873C]=uint8_t(local.tm_hour);out[0x1873D]=uint8_t(local.tm_min);
+            out[0x1873E]=uint8_t((local.tm_year+1900)%100);out[0x1873F]=uint8_t(local.tm_sec);
+            // Renderer records are copied verbatim by the PC loader (960 bytes).
+            // Scalar offsets below are relative to the serialized record, not
+            // the C++ renderer object whose first eight bytes are not saved.
+            for(int i=0;i<150;++i) {
+                const size_t at=0x18E20+i*960;
+                for(int offset : {24,28,32,104,108,112}) number(at+offset,1);
+                for(int offset : {120,124}) number(at+offset,100);
+                u32(at+80,1280);u32(at+84,720);number(at+152,1280);number(at+156,720);u32(at+176,1);
+            }
+            // The background renderer also carries the scene camera when no
+            // background asset is visible. Keep it for subsequent sprite moves.
+            number(0x18E20+28,camera_scale_);number(0x18E20+32,camera_scale_);
+            number(0x18E20+36,camera_x_);number(0x18E20+40,camera_y_);u32(0x18E20+44,1);
+            auto renderer = [&](int index, const Image& image, float x, float y, float scale, float alpha, float pivot_x, float pivot_y, bool camera) {
+                const size_t at=0x18E20+index*960;
+                // Native zero pivots select the image centre. Compensate the
+                // stored origin so x/y still describe the scaled top-left.
+                if(pivot_x==0) pivot_x=image.w/2.f;
+                if(pivot_y==0) pivot_y=image.h/2.f;
+                x-=pivot_x*(1-scale);y-=pivot_y*(1-scale);
+                number(at,x);number(at+4,y);number(at+48,x);number(at+52,y);
+                number(at+64,float(image.w));number(at+68,float(image.h));number(at+96,float(image.w));number(at+100,float(image.h));
+                const float native_scale=scale*(scale>=10 ? 10000.f : 100.f);
+                number(at+104,alpha);number(at+120,native_scale);number(at+124,native_scale);
+                number(at+144,pivot_x);number(at+148,pivot_y);
+                if(camera) {number(at+28,camera_scale_);number(at+32,camera_scale_);number(at+36,camera_x_);number(at+40,camera_y_);u32(at+44,1);}
+                // Texture handles and animation pointers stay zero on disk.
+                u32(at+176,0);
+            };
+            for(const auto& layer : layers_) {
+                if(layer.first<1 || layer.first>3) throw std::runtime_error("native export does not support this image layer");
+                name(0xA8+layer.first*48,48,layer.second.name);
+                const float scale=std::max(1280.f/layer.second.w,720.f/layer.second.h);
+                renderer(layer.first-1,layer.second,(1280-layer.second.w*scale)/2,
+                         (720-layer.second.h*scale)/2,scale,1,0,0,true);
+            }
+            for(size_t i=0;i<sprites_.size();++i) if(sprites_[i].visible && sprites_[i].img.valid()) {
+                const auto& sprite=sprites_[i];
+                int slot=-1,record=-1;
+                if(i<5 && sprite.z==0) {slot=4+int(i);record=10+int(i)*10;}
+                else if(i==12) {slot=25;record=63;}
+                else if(i==13) {slot=26;record=65;}
+                else throw std::runtime_error("native export does not support this sprite layer");
+                name(0xA8+slot*48,48,sprite.image);
+                // The PC reconstructs a full BST registration canvas, including
+                // transparent margins around the cropped CRX. Both renderers
+                // use 1280x720 screen coordinates; no 1.25 conversion applies.
+                Image canvas;
+                canvas.w=sprite.canvas_w>0?sprite.canvas_w:sprite.img.w;
+                canvas.h=sprite.canvas_h>0?sprite.canvas_h:sprite.img.h;
+                const float left=sprite.cur_x+sprite.x*(1-sprite.scale);
+                const float top=sprite.cur_y+sprite.y*(1-sprite.scale);
+                renderer(record,canvas,left,top,sprite.scale,sprite.alpha/255.f,float(sprite.x),float(sprite.y),true);
+                const size_t at=0x18E20+record*960;
+                number(at+36,512+int((camera_x_-512)*80/100));
+                number(at+40,288+int((camera_y_-288)*80/100));
+            }
+            scene_audio_.load_names();
+            if(audio.bgm_playing) {
+                if(audio.bgm_id<0 || size_t(audio.bgm_id)>=scene_audio_.bgm_names().size()) throw std::runtime_error("native BGM resource is unavailable");
+                name(0xA38,40,scene_audio_.bgm_names()[audio.bgm_id]);
+            }
+            if(audio.looped_se.size()>3)throw std::runtime_error("too many native looping effects");
+            for(size_t i=0;i<audio.looped_se.size();++i) {
+                const auto& se=audio.looped_se[i];
+                if(se.id<0 || size_t(se.id)>=scene_audio_.se_names().size()) throw std::runtime_error("native SE resource is unavailable");
+                name(0xA60+i*32,32,scene_audio_.se_names()[se.id]);u32(0xAE0+i*4,1);
+            }
+        }
+        *destination=std::move(out);
+        if(capture_error) capture_error->clear();
+        return true;
+    } catch(const std::exception& error) {if(capture_error)*capture_error=error.what();return false;}
+}
+
 bool SceneRunner::save_state(const std::string& filename) {
     try {
-        std::vector<uint8_t> bytes;
+        std::vector<uint8_t> snapshot;
         std::string error;
-        if (!capture_state(&bytes, &error)) throw std::runtime_error(error);
-        const std::filesystem::path target(filename), temporary = target.string() + ".tmp";
-        if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (!file) throw std::runtime_error("cannot create save: " + temporary.string());
-        file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
-        file.flush();
-        if (!file) throw std::runtime_error("cannot write complete save");
-        file.close();
-#ifdef _WIN32
-        if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            throw std::runtime_error("cannot replace save (Windows error " + std::to_string(GetLastError()) + ")");
-#else
-        std::filesystem::rename(temporary, target);
-#endif
+        if (!capture_state(&snapshot, &error)) throw std::runtime_error(error);
+        const std::filesystem::path target(filename);
+        std::string extension=target.extension().string();
+        std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(extension==".dat") {
+            std::vector<uint8_t> native;
+            if(!capture_pc_save(&native,&error)) throw std::runtime_error(error);
+            Writer companion;
+            companion.bytes.insert(companion.bytes.end(),kCompanionMagic,kCompanionMagic+8);
+            companion.u64(checksum(native));companion.bytes.insert(companion.bytes.end(),snapshot.begin(),snapshot.end());
+            // A crash between writes leaves an unmatched companion, safely ignored.
+            atomic_write(target.string()+".arisa",companion.bytes);
+            atomic_write(target,native);
+        } else atomic_write(target,snapshot);
         last_error_.clear();
         return true;
     } catch (const std::exception& error) { last_error_ = error.what(); return false; }
@@ -198,7 +390,16 @@ bool SceneRunner::load_state(const std::string& filename) {
         if (bytes.size() >= 8 && !std::memcmp(bytes.data(), kMagic, 8)) {
             ok = restore_state(bytes, &error);
         } else {
-            ok = restore_pc_save(bytes, &error);
+            std::vector<uint8_t> companion;
+            if(read_bytes(filename+".arisa",&companion) && companion.size()>=40 &&
+               !std::memcmp(companion.data(),kCompanionMagic,8)) {
+                Reader binding{companion,8};
+                if(binding.u64()==checksum(bytes)) {
+                    std::vector<uint8_t> snapshot(companion.begin()+16,companion.end());
+                    ok=restore_state(snapshot,&error);
+                }
+            }
+            if(!ok) ok = restore_pc_save(bytes, &error);
         }
         if (!ok) throw std::runtime_error(error);
         last_error_.clear();
@@ -212,316 +413,154 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         (identity.load_file(dc4::resolve_asset(data_ + "/MES/main.mes")) && identity.version == 0x9969))
         return restore_dc2pc_pc_save(bytes, restore_error);
     try {
-        if (bytes.size() < 0x1000) throw std::runtime_error("save file too small to be a PC save");
-
-        std::string script;
-        for (size_t i = 8; i < 8 + 64 && i < bytes.size(); ++i) {
-            if (bytes[i] == 0) break;
-            script.push_back(char(bytes[i]));
-        }
-        if (script.empty()) throw std::runtime_error("no scenario name in PC save");
-        if (script.find('.') == std::string::npos) script += ".mes";
-
-        std::string resolved = dc4::find_file_ci(data_ + "/MES", script);
-        if (resolved.empty()) resolved = script;
-
-        uint32_t pc = 0;
-        if (bytes.size() >= 0xb04) {
-            std::memcpy(&pc, bytes.data() + 0xb00, 4);
-        }
-
-        std::string bg;
-        if (bytes.size() >= 0xd8 + 64) {
-            for (size_t i = 0xd8; i < 0xd8 + 64; ++i) {
-                if (bytes[i] == 0) break;
-                char c = char(bytes[i]);
-                if (c == '\\') c = '/';
-                bg.push_back(c);
+        if(bytes.size()!=0x56FE4) throw std::runtime_error("truncated or unsupported DC4 PC save");
+        auto integer=[&](size_t at){Reader reader{bytes,at};return reader.u32();};
+        auto number=[&](size_t at){const auto bits=integer(at);float value;std::memcpy(&value,&bits,4);if(!std::isfinite(value)||std::abs(value)>100000)throw std::runtime_error("invalid native renderer scalar");return value;};
+        auto name=[&](size_t at,size_t capacity){
+            size_t end=at;while(end<at+capacity && bytes[end])++end;
+            if(end==at+capacity)throw std::runtime_error("unterminated PC save resource");
+            std::string value(reinterpret_cast<const char*>(bytes.data()+at),end-at);
+            if(!value.empty()&&!resource_name(value))throw std::runtime_error("unsafe PC save resource");
+            return value;
+        };
+        std::string script=name(8,160);
+        if(!resource_name(script,false))throw std::runtime_error("invalid PC scenario");
+        if(script.find('.')==std::string::npos)script+=".mes";
+        SceneRunner candidate(data_);
+        if(!candidate.load_script(data_+"/MES/"+script))throw std::runtime_error(candidate.last_error_);
+        if(candidate.mes_.version!=0xAAB6 && candidate.mes_.version!=0xABB6)throw std::runtime_error("PC save scenario has an unsupported format");
+        const auto checkpoint=integer(0xAFC);
+        if(checkpoint>65535)throw std::runtime_error("invalid PC save checkpoint");
+        std::vector<dc4::MesCommand> commands;
+        dc4::MesStream stream(candidate.mes_);dc4::MesCommand c;
+        size_t target=size_t(-1);
+        while(stream.next(&c)) {
+            if((c.op==3 || c.op==4) && (uint32_t(c.p1)|uint32_t(c.p2)<<8)==checkpoint) {
+                if(target!=size_t(-1))throw std::runtime_error("ambiguous PC save checkpoint");
+                target=commands.size();
             }
+            commands.push_back(c);
         }
-
-        vm_.reset();
-        if (!load_script(data_ + "/MES/" + resolved)) {
-            throw std::runtime_error("cannot load script: " + resolved + " (" + last_error_ + ")");
+        if(target==size_t(-1))throw std::runtime_error("saved checkpoint is unavailable in this scenario");
+        // Preserve system/route progress. Native slot records contain only the
+        // local story banks; importing a slot must never unlock every route.
+        for(int bank : {96,97,98,100}) {
+            const int count=bank==97?1200:bank==98?650:bank==100?150:400;
+            for(int i=0;i<count;++i)candidate.set_variable(bank,i,variable(bank,i));
         }
-
-        if (bytes.size() >= 0x184ec + 1100) {
-            for (uint16_t b = 0; b <= 10; ++b) {
-                for (uint16_t idx = 0; idx < 100; ++idx) {
-                    uint8_t val = bytes[0x184ec + b * 100 + idx];
-                    set_variable(b, idx, val);
-                }
+        for(int bank=0;bank<=10;++bank)for(int i=0;i<100;++i)candidate.set_variable(bank,i,bytes[0x184EC+bank*100+i]);
+        // Reconstruct dialogue and placement only, avoiding assignments, flow,
+        // audio and achievement side effects from the preceding scenario.
+        for(size_t i=0;i<target;++i) {
+            if(commands[i].op==3)candidate.speaker_.clear();
+            if(commands[i].op==0x8B || commands[i].op==0x99 || commands[i].op==0x9D)
+                candidate.dispatch_sprite_command(dc4::mes_engine_command(commands[i]));
+            candidate.dispatch_text_command(dc4::mes_engine_command(commands[i]));
+        }
+        uint32_t resume=commands[target].pos+uint32_t(commands[target].size);
+        if(commands[target].op==4) {
+            candidate.vm_.seek_to_pc(resume);
+            size_t budget=0;
+            while(candidate.vm_.next(&c))if(++budget>256 || c.op==0x2E || c.op==0x4C)throw std::runtime_error("invalid native choice block");
+            if(!candidate.vm_.waiting_for_choice())throw std::runtime_error("native choice is unavailable");
+        } else {
+            candidate.speaker_.clear();candidate.current_line_.clear();
+            for(size_t i=target+1;i<commands.size();++i) {
+                const auto& raw=commands[i];
+                if(raw.op==3 || raw.op==4 || raw.op==0)break;
+                candidate.dispatch_text_command(dc4::mes_engine_command(raw));
+                resume=raw.pos+uint32_t(raw.size);
+                if(!candidate.current_line_.empty())break;
             }
+            if(candidate.current_line_.empty())throw std::runtime_error("saved native dialogue is unavailable");
+            candidate.vm_.seek_to_pc(resume);
         }
-        // Force ReplayMode / Scenario Mode flag to 0 for story saves so branch doesn't exit to SCE_END
-        set_variable(9, 7, 0);
-
-        // Ensure all route clear / branch flags in Bank 100 are active so choices are NEVER skipped
-        for (uint16_t i = 100; i <= 119; ++i) {
-            set_variable(100, i, 1);
+        for(int slot=1;slot<=3;++slot) {
+            const auto resource=name(0xA8+slot*48,48);if(resource.empty())continue;
+            candidate.load_layer(slot,resource);
+            if(!candidate.layers_.count(slot))throw std::runtime_error("saved background is unavailable: "+resource);
         }
-
-        layers_.clear();
-        for (auto& s : sprites_) s = BstSprite{};
-        // Only clear character / scene scratch sheets (< 37). Keep UI sheets (>= 37) intact!
-        for (auto it = sheets_.begin(); it != sheets_.end(); ) {
-            if (it->first < 37) {
-                it = sheets_.erase(it);
-            } else {
-                ++it;
+        const size_t background=0x18E20;
+        const float camera=number(background+28);
+        if(integer(background+44) && camera>=1 && camera<=655.35f) {
+            candidate.camera_scale_=camera;candidate.camera_x_=number(background+36);candidate.camera_y_=number(background+40);
+        }
+        const float scene_pivot_x=512+int((candidate.camera_x_-512)*80/100);
+        const float scene_pivot_y=288+int((candidate.camera_y_-288)*80/100);
+        const int slots[]={4,5,6,7,8,25,26};
+        const int indices[]={0,1,2,3,4,12,13};
+        const int records[]={10,20,30,40,50,63,65};
+        for(int i=0;i<7;++i) {
+            const auto resource=name(0xA8+slots[i]*48,48);if(resource.empty())continue;
+            candidate.load_bst(indices[i],resource,slots[i]);
+            auto& sprite=candidate.sprites_[indices[i]];
+            if(!sprite.img.valid())throw std::runtime_error("saved sprite is unavailable: "+resource);
+            const size_t at=0x18E20+records[i]*960;
+            const float raw_scale=number(at+120);
+            const float scale=raw_scale/(raw_scale>=1000?10000.f:100.f);
+            if(scale<=0 || scale>100)throw std::runtime_error("invalid saved sprite scale");
+            // Native origins refer to the full registration canvas, not the
+            // cropped CRX's top-left. A zero pivot selects the source centre.
+            float pivot_x=number(at+144),pivot_y=number(at+148);
+            if(pivot_x==0)pivot_x=(number(at+96)-number(at+88))/2;
+            if(pivot_y==0)pivot_y=(number(at+100)-number(at+92))/2;
+            const float crop_x=sprite.frame_cx-sprite.img.w/2.f;
+            const float crop_y=sprite.frame_cy-sprite.img.h/2.f;
+            float native_x=number(at)+number(at+12)+pivot_x*(1-scale)+crop_x*scale;
+            float native_y=number(at+4)+number(at+16)+pivot_y*(1-scale)+crop_y*scale;
+            const float layer_camera=integer(at+44)?number(at+28):1;
+            if(layer_camera<=0 || layer_camera>655.35f)throw std::runtime_error("invalid saved sprite camera");
+            if(integer(at+44)) {
+                native_x=number(at+36)+(native_x-number(at+36))*layer_camera;
+                native_y=number(at+40)+(native_y-number(at+40))*layer_camera;
             }
+            sprite.scale=scale*layer_camera/candidate.camera_scale_;
+            sprite.x=int(std::lround(pivot_x));sprite.y=int(std::lround(pivot_y));
+            const float base_x=scene_pivot_x+(native_x-scene_pivot_x)/candidate.camera_scale_;
+            const float base_y=scene_pivot_y+(native_y-scene_pivot_y)/candidate.camera_scale_;
+            sprite.cur_x=int(std::lround(base_x-sprite.x*(1-sprite.scale)-crop_x*sprite.scale));
+            sprite.cur_y=int(std::lround(base_y-sprite.y*(1-sprite.scale)-crop_y*sprite.scale));
+            sprite.alpha=int(std::lround(std::clamp(number(at+104),0.f,1.f)*255));
         }
-        if (sheets_.find(37) == sheets_.end()) {
-            std::string start_mes = dc4::find_file_ci(data_ + "/MES", "start.mes");
-            if (!start_mes.empty()) load_sheets(data_ + "/MES/" + start_mes);
-            std::string win_size = dc4::find_file_ci(data_ + "/MES", mes_.version==0x9969 ? "start.mes" : "win_size.mes");
-            if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
-            if (sheets_.find(37) == sheets_.end()) {
-                show_message_window("SYSTEM/MESWIN.CRX");
-            }
+        auto audio=candidate.scene_audio_.capture_snapshot();
+        auto normal=[](std::string value){std::replace(value.begin(),value.end(),'\\','/');std::transform(value.begin(),value.end(),value.begin(),[](unsigned char ch){return char(std::tolower(ch));});if(value.size()>4&&value.substr(value.size()-4)==".pcm")value.resize(value.size()-4);return value;};
+        const auto bgm=name(0xA38,40);
+        if(!bgm.empty()) {
+            candidate.scene_audio_.load_names();
+            const auto& names=candidate.scene_audio_.bgm_names();
+            auto found=std::find_if(names.begin(),names.end(),[&](const std::string& item){return normal(item)==normal(bgm);});
+            if(found==names.end())throw std::runtime_error("saved BGM is unavailable: "+bgm);
+            audio.bgm_id=int(found-names.begin());audio.bgm_playing=true;audio.bgm_mode=1;
         }
-        if (buttons_.empty()) {
-            std::string win_size = dc4::find_file_ci(data_ + "/MES", mes_.version==0x9969 ? "start.mes" : "win_size.mes");
-            if (!win_size.empty()) load_ui_script(data_ + "/MES/" + win_size);
+        for(int i=0;i<4;++i) {
+            const auto se=name(0xA60+i*32,32);
+            if(se.empty() || !integer(0xAE0+i*4))continue;
+            candidate.scene_audio_.load_names();
+            const auto& names=candidate.scene_audio_.se_names();
+            auto found=std::find_if(names.begin(),names.end(),[&](const std::string& item){return normal(item)==normal(se);});
+            if(found==names.end())throw std::runtime_error("saved SE is unavailable: "+se);
+            const auto resource=normal(se);
+            const int channel=resource.rfind("se/201",0)==0?7:
+                resource.rfind("se/200",0)==0 || resource.rfind("se/202",0)==0 || resource.rfind("se/473",0)==0?6:2;
+            audio.looped_se.push_back({int(found-names.begin()),channel,0});
         }
-        scene_chips_.clear();
-        camera_scale_ = 1.0f;
-        camera_x_ = 0.0f;
-        camera_y_ = 0.0f;
-        camera_duration_ = 5;
-        camera_motion_.clear();
-        current_line_.clear();
-        speaker_.clear();
-        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-
-        uint32_t final_seek_pc = pc;
-        if (pc >= 3 && pc < mes_.code.size()) {
-            bool prev_anim = animation_enabled_;
-            animation_enabled_ = false;
-
-            std::string target_bg;
-            std::vector<std::string> target_slots(sprites_.size());
-            std::vector<int> target_slot_ids(sprites_.size(), 0);
-
-            dc4::MesStream scan(mes_);
-            dc4::MesCommand c;
-            std::string scanned_speaker;
-            while (scan.next(&c)) {
-                if (c.pos > pc) break;
-                if (c.pos == pc) {
-                    if (c.kind == dc4::CmdKind::Text) {
-                        if (c.dc2pc) {
-                            if (dc4::mes_engine_command(c).opcode() == dc4::Opcode::SPEAKER) {
-                                scanned_speaker = c.str;
-                            } else if (dc4::mes_engine_command(c).opcode() == dc4::Opcode::DIALOGUE) {
-                                current_line_ = c.str;
-                                speaker_ = scanned_speaker;
-                                final_seek_pc = scan.pos();
-                                break;
-                            }
-                        } else if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
-                            speaker_ = c.str;
-                        } else {
-                            current_line_ = c.str;
-                            final_seek_pc = scan.pos();
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                if (c.op == 0) continue;
-
-                using K = dc4::CmdKind;
-                if (c.kind == K::Words4 && c.op == 0x8B) {
-                    set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
-                } else if (c.kind == K::Words4 && c.op == 0x8E) {
-                    queue_sprite_slide(c.words[0], c.words[1], c.words[2], c.words[3]);
-                } else if (c.kind == K::Words4 && c.op == 0x8C) {
-                    queue_sprite_effect(c.words[0], c.words[1], c.words[2], c.words[3]);
-                } else if (c.kind == K::Words4 && c.op == 0x99) {
-                    camera_duration_ = c.words[0];
-                } else if (c.kind == K::Words4 && c.op == 0x9D && c.words[0] < 2) {
-                    apply_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
-                } else if (c.kind == K::ParamStr && c.op == 0x3C) {
-                    int slot = c.p1;
-                    int idx = -1;
-                    if (slot >= 4 && slot <= 8) idx = slot - 4;
-                    else if (slot >= 25 && slot <= 27) idx = 12 + (slot - 25);
-                    if (c.str == "-") {
-                        if (idx >= 0 && size_t(idx) < sprites_.size()) {
-                            sprites_[idx].visible = false;
-                            pending_sprites_[idx] = true;
-                            target_slots[idx].clear();
-                        } else if (slot <= 1) {
-                            target_bg.clear();
-                        }
-                    } else if (slot <= 1) {
-                        target_bg = c.str;
-                    } else if (idx >= 0 && size_t(idx) < sprites_.size()) {
-                        std::string name = c.str;
-                        while (!name.empty() && ((unsigned char)name.front() < 0x20 || name.front() == '!')) {
-                            name.erase(name.begin());
-                        }
-                        bool is_dash = name.size() >= 2 && name[0] == '-' && name[1] == '-';
-                        if (!is_dash) {
-                            sprites_[idx].name = name;
-                        }
-                        sprites_[idx].visible = true;
-                        sprites_[idx].z = (slot >= 25) ? 2 : (slot >= 19 ? 1 : 0);
-                        target_slots[idx] = sprites_[idx].name;
-                        target_slot_ids[idx] = slot;
-                        if (slot >= 4 && slot <= 8) pending_sprites_[slot - 4] = true;
-                    }
-                } else if (c.kind == K::ParamStr && (c.op == 0x3F || c.op == 0x40 || c.op == 0x41)) {
-                    int idx = -1;
-                    if (c.op == 0x3F) {
-                        if (c.p1 < 5) idx = int(c.p1);
-                    } else if (c.op == 0x40) {
-                        idx = (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
-                    } else if (c.op == 0x41) {
-                        if (c.p1 < 5) idx = int(c.p1);
-                    }
-                    if (idx >= 0 && size_t(idx) < sprites_.size()) {
-                        if (c.str == "-" || c.str == "-n") {
-                            sprites_[size_t(idx)].visible = false;
-                            target_slots[size_t(idx)].clear();
-                            pending_sprites_[size_t(idx)] = false;
-                        } else if (c.str == ".") {
-                            if (!target_slots[size_t(idx)].empty()) {
-                                sprites_[size_t(idx)].visible = true;
-                                pending_sprites_[size_t(idx)] = true;
-                            }
-                        } else if (c.str == "--") {
-                            if (!target_slots[size_t(idx)].empty()) {
-                                sprites_[size_t(idx)].visible = true;
-                                pending_sprites_[size_t(idx)] = true;
-                            } else {
-                                sprites_[size_t(idx)].visible = false;
-                                pending_sprites_[size_t(idx)] = false;
-                            }
-                        }
-                    }
-                } else if (c.kind == K::Str && (c.op == 0x49 || c.op == 0x30)) {
-                    if (c.str == ":n") { preserve_scene_ = true; continue; }
-                    if (c.str == ":r") { preserve_scene_ = false; continue; }
-                    if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
-                        target_bg = c.str;
-                        scene_chips_.clear();
-                        if (!preserve_scene_) {
-                            for (size_t i = 0; i < sprites_.size(); ++i) {
-                                if (!pending_sprites_[i]) {
-                                    sprites_[i].visible = false;
-                                    target_slots[i].clear();
-                                }
-                            }
-                        }
-                        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-                    }
-                } else if (c.kind == K::Param2 && c.op == 0x37) {
-                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-                } else if (c.kind == K::Words4 && c.op == 0xB4) {
-                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-                } else if (c.kind == K::Text) {
-                    std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
-                    if (c.dc2pc) {
-                        const auto normalized = dc4::mes_engine_command(c);
-                        if (normalized.opcode() == dc4::Opcode::SPEAKER) {
-                            scanned_speaker = c.str;
-                        } else if (normalized.opcode() == dc4::Opcode::DIALOGUE) {
-                            current_line_ = c.str;
-                            speaker_ = std::move(scanned_speaker);
-                            scanned_speaker.clear();
-                        }
-                    } else if (c.op == 0x6A || c.op == 0x4A || c.op == 0x4D) {
-                        speaker_ = c.str;
-                    } else if (c.op == 0x6B || c.op == 0x4B || c.op == 0x4E) {
-                        current_line_ = c.str;
-                    }
-                }
-            }
-
-            if (!target_bg.empty()) {
-                load_layer(1, target_bg);
-            }
-            for (size_t i = 0; i < sprites_.size(); ++i) {
-                if (sprites_[i].visible && !target_slots[i].empty()) {
-                    load_bst(int(i), target_slots[i], target_slot_ids[i]);
-                    sprites_[i].visible = true;
-                }
-            }
-
-            finish_animations();
-            animation_enabled_ = prev_anim;
-            vm_.seek_to_pc(final_seek_pc);
-        }
-
-        if (layers_.find(1) == layers_.end() && !bg.empty()) {
-            load_layer(1, bg);
-        }
-
-        if (audio_) {
-            std::string bgm;
-            if (bytes.size() >= 0xa38 + 64) {
-                for (size_t i = 0xa38; i < 0xa38 + 64; ++i) {
-                    if (bytes[i] == 0) break;
-                    char c = char(bytes[i]);
-                    if (c == '\\') c = '/';
-                    bgm.push_back(c);
-                }
-            }
-            if (!bgm.empty()) {
-                if (std::filesystem::path(bgm).extension().empty()) bgm += ".pcm";
-                int first = 0, last = 0;
-                std::string stem = std::filesystem::path(bgm).filename().string();
-                dc4::bgm_loop_for(stem, &first, &last);
-                audio_->set_group_volume(dc4::AudioGroup::Bgm, 100);
-                std::string resolved_bgm = dc4::resolve_asset(data_ + "/" + bgm);
-                if (!audio_->play_bgm_file(resolved_bgm, size_t(std::max(0, first)), size_t(std::max(0, last)), true)) {
-                    audio_->stop_bgm();
-                }
-            } else {
-                audio_->stop_bgm();
-            }
-        }
-
-        frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
-        scene_frame_.clear();
-
-        scene_dirty_ = true;
-        script_name_ = resolved;
-        scene_end_ = false;
-        message_visible_ = true;
-        taskbar_visible_ = true;
-        preserve_scene_ = false;
-        next_script_.clear();
-        last_error_.clear();
-        pointer_x_ = pointer_y_ = -1;
-        pointer_down_ = false;
-        pending_movie_.clear();
-        pending_movie_is_effect_ = false;
-        input_skip_label_.clear();
-        script_wait_pending_ = false;
-        script_wait_ms_ = 0;
-        credits_active_ = false;
-        effect_pck_.clear();
-        transition_active_ = transition_pending_ = false;
-        transition_snap_.clear();
-        scene_chips_.clear();
-        pending_scene_blit_ = false;
-        sidebar_visible_ = false;
-        reset_dialogue_history();
-        if (restore_error) restore_error->clear();
-        return true;
-    } catch (const std::exception& error) {
-        if (restore_error) *restore_error = error.what();
-        return false;
-    }
+        std::string error;dc4::MesVmSnapshot vm;
+        if(!candidate.vm_.capture_snapshot(&vm,&error))throw std::runtime_error(error);
+        if(!scene_audio_.restore_snapshot(audio,false,&error))throw std::runtime_error(error);
+        mes_=std::move(candidate.mes_);vm_.reset();vm_.bind(mes_);vm_.restore_snapshot(vm);
+        layers_.swap(candidate.layers_);sprites_.swap(candidate.sprites_);
+        script_name_=script;current_line_=std::move(candidate.current_line_);speaker_=std::move(candidate.speaker_);
+        camera_scale_=candidate.camera_scale_;camera_x_=candidate.camera_x_;camera_y_=candidate.camera_y_;camera_motion_.clear();
+        transition_type_=0;scene_dirty_=true;scene_end_=false;message_visible_=true;preserve_scene_=false;
+        comu_visible_=comu_group_=false;comu_items_.clear();reset_restore_transients();
+        load_ui_script(data_+"/MES/win_size.mes");taskbar_visible_=true;
+        if(restore_error)restore_error->clear();return true;
+    } catch(const std::exception& error){if(restore_error)*restore_error=error.what();return false;}
 }
 
 bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
     try {
-        if (bytes.size() < 0x2B20 || bytes.size() > kMaxSave)
+        if (bytes.size() != 0x2B20)
             throw std::runtime_error("truncated or unsupported DC2PC PC save");
         const auto integer = [&](size_t offset) { Reader in{bytes, offset}; return in.u32(); };
         const auto name = [&](size_t offset) {
@@ -563,7 +602,7 @@ bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::
         for (size_t i = 0; i < target; ++i)
             if (commands[i].op == 0x64 || commands[i].op == 0x65)
                 candidate.dispatch_sprite_command(dc4::mes_engine_command(commands[i]));
-        for (int bank : {96,97,98,100}) {
+        for (int bank : {95,96,97,98,100}) {
             const int count = bank == 97 || bank == 98 ? 1500 : bank == 100 ? 100 : 400;
             for (int i = 0; i < count; ++i) candidate.set_variable(uint16_t(bank), uint16_t(i), variable(uint16_t(bank), uint16_t(i)));
         }
@@ -610,6 +649,17 @@ bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::
             if (body.empty()) continue;
             candidate.load_bst(i, body, i+4);
             if (!candidate.sprites_[i].img.valid()) throw std::runtime_error("saved DC2PC sprite is unavailable: " + body);
+            const auto expression=name(0x384+i*128);
+            if(!expression.empty() && !candidate.load_bst_expression(i,expression))
+                throw std::runtime_error("saved DC2PC expression is unavailable: "+expression);
+            const size_t at=0x14D0+i*52;
+            const auto scale=integer(at+8);
+            if(scale) {
+                if(scale>10000)throw std::runtime_error("invalid saved DC2PC sprite scale");
+                auto& sprite=candidate.sprites_[i];
+                sprite.cur_x=int32_t(integer(at));sprite.cur_y=int32_t(integer(at+4));
+                sprite.scale=scale/100.f;sprite.x=int32_t(integer(at+24));sprite.y=int32_t(integer(at+28));
+            }
         }
         auto audio = candidate.scene_audio_.capture_snapshot();
         const uint32_t bgm = integer(0x804);

@@ -92,6 +92,8 @@ void protected_directories(const fs::path& root) {
     CHECK(!is_original_save_directory(game / "savedata-engine", data.string()));
     CHECK(!is_original_save_directory(data / "savedata-engine" / "nested", data.string()));
     CHECK(!is_original_save_directory(root / "engine-saves", data.string()));
+    CHECK(!engine_save_directory_allowed(data / "savedata", data.string()));
+    CHECK(engine_save_directory_allowed(root / "engine-saves", data.string()));
 #ifdef _WIN32
     CHECK(is_original_save_directory(game / "SaVeDaTa" / "nested", data.string()));
 #endif
@@ -100,7 +102,6 @@ void protected_directories(const fs::path& root) {
 void dc2pc_save_directory(const fs::path& root) {
     const fs::path data = root / "dc2pc" / "AdvData";
     fs::create_directories(data / "MES");
-    fs::create_directories(data / "SAVEDATA");
     // No labels, version 0x9969, one scope marker and the end opcode.
     const char bytes[] = {0,0,0,0,0x69,char(0x99),2,0,0,0};
     write_fixture(data / "MES/main.mes", std::string(bytes, sizeof(bytes)));
@@ -110,9 +111,21 @@ void dc2pc_save_directory(const fs::path& root) {
         return;
     }
     const auto saves = save_directory(data.string());
-    CHECK(saves == data / "arisa32-saves" / "dc2pc");
-    CHECK(!is_original_save_directory(saves, data.string()));
-    CHECK(fs::is_empty(data / "SAVEDATA"));
+    CHECK(saves == data / "SaveData");
+    CHECK(fs::is_directory(saves));
+    CHECK(engine_save_directory_allowed(saves, data.string()));
+    CHECK(!fs::exists(data / "arisa32-saves"));
+    fs::rename(saves, data / "temporary-saves");
+    fs::rename(data / "temporary-saves", data / "sAvEdAtA");
+    const auto existing = save_directory(data.string());
+    CHECK(existing == data / "sAvEdAtA");
+    CHECK(engine_save_directory_allowed(existing, data.string()));
+    write_fixture(existing / "DC2PC01.dat", "original PC save");
+    write_fixture(existing / "slot1.dc4sav", "engine snapshot");
+    CHECK(fs::file_size(existing / "DC2PC01.dat") == 16);
+    fs::rename(existing, data.parent_path() / "Savedata");
+    CHECK(save_directory(data.string()) == data.parent_path() / "Savedata");
+    CHECK(!fs::exists(data / "arisa32-saves"));
 }
 
 void write_thumbnail(const fs::path& save, int width = 128, int height = 72) {
@@ -155,7 +168,7 @@ void slot_metadata(const fs::path& root) {
 
     dc4ui::SaveScreen screen;
     SaveSlots slots;
-    slots.refresh(directory, &screen);
+    slots.refresh(directory, &screen,0xAAB6);
     CHECK(slots.entries.size() == 100);
     CHECK(std::all_of(slots.entries.begin(), slots.entries.end(), [](const dc4ui::SaveSlot& slot) { return slot.occupied; }));
     CHECK(slots.latest_slot == 99);  // A newer quicksave does not replace NEW.
@@ -188,17 +201,60 @@ void slot_metadata(const fs::path& root) {
     // Removed snapshots must clear both cached previews and clickable rows.
     fs::remove(valid);
     fs::remove(directory / "slot100.dc4sav");
-    slots.refresh(directory, &screen);
+    slots.refresh(directory, &screen,0xAAB6);
     CHECK(slots.latest_slot == 40);
     CHECK(!slots.entries[0].occupied && slots.entries[0].excerpt.empty() && slots.entries[0].thumbnail.rgba.empty());
     CHECK(!slots.entries[99].occupied);
     CHECK(screen.hit_test(620, 570).type == dc4ui::SaveActionType::None);
 
-    slots.refresh(root / "empty-engine-saves", &screen);
+    slots.refresh(root / "empty-engine-saves", &screen,0xAAB6);
     CHECK(slots.latest_slot == -1);
     CHECK(std::none_of(slots.entries.begin(), slots.entries.end(), [](const dc4ui::SaveSlot& slot) { return slot.occupied; }));
     CHECK(screen.hit_test(500, 40).type == dc4ui::SaveActionType::None);
     CHECK(screen.hit_test(650, 40).type == dc4ui::SaveActionType::None);
+}
+void native_filenames(const fs::path& root) {
+    const auto directory=root/"native-files";
+    fs::create_directories(directory);
+    CHECK(dc4::save_target(directory,0x9969,0).filename()=="DC2PC00.dat");
+    CHECK(dc4::save_target(directory,0x9969,1).filename()=="DC2PC02.dat");
+    CHECK(dc4::save_target(directory,0x9969,4).filename()=="DC2PC08.dat");
+    CHECK(dc4::save_target(directory,0x9969,24).filename()=="DC2PC40.dat");
+    CHECK(dc4::save_target(directory,0x9969,48).filename()=="DC2PC76.dat");
+    CHECK(dc4::save_slot_number("DC2PC01.dat",0x9969)==-1);
+    CHECK(dc4::save_slot_number("DC2PC05.dat",0x9969)==-1);
+    for(int logical=0;logical<=100;++logical)
+        CHECK(dc4::save_slot_number(dc4::save_target(directory,0x9969,logical).filename().string(),0x9969)==logical);
+    CHECK(dc4::save_target(directory,0xAAB6,1).filename()=="DC403.dat");
+    CHECK(dc4::save_target(directory,0xABB6,100).filename()=="DC4PHDL102.dat");
+    CHECK(dc4::save_slot_number("DC400.dat",0xAAB6)==-1);
+    CHECK(dc4::save_slot_number("dc402.DAT",0xAAB6)==0);
+    CHECK(dc4::save_slot_number("DC4103.dat",0xAAB6)==-1);
+    CHECK(dc4::save_slot_number("DC403.dat.arisa",0xAAB6)==-1);
+    const auto pc=directory/"dc403.DAT", legacy=directory/"slot1.dc4sav";
+    write_fixture(pc,"native");write_fixture(legacy,"legacy");
+    const auto baseline=fs::file_time_type::clock::now();
+    fs::last_write_time(pc,baseline);fs::last_write_time(legacy,baseline+std::chrono::hours(2));
+    CHECK(dc4::save_target(directory,0xAAB6,1)==pc);
+    CHECK(dc4::resolve_save(directory,0xAAB6,1)==pc);
+    write_fixture(directory/"DC402.dat","quick");
+    write_fixture(directory/"DC400.dat","reserved");
+    CHECK(dc4::latest_save(directory,0xAAB6)==pc);
+    write_fixture(directory/"slot2.dc4sav","second");
+    fs::last_write_time(directory/"slot2.dc4sav",baseline+std::chrono::hours(1));
+    CHECK(dc4::latest_save(directory,0xAAB6)==directory/"slot2.dc4sav");
+    const auto classic=directory/"classic";fs::create_directories(classic);
+    const auto copy=classic/"dc2pc01.DAT", numbered=classic/"DC2PC02.dat";
+    write_fixture(copy,"latest copy");
+    CHECK(dc4::latest_save(classic,0x9969)==copy);
+    write_fixture(numbered,"regular");
+    fs::last_write_time(copy,baseline);fs::last_write_time(numbered,baseline-std::chrono::hours(1));
+    CHECK(dc4::latest_save(classic,0x9969)==copy);
+    fs::last_write_time(numbered,baseline+std::chrono::hours(1));
+    CHECK(dc4::latest_save(classic,0x9969)==numbered);
+    write_fixture(classic/"DC2PC00.dat","quick");
+    fs::last_write_time(classic/"DC2PC00.dat",baseline+std::chrono::hours(2));
+    CHECK(dc4::latest_save(classic,0x9969)==numbered);
 }
 }  // namespace
 
@@ -209,6 +265,7 @@ int main() {
         protected_directories(temporary.path);
         dc2pc_save_directory(temporary.path);
         slot_metadata(temporary.path);
+        native_filenames(temporary.path);
     } catch (const std::exception& e) {
         std::cerr << "save_host_test: " << e.what() << '\n';
         return 1;

@@ -1,5 +1,18 @@
 # Android library and save-archive checks
 
+Standalone export checks (Java 11+ and Android SDK; no device required):
+
+```powershell
+javac -encoding UTF-8 -cp "$env:LOCALAPPDATA/Android/Sdk/platforms/android-36/android.jar" -d build/java-export-check `
+  android/app/src/main/java/org/dc4engine/SaveArchive.java `
+  tests/android/ExportChecks.java
+java -cp build/java-export-check org.dc4engine.ExportChecks
+```
+
+These check both companion modes across DC2PC/DC4/Plus Harmony filenames,
+mixed-case extensions, retained save/profile/preview bytes, source preservation,
+round trips into fresh directories, progress and failed/empty exports.
+
 Profile checks need a Java 11+ JDK and no Android runtime:
 
 ```powershell
@@ -11,7 +24,10 @@ java -cp build/java-check org.dc4engine.ProfileChecks
 ```
 
 They verify MES-header detection, profile precedence, neighboring dialect
-isolation, library titles, and the separate DC2PC save namespace.
+isolation, library titles, DC2PC SaveData discovery/defaults, native-save
+fallback and batched slot lookup without repeated directory scans, reserved
+latest-copy records, DC2PC's sparse native page numbering, scenario identities
+in old/native saves, executable title tables and native-stem thumbnails.
 
 The older archive harness also needs the Android SDK's `android.jar` on the
 compile classpath because `SaveArchive` now contains document-provider code.

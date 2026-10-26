@@ -34,6 +34,14 @@ public interface GameProfile {
     /** Resolves quicksave file in savesDir. */
     File resolveQuickSaveFile(File savesDir);
 
+    /** Optional native latest-save copy, separate from numbered write targets. */
+    default File resolveLatestSaveCopy(File savesDir) { return null; }
+
+    /** Write target, independent of an existing legacy snapshot. -1 means quicksave. */
+    default File saveTarget(File savesDir, int slotIndex) {
+        return new File(savesDir, slotIndex < 0 ? "quicksave.dc4sav" : "slot"+(slotIndex+1)+".dc4sav");
+    }
+
     /** Fresh picker scan: quicksave at index 0, numbered slots at index 1..count. */
     default File[] resolveSaveFiles(File savesDir, int count) {
         File[] files = new File[count + 1];

@@ -121,7 +121,11 @@ final class ArisaUi {
         t.setTypeface(Typeface.create("sans-serif-bold",Typeface.BOLD));
         t.setPadding(dp(c,8),dp(c,4),dp(c,8),dp(c,4));return t;
     }
-    static ImageView logo(Context c){ImageView v=new ImageView(c);v.setImageResource(R.drawable.arisa_mark);v.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);return v;}
+    static ImageView logo(Context c){
+        ImageView v=new ImageView(c);v.setImageResource(R.mipmap.ic_launcher);
+        v.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        v.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);return v;
+    }
 
     static final class Wallpaper extends View {
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.FILTER_BITMAP_FLAG);

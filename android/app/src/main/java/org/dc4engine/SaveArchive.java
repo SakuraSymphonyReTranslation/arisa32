@@ -15,11 +15,13 @@ import java.util.zip.*;
  */
 final class SaveArchive {
     interface Validator { void check(File save) throws IOException; }
+    interface Progress { void update(String name, int completed, int total); }
     private static final long MAX_FILE = 64L * 1024 * 1024; // 64 MiB per save file
 
     static boolean isSaveFile(String name) {
         if (name == null || name.isEmpty() || name.contains("..") || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('\0') >= 0) return false;
         String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.matches("(?:dc2pc|dc4|dc4phdl)[0-9]{2,3}\\.dat\\.(?:arisa|icon)")) return true;
         if (lower.endsWith(".dc4sav") || lower.endsWith(".dc4sav.png") || lower.endsWith(".dc4sav.txt")) return true;
         if (lower.equals("system-profile.dat") || lower.equals("read-lines.txt") || lower.equals("system.dat")) return true;
         if (lower.endsWith(".dat") || lower.endsWith(".png") || lower.endsWith(".txt")) {
@@ -30,32 +32,39 @@ final class SaveArchive {
     }
 
     static void write(OutputStream output, File saves, String game, String content) throws IOException {
+        write(output, saves, game, content, true, null);
+    }
+
+    static void write(OutputStream output, File saves, String game, String content,
+                      boolean includeCompanions, Progress progress) throws IOException {
         recover(saves);
         File[] available = saves != null ? saves.listFiles() : null;
-        boolean any = false;
+        List<File> files = new ArrayList<>();
         if (available != null) {
             for (File file : available) {
-                if (file.isFile() && isSaveFile(file.getName())) {
-                    any = true;
-                    break;
-                }
+                if (!file.isFile() || !isSaveFile(file.getName())) continue;
+                if (!includeCompanions && file.getName().toLowerCase(Locale.ROOT).endsWith(".dat.arisa")) continue;
+                files.add(file);
             }
         }
-        if (!any) throw new IOException("There are no saves in " + (saves != null ? saves.getName() : "") + " to export.");
+        if (files.isEmpty()) throw new IOException("There are no saves in " + (saves != null ? saves.getName() : "") + " to export.");
+        files.sort(Comparator.comparing(File::getName));
 
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(output))) {
             Properties manifest = new Properties();
             manifest.setProperty("format", "arisa32-saves-1");
             if (game != null) manifest.setProperty("game", game);
             if (content != null) manifest.setProperty("content", content);
+            manifest.setProperty("arisa_companions", String.valueOf(includeCompanions));
             manifest.setProperty("export_time", String.valueOf(System.currentTimeMillis()));
             zip.putNextEntry(new ZipEntry("manifest.properties"));
             manifest.store(zip, "Arisa32 / ADV32 Save Archive");
             zip.closeEntry();
 
             byte[] buffer = new byte[65536];
-            for (File file : available) {
-                if (!file.isFile() || !isSaveFile(file.getName())) continue;
+            int completed = 0;
+            for (File file : files) {
+                if (progress != null) progress.update(file.getName(), completed, files.size());
                 zip.putNextEntry(new ZipEntry(file.getName()));
                 try (InputStream in = new FileInputStream(file)) {
                     int n;
@@ -64,8 +73,10 @@ final class SaveArchive {
                     }
                 }
                 zip.closeEntry();
+                completed++;
             }
         }
+        if (progress != null) progress.update(null, files.size(), files.size());
     }
 
     static int read(InputStream input, File saves, String game, String content) throws IOException {

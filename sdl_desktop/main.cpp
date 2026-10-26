@@ -1,3 +1,4 @@
+#include "arisa32/save_paths.h"
 // SDL desktop frontend. Game state and native artwork are owned by dc4core.
 #include "arisa32/audio.h"
 #include "arisa32/bgm.h"
@@ -51,7 +52,7 @@ constexpr const char* kHelp =
     "Choices: click an option or press 1-9\n"
     "F11 / Alt+Enter: fullscreen   F1: this help\n"
     "Esc: close a screen, cancel auto/skip, or exit\n\n"
-    "Quick saves belong to dc4engine; original game saves are not compatible.\n"
+    "DC2PC, DC4 and Plus Harmony slots use native PC save files.\n"
     "Title, Config and Extras use the installed game's original menus.";
 
 struct Options {
@@ -269,9 +270,22 @@ fs::path save_directory(const std::string& data = "") {
     if (!data.empty()) {
         const fs::path data_path(data);
         dc4::MesFile main_script;
-        if (main_script.load_file(dc4::resolve_asset((data_path / "MES/main.mes").string())) &&
-            dc4::mes_opcode_profile(main_script.dialect, main_script.version).id == dc4::MesProfileId::DC2PC)
-            return data_path / "arisa32-saves" / "dc2pc";
+        const bool native_saves = main_script.load_file(dc4::resolve_asset((data_path / "MES/main.mes").string())) &&
+            !dc4::native_save_prefix(main_script.version).empty();
+        if (native_saves) {
+            for (const auto& root : {data_path, data_path.parent_path()}) {
+                std::error_code ec;
+                for (fs::directory_iterator it(root, ec), end; it != end && !ec; it.increment(ec)) {
+                    std::string name = it->path().filename().string();
+                    for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                    if ((name == "savedata" || name == "savegame") && it->is_directory(ec))
+                        return it->path();
+                }
+            }
+            std::error_code ec;
+            const fs::path preferred = data_path / "SaveData";
+            if (fs::create_directories(preferred, ec) || fs::is_directory(preferred, ec)) return preferred;
+        }
         const std::vector<fs::path> candidates = {
             data_path / "savegame",
             data_path / "Savegame",
@@ -324,6 +338,13 @@ bool is_original_save_directory(const fs::path& directory, const std::string& da
             return true;
     }
     return false;
+}
+
+bool engine_save_directory_allowed(const fs::path& directory, const std::string& data) {
+    if (!is_original_save_directory(directory, data)) return true;
+    dc4::MesFile main_script;
+    return main_script.load_file(dc4::resolve_asset((fs::path(data) / "MES/main.mes").string())) &&
+        !dc4::native_save_prefix(main_script.version).empty();
 }
 
 std::string save_fingerprint(const fs::path& path) {
@@ -438,11 +459,11 @@ struct Backlog {
     void move(int amount) { scroll = std::clamp(scroll + amount, 0, max_scroll()); }
 };
 
-// Snapshot IO stays in the desktop host. The shared screen only sees engine
-// slot metadata; original savedata is never imported or modified.
+// Save IO stays in the desktop host; the shared screen receives slot metadata.
 struct SaveSlots {
     bool open = false;
     int latest_slot = -1;  // Most recent numbered save, or -1 when none exist.
+    fs::path latest_path;
     std::vector<dc4ui::SaveSlot> entries{dc4ui::SaveScreen::kSlotCount};
 
     static dc4ui::SaveSlot read(const fs::path& path) {
@@ -498,7 +519,7 @@ struct SaveSlots {
         return entry;
     }
 
-    void refresh(const fs::path& directory, dc4ui::SaveScreen* screen) {
+    void refresh(const fs::path& directory, dc4ui::SaveScreen* screen, uint32_t version) {
         latest_slot = -1;
         fs::file_time_type latest_time = fs::file_time_type::min();
         auto consider_latest = [&](const fs::path& path, int slot) {
@@ -510,16 +531,17 @@ struct SaveSlots {
             }
         };
         for (int i = 0; i < dc4ui::SaveScreen::kSlotCount; ++i) {
-            const auto path=directory/("slot"+std::to_string(i+1)+".dc4sav");
+            const auto path=dc4::resolve_save(directory,version,i+1);
             entries[size_t(i)]=read(path);
             screen->set_slot_occupied(i,entries[size_t(i)].occupied);
             if(entries[size_t(i)].occupied)consider_latest(path,i);
         }
         std::error_code ec;
-        const fs::path quicksave = directory / "quicksave.dc4sav";
+        const fs::path quicksave = dc4::resolve_save(directory,version,0);
         const bool quick = fs::is_regular_file(quicksave, ec);
-        screen->set_shortcuts(latest_slot >= 0, false, quick);
-        screen->set_special_slots(read(quicksave),latest_slot>=0?entries[size_t(latest_slot)]:dc4ui::SaveSlot{});
+        latest_path=dc4::latest_save(directory,version);
+        screen->set_shortcuts(!latest_path.empty(), false, quick);
+        screen->set_special_slots(read(quicksave),latest_path.empty()?dc4ui::SaveSlot{}:read(latest_path));
     }
 };
 
@@ -625,7 +647,7 @@ int run(const Options& o) {
     }
     if (!system_menu.load(data, &err)) { fprintf(stderr, "System menus: %s\n", err.c_str()); return 1; }
     const fs::path profile_dir = save_directory(data);
-    const bool profile_allowed = !is_original_save_directory(profile_dir,data);
+    const bool profile_allowed = engine_save_directory_allowed(profile_dir,data);
     if (profile_allowed && fs::is_regular_file(profile_dir / "profile.dc4profile"))
         if (!system_menu.load_profile((profile_dir / "profile.dc4profile").string(), &err))
             fprintf(stderr,"Profile: %s\n",err.c_str());
@@ -752,8 +774,8 @@ int run(const Options& o) {
     if (!frame_texture) { fprintf(stderr, "Frame texture: %s\n", SDL_GetError()); return 1; }
     SDL_SetTextureBlendMode(frame_texture.get(), SDL_BLENDMODE_NONE);
     if(profile_allowed) {
-        slots.refresh(profile_dir,&save_screen);
-        system_menu.set_save_available(slots.latest_slot>=0,fs::is_regular_file(profile_dir/"quicksave.dc4sav"),fs::is_regular_file(profile_dir/"autosave.dc4sav"));
+        slots.refresh(profile_dir,&save_screen,scene->save_format_version());
+        system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0)),fs::is_regular_file(profile_dir/"autosave.dc4sav"));
     }
     apply_settings();
     if (audio_ready && !o.bgm.empty()) {
@@ -891,19 +913,19 @@ int run(const Options& o) {
         status.clear(); update_title();
     };
     auto persist_state = [&](bool load, int slot, int character_icon=-1) {
-        if (!scene || slot >= dc4ui::SaveScreen::kSlotCount) return;
+        if (!scene || slot < -2 || slot >= dc4ui::SaveScreen::kSlotCount || (slot == -2 && !load)) return;
         auto_mode = skip_mode = false;
         mouse_down = false;
         save_screen.cancel_pointer();
-        const std::string operation = slot < 0 ? (load ? "Quick load" : "Quick save") :
+        const std::string operation = slot == -2 ? "Latest load" : slot == -1 ? (load ? "Quick load" : "Quick save") :
             std::string(load ? "Load" : "Save") + " - slot " + std::to_string(slot + 1);
         bool preview_ok = true;
         try {
             const fs::path directory = save_directory(data);
-            if (is_original_save_directory(directory, data)) {
+            if (!engine_save_directory_allowed(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
-            const fs::path path = directory / (slot < 0 ? "quicksave.dc4sav" : "slot" + std::to_string(slot + 1) + ".dc4sav");
+            const fs::path path = load ? (slot == -2 ? slots.latest_path : dc4::resolve_save(directory,scene->save_format_version(),slot+1)) : dc4::save_target(directory,scene->save_format_version(),slot+1);
             // Empty Load rows are inert, including when a file disappears
             // after the screen was opened. Quick-load failures still report.
             if (slot >= 0) {
@@ -928,11 +950,11 @@ int run(const Options& o) {
             }
             // The native SAVE script returns to its menu after writing.
             // Quick save/load keep their existing close-on-success behavior.
-            if (!load && slots.open) slots.refresh(directory, &save_screen);
+            if (!load && slots.open) slots.refresh(directory, &save_screen,scene->save_format_version());
             else slots.open = false;
             backlog.open = false;
-            slots.refresh(directory,&save_screen);
-            system_menu.set_save_available(slots.latest_slot>=0,fs::is_regular_file(directory/"quicksave.dc4sav"),fs::is_regular_file(directory/"autosave.dc4sav"));
+            slots.refresh(directory,&save_screen,scene->save_format_version());
+            system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(directory,scene->save_format_version(),0)),fs::is_regular_file(directory/"autosave.dc4sav"));
             notify(operation + (load ? " restored" : " written") + (preview_ok ? "" : " (preview unavailable)"));
         } catch (const std::exception& e) {
             notify(operation + " failed: " + e.what());
@@ -951,10 +973,10 @@ int run(const Options& o) {
         save_screen.cancel_pointer();
         try {
             const fs::path directory = save_directory(data);
-            if (is_original_save_directory(directory, data)) {
+            if (!engine_save_directory_allowed(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
-            slots.refresh(directory, &save_screen);
+            slots.refresh(directory, &save_screen,scene->save_format_version());
         }
         catch (const std::exception& e) { notify(e.what()); return; }
         slots_from_menu=menu_open;menu_open=false;slots.open = true;
@@ -991,7 +1013,7 @@ int run(const Options& o) {
     };
     auto prompt_title = [&]() {prompt(dc4ui::ConfirmKind::Title,[&]{open_system(dc4ui::SystemMenuPage::Title);});};
     auto prompt_quick = [&](bool load) {
-        if(load&&!fs::is_regular_file(profile_dir/"quicksave.dc4sav")){notify("No quick save");return;}
+        if(load&&!fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0))){notify("No quick save");return;}
         prompt(load?dc4ui::ConfirmKind::QuickLoad:dc4ui::ConfirmKind::QuickSave,[&,load]{persist_state(load,-1);});
     };
     auto start_scene = [&](const dc4ui::SystemMenuAction& selected) {
@@ -1033,7 +1055,7 @@ int run(const Options& o) {
         case T::Save:play_sys_voice(12);open_slots(false);break;
         case T::LatestLoad:
             play_sys_voice(8);
-            open_slots(true);if(slots.latest_slot>=0)persist_state(true,slots.latest_slot);break;
+            open_slots(true);if(!slots.latest_path.empty())persist_state(true,-2);break;
         case T::QuickLoad:play_sys_voice(8);open_slots(true);persist_state(true,-1);break;
         case T::AutoLoad:
             play_sys_voice(8);
@@ -1095,7 +1117,7 @@ int run(const Options& o) {
             play_sys_voice(selected.index == 1 ? 13 : 12);
             status.clear(); update_title(); break;
         case dc4ui::SaveActionType::LatestLoad:
-            if (slots.latest_slot >= 0) persist_state(true, slots.latest_slot);
+            if (!slots.latest_path.empty()) persist_state(true, -2);
             break;
         case dc4ui::SaveActionType::QuickLoad: persist_state(true, -1); break;
         case dc4ui::SaveActionType::QuickSave: persist_state(false, -1, save_screen.selected_icon()); break;

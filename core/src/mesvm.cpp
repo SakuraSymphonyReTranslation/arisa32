@@ -353,10 +353,11 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
         for (int i=0;i<4;++i) bits = (bits << 8) | uint32_t(read_variable(bank-200,index+i));
         return bits <= INT32_MAX ? int32_t(bits) : int32_t(int64_t(bits)-0x100000000LL);
     }
-    // Route unlock flags (100..119) default to 1 so choices are never skipped or locked out.
+    // Preserve explicit route flags, including zero, when restoring progress.
+    // Keep the host's existing default only when no flag has been provided.
     if (!dc2pc && bank == 100 && index >= 100 && index <= 119) {
         const auto found = variables_.find({bank, index});
-        if (found == variables_.end() || found->second == 0) return 1;
+        if (found == variables_.end()) return 1;
         return found->second;
     }
     const int size = byte_bank_size(bank,dc2pc);

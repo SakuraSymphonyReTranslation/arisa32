@@ -272,10 +272,12 @@ public:
     void finish_animations();
     bool animating() const { return !camera_motion_.empty(); }
     float camera_scale() const { return camera_scale_; }
-    // Versioned emulator saves; never reads or writes the original DC4 saves.
+    // Native .dat saves for supported games; snapshots for legacy/checkpoints.
     bool save_state(const std::string& path);
     bool load_state(const std::string& path);
     bool capture_state(std::vector<uint8_t>* bytes, std::string* error = nullptr);
+    bool capture_pc_save(std::vector<uint8_t>* bytes, std::string* error = nullptr);
+    uint32_t save_format_version() const { return mes_.version; }
     bool restore_state(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
     bool restore_pc_save(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
     int variable(uint16_t bank, uint16_t index) const { return vm_.read_variable(bank, index); }

@@ -4,6 +4,10 @@ The app opens to a persistent game library. Selecting **Play** opens the game's
 original title screen, rendered by the same portable `dc4core` used on desktop.
 Game assets and translation packs are supplied separately from the APK.
 
+The launcher icon and library header use the supplied character artwork, with
+legacy density variants and an adaptive icon for current Android launchers.
+The header keeps a fixed 40 dp square aligned vertically with the Arisa32 title.
+
 ## Build
 
 ```bash
@@ -110,7 +114,7 @@ fingers cannot activate them. Dialogue taps reveal or advance. Auto/skip follow
 native config and pause at a choice until the player selects it. Backlog rows
 support scrolling, voice replay without closing the log, and snapshot-based
 scene jumps. Slot menus have 100 numbered slots with timestamps, 128×72 previews
-and dialogue excerpts; overwrites require a confirmation and queue the write
+and scenario titles; overwrites require a confirmation and queue the write
 onto the render thread.
 
 MPEG-1 Program Stream movies and MPEG Layer II sound decode through portable
@@ -126,11 +130,24 @@ Emulator data lives under:
 files/games/<base-script-sha256>/saves/<jp|en|id>/
 ```
 
-This contains `slot1.dc4sav` through `slot100.dc4sav`, `quicksave.dc4sav`, an
+Generic profiles contain `slot1.dc4sav` through `slot100.dc4sav`, `quicksave.dc4sav`, an
 `autosave.dc4sav` if present, preview sidecars, `system-profile.dat` for native
 settings/unlocks and `read-lines.txt` for read history. Existing legacy
 `files/saves` slots are copied once to the first registered game's Japanese
 save directory; the original legacy copies remain intact.
+
+DC2PC reuses the game's `SaveData` folder; DC4 and Plus Harmony use the selected
+language save directory. These profiles write native PC `.dat` records with
+100 emulator slots. Quick/first regular filenames are `DC2PC00.dat`/`DC2PC02.dat`,
+`DC402.dat`/`DC403.dat` and `DC4PHDL02.dat`/`DC4PHDL03.dat`. Native files take
+priority over old emulator slots. Checksum-bound `.dat.arisa` companions retain
+additional emulator state and are ignored after the PC changes the `.dat`.
+DC2PC keeps `DC2PC01.dat` for the PC's latest-save copy. Regular slots map to
+physical 02..04, 08..12, 16..20 and subsequent five-record groups with an
+eight-record page stride. The original ten-page menu exposes 48 regular slots;
+the additional emulator slots have filenames beyond that menu's range.
+Previews use native stems (for example `DC403.png`). Scenario-title descriptions
+are resolved from the scenario identity in both old snapshots and native saves.
 
 **Game settings → Export saves / Import saves** uses Android document providers
 and a versioned ZIP archive. Exports include manual/quick/automatic saves,
@@ -138,8 +155,21 @@ previews, native progress/profile and read history. Import closes the running
 game and replaces manual/quick slots for the selected content language. Included
 profile/read-history data is restored on next launch. Older slot-only archives
 preserve the existing profile, read history and automatic save. The selected
-base-game fingerprint and content-script fingerprint must match the manifest.
-These are emulator archives, not original Windows-game save files.
+archive includes native `.dat` records and `system.dat` where present. Export
+opens a dialog with two options: **With .dat.arisa** (the default full backup,
+retaining additional Arisa32 state such as audio playback positions) and
+**Without .dat.arisa** (a smaller archive that omits only these companions).
+Both keep other save records, previews, settings, unlocks and read history.
+Supported native `.dat` saves still load in Arisa32 without companions, but
+music may restart and additional emulator state is not retained. Original PC
+games ignore companions. The export popup shows the selected mode, current
+filename and file-count progress, followed by a completion dialog. Suggested
+ZIP filenames distinguish `with_arisa` and `without_arisa` exports.
+The archive importer currently skips manifest identity validation; choose the
+matching game and language. Native exports support dialogue/choice checkpoints,
+local variables, backgrounds, supported sprites and music/looped effects.
+Some animated graphics state remains unsupported, and actual loading by each PC
+executable must be verified before claiming full compatibility.
 
 Import rejects traversal/absolute paths, unknown or duplicate entries, oversized
 content, invalid scene-save versions/lengths/checksums, orphan previews and
@@ -154,14 +184,17 @@ recovers interrupted swaps. Export a backup before replacing a save set.
 Live input, rendering, original-menu changes and save actions run on one render
 thread. Lifecycle transitions stop/join it before native pause or shutdown.
 Backgrounding pauses the audio device and movie decoder while retaining scene,
-VM, mixer and decoder state in memory; returning resumes that state. Process
-termination starts at the library, so permanent progress still needs a save.
+VM, mixer and decoder state in memory; returning resumes that state. The default
+Keep session setting also stores a per-game/language checkpoint for process
+restart. External movie playback survives app switching while the process stays
+alive; movie restoration after process termination is currently unsupported.
 File import/export runs on a separate worker while native rendering is stopped.
 
-The Java shell compiles against Android API 35. The JVM helper harness in
-`tests/android/LibraryChecks.java` passed 60 checks covering archive
-round trips, metadata preservation, malformed input rejection, recovery and
-catalogue identity/persistence. Portable resource and in-memory snapshot tests
+The Java shell compiles against Android API 36. The profile harness in
+`tests/android/ProfileChecks.java` verifies native filenames, fallback priority,
+save discovery, migration and scenario-title extraction. The older archive
+harness still expects strict manifest validation and currently fails that check.
+Portable resource and in-memory snapshot tests
 live in `tests/resource_test.cpp` and `tests/scene_test.cpp`. Android hardware QA,
 APK signing/alignment and full route coverage must be reported separately from
 these compile/helper tests; passing them alone does not establish complete

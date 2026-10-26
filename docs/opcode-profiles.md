@@ -14,7 +14,7 @@ for different operations.
 | Header length and operand ranges | `core/src/mesopcode.cpp` | Decode each MES dialect with one bounds-checked walker |
 | Verified opcode aliases and operand transforms | `core/src/mesopcode.cpp` | Translate DC2PC services without executing unrelated DC4 commands |
 | Authored canvas, menu entry labels, progress range | `MenuProfile` in `core/src/system_menu.cpp` | Keep title, Extra and config layout/progression specific to the game |
-| Game detection, save namespace, resource search paths | Java `GameProfile` implementations | Preserve existing game profiles and select DC2PC independently |
+| Game detection, save directory, resource search paths | Java `GameProfile` implementations | Preserve existing game profiles and select DC2PC independently |
 | Volume, text speed, skip/auto and effect preferences | `SystemConfig` and persisted menu variables | Store player preferences using the existing profile format |
 
 Keep VM control flow, rendering, timing, lifecycle and save validation in code.
@@ -35,11 +35,16 @@ unlock da capo, flag 7 unlocks al fine, and flags 1–17 let the original script
 set flag 21 for Interview. The title's derived flag 57 stays outside that sync
 range so the script can compute it.
 
-Android and desktop use `AdvData/arisa32-saves/dc2pc` for emulator-owned DC2PC
-saves. The desktop `DC4_SAVE_DIR` override still takes precedence. Existing
-DC4, Plus Harmony and generic profile selection remains ordered and keeps its
-previous save behavior. Native DC2PC saves can be read through the DC2PC
-importer; all new saves remain in the emulator namespace.
+Android and desktop reuse existing game save folders, including `SaveData`,
+`Savedata`, `savedata` and other case variants. When no folder exists, DC2PC
+creates `AdvData/SaveData`. DC2PC, DC4 and Plus Harmony writes use native `.dat`
+filenames and numbering. The quick files are `DC2PC00.dat`, `DC402.dat` and
+`DC4PHDL02.dat`; ordinary slots start at 02, 03 and 03 respectively. Legacy
+`slotN.dc4sav` and `quicksave.dc4sav` remain read fallbacks. Native files win
+when both formats occupy the same slot. The desktop `DC4_SAVE_DIR` override
+still takes precedence; generic profiles retain emulator snapshots.
+On Android, snapshots left by older APKs in `AdvData/arisa32-saves/dc2pc`
+are copied to the selected save folder without overwriting existing files.
 
 ## Verification on 2026-10-23
 
@@ -237,17 +242,38 @@ clear flags merge with Android progress and survive an older empty profile.
 Native title scripts determine bonus-story unlocks from those clear flags.
 
 Android searches game roots and `SaveData` case-insensitively. Numbered PC
-files `DC2PC01.dat` onward and Quick `DC2PC00.dat` are read fallbacks; Android
-snapshots take priority. Import never overwrites PC saves or `system.dat`.
+regular files `DC2PC02.dat` onward and Quick `DC2PC00.dat` take priority over legacy
+Android snapshots. Loading a slot does not write PC saves or `system.dat`.
 The merged achievements persist in `system-profile.dat` in the emulator
 namespace. Native slot script names start at 4, backgrounds at 0x84, five
 body records at 0x104, BGM at 0x804 and local byte banks at 0xFF0. Hidden
 records have a zero first byte, even when stale asset bytes remain behind it.
+Physical 01 is the PC latest-save copy, excluded from regular write targets.
+The Latest row reads this copy when newer than the numbered saves, including
+when it is the only save available. It is preserved during regular saves.
+Regular logical slots 1..3 map to physical 02..04; 4..8 map to 08..12, and
+later groups stride by eight. The original menu exposes 48 regular slots
+through physical 76. Extra emulator slots remain outside the PC menu range.
 
 Version-1 PC slots use raw03 dialogue and raw04 choice checkpoint identifiers
 to find the equivalent position across Japanese/Indonesian script lengths.
 Restore reconstructs placement and reads saved assets/local variables without
 executing previous story assignments or granting additional clear flags.
+
+Native exports have fixed sizes (DC2PC 0x2B20; DC4/PH 0x56FE4), original-script
+checkpoint offsets, local variables, resource names, sprite transforms and
+timestamps. A checksum-bound `.dat.arisa` companion preserves emulator audio
+positions and VM details. PC edits invalidate the companion automatically.
+Native imports are verified independently of companions in scene tests.
+Animated resource slot 33 and other unsupported renderer state are not fully
+restored. A real DC2PC import/export sample was loaded in the original PC
+executable, displayed Maya's dialogue/scene and advanced to the next line.
+Plus Harmony loaded the corrected export with centred artwork and advanced
+to the next dialogue. DC4 and Plus Harmony custom launchers were subsequently
+verified without a DVD request; both loaded native-only samples and advanced.
+The current DC4 export also restored its background and character placement.
+These samples do not establish compatibility for every renderer/history state.
+Unsupported export layers fail before replacing a slot.
 Choice lists resume at their wait command and retain working branch targets.
 Validation uses an independent scene before committing to live state.
 Unknown binary layouts/checkpoints remain unsupported instead of guessing

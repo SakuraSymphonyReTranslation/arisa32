@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -616,21 +617,175 @@ void dc2pc_dialogue_regressions(const fs::path& root) {
     CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
     damaged_pc=native; std::fill(damaged_pc.begin()+4,damaged_pc.begin()+132,'a');
     CHECK(!scene.restore_pc_save(damaged_pc,&error)); CHECK(snapshot()==before_import_error);
+    // Native transforms and facial expressions override script placement.
+    str(0x384,"bst\\face");
+    u32(0x14D0,uint32_t(-91));u32(0x14D4,28);u32(0x14D8,175);
+    u32(0x14E8,10);u32(0x14EC,20);
+    CHECK(scene.restore_pc_save(native,&error));
+    CHECK(scene.sprite(0).expression=="bst\\face");
+    CHECK(scene.sprite(0).cur_x==-91 && scene.sprite(0).cur_y==28);
+    CHECK(scene.sprite(0).scale==1.75f && scene.sprite(0).x==10 && scene.sprite(0).y==20);
     u32(0x814,80); u32(0x818,80); u32(0x81C,9);
     CHECK(scene.restore_pc_save(native,&error)); CHECK(error.empty());
     CHECK(scene.waiting_for_choice() && scene.choices().size()==2);
     CHECK(scene.current_line()=="QUESTION" && scene.choices()[1].text=="SECONDOPTION");
+    const auto exported=data/"saves/DC2PC01.dat";
+    CHECK(scene.save_state(exported.string()));
+    std::ifstream exported_file(exported,std::ios::binary);
+    std::vector<uint8_t> exported_bytes((std::istreambuf_iterator<char>(exported_file)),{});exported_file.close();
+    CHECK(exported_bytes.size()==0x2B20 && exported_bytes[0]==1);
+    CHECK(exported_bytes[0x818]>0 && exported_bytes[0x81C]==9);
+    CHECK(exported_bytes[0x1389]>=1 && exported_bytes[0x1389]<=12);
+    CHECK(exported_bytes[0x138A]>=1 && exported_bytes[0x138A]<=31);
+    CHECK(scene.restore_pc_save(exported_bytes,&error));CHECK(scene.waiting_for_choice());
     u32(0x814,79); u32(0x818,80); u32(0x81C,7);
     CHECK(scene.restore_pc_save(native,&error)); CHECK(scene.current_line()=="QUESTION" && scene.speaker()=="Yume");
     u32(0x814,80); u32(0x81C,9); CHECK(scene.restore_pc_save(native,&error));
     CHECK(scene.choose(1)); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line()=="SECONDBRANCH");
+}
+void native_sprite_placement_regressions(const fs::path& root) {
+    const auto data=root/"native-sprites";
+    const auto image=data/"GRP/BST/cropped.CRX";
+    write_image(image,64,36);
+    std::ifstream input(image,std::ios::binary);
+    std::vector<uint8_t> cropped((std::istreambuf_iterator<char>(input)),{});input.close();
+    cropped[4]=44;cropped[5]=1; // CRX crop starts at (300,114) in the canvas.
+    cropped[6]=114;write_file(image,cropped);
+    for(const auto version : {uint16_t(0xAAB6),uint16_t(0xABB6)}) {
+        for(const float zoom : {1.f,1.4f}) for(const int percent : {65,78}) {
+            Script script;
+            script.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,uint8_t(version>>8),0};
+            script.slot(4,"BST\\cropped");
+            script.bytes.insert(script.bytes.end(),{3,0,0});script.text("SAVED");
+            script.words(0x8B,248,uint16_t(-40),0,0);
+            script.bytes.insert(script.bytes.end(),{3,1,0});script.text("MOVED");script.bytes.push_back(0);
+            write_file(data/"MES/sprite.mes",script.bytes);
+            dc4scene::SceneRunner scene(data.string());std::string error;
+            CHECK(scene.load_script((data/"MES/sprite.mes").string()));CHECK(scene.advance_to_next_text());
+            std::vector<uint8_t> native;CHECK(scene.capture_pc_save(&native,&error));
+            auto number=[&](size_t at,float value){std::memcpy(native.data()+at,&value,4);};
+            auto integer=[&](size_t at,uint32_t value){for(int i=0;i<4;++i)native[at+i]=uint8_t(value>>(i*8));};
+            const size_t record=0x18E20+10*960;
+            // Independent native PC fields, matching the reported sprite scales
+            // with a nonzero origin and pivot; no emulator companion is used.
+            number(record,228);number(record+4,-40);
+            number(record+120,float(percent));number(record+124,float(percent));
+            number(record+144,512);number(record+148,318);
+            for(const size_t at : {size_t(0x18E20),record}) {
+                number(at+28,zoom);number(at+32,zoom);integer(at+44,1);
+            }
+            number(0x18E20+36,412);number(0x18E20+40,588);
+            number(record+36,432);number(record+40,528);
+            CHECK(scene.restore_pc_save(native,&error));
+            const float expected_scale=percent/100.f;
+            CHECK(std::abs(scene.sprite(0).scale-expected_scale)<0.000001f);
+            CHECK(scene.sprite(0).cur_x==228 && scene.sprite(0).cur_y==-40);
+            CHECK(scene.sprite(0).x==512 && scene.sprite(0).y==318);
+            scene.draw(-1);const auto frame=scene.frame();
+            // Check a pixel near the expected top-left of the cropped sprite.
+            const int crop_left=percent==65?603:576;
+            const int crop_top=percent==65?146:120;
+            const int x=int(std::lround(432+(crop_left-432)*zoom));
+            const int y=int(std::lround(528+(crop_top-528)*zoom));
+            if(x>=0 && x<dc4scene::kScreenW && y>=0 && y<dc4scene::kScreenH)
+                CHECK(frame[(size_t(y)*dc4scene::kScreenW+x)*4]==240);
+            CHECK(scene.capture_pc_save(&native,&error));
+            CHECK(scene.restore_pc_save(native,&error));scene.draw(-1);CHECK(scene.frame()==frame);
+            CHECK(scene.camera_scale()==zoom);
+            CHECK(scene.advance_to_next_text());CHECK(scene.current_line()=="MOVED");
+            CHECK(scene.sprite(0).cur_x==248 && scene.sprite(0).cur_y==-40);
+            // Camera multiplication and native export can round the float scale.
+            CHECK(std::abs(scene.sprite(0).scale-expected_scale)<0.000001f && scene.sprite(0).x==512);
+        }
+    }
+}
+void native_save_regressions(const fs::path& root) {
+    const auto data=root/"native";
+    Script script;
+    script.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,0xAA,0};
+    write_image(data/"GRP/BG/native.CRX",160,100);
+    script.slot(1,"BG\\native");
+    script.bytes.insert(script.bytes.end(),{3,0,0});script.text("FIRST");
+    script.bytes.insert(script.bytes.end(),{3,1,0});script.text("SECOND");script.bytes.push_back(0);
+    write_file(data/"MES/native.mes",script.bytes);
+    dc4scene::SceneRunner scene(data.string());std::string error;
+    CHECK(scene.load_script((data/"MES/native.mes").string()));CHECK(scene.advance_to_next_text());
+    scene.set_variable(9,40,12);scene.set_variable(100,101,0);
+    const auto save=data/"saves/DC403.dat";
+    CHECK(scene.save_state(save.string()));
+    std::ifstream file(save,std::ios::binary);std::vector<uint8_t> native((std::istreambuf_iterator<char>(file)),{});file.close();
+    CHECK(native.size()==0x56FE4);CHECK(native[8]=='n');CHECK(native[0x184EC+940]==12);
+    auto scalar=[&](size_t offset){float value;std::memcpy(&value,native.data()+offset,4);return value;};
+    const size_t renderer=0x18E20;
+    const float scale=scalar(renderer+120)/100.f;
+    // Apply the PC renderer's pivot formula: the image covers the screen
+    // with its excess height centred, rather than shifting to the right.
+    CHECK(std::abs(scale-8.f)<0.001f);
+    CHECK(std::abs(scalar(renderer)+scalar(renderer+144)*(1-scale))<0.01f);
+    CHECK(std::abs(scalar(renderer+4)+scalar(renderer+148)*(1-scale)+40)<0.01f);
+    CHECK(native[0x1873A]>=1 && native[0x1873A]<=12);
+    CHECK(native[0x1873B]>=1 && native[0x1873B]<=31);
+    CHECK(fs::is_regular_file(save.string()+".arisa"));
+    CHECK(scene.advance_to_next_text());CHECK(scene.current_line()=="SECOND");
+    CHECK(scene.load_state(save.string()));CHECK(scene.current_line()=="FIRST");
+    // The native record loads independently, with no emulator companion.
+    CHECK(scene.advance_to_next_text());CHECK(scene.restore_pc_save(native,&error));CHECK(scene.current_line()=="FIRST");
+    CHECK(scene.variable(100,101)==0);CHECK(scene.variable(9,40)==12);
+    CHECK(scene.advance_to_next_text());CHECK(scene.current_line()=="SECOND");
+    auto snapshot=[&](){std::vector<uint8_t> bytes;CHECK(scene.capture_state(&bytes,&error));return bytes;};
+    const auto before=snapshot();auto invalid=native;invalid.resize(0x1000);
+    CHECK(!scene.restore_pc_save(invalid,&error));CHECK(snapshot()==before);
+    invalid=native;invalid[0xAFC]=77;CHECK(!scene.restore_pc_save(invalid,&error));CHECK(snapshot()==before);
+    invalid=native;
+    const std::string missing="SE\\missing";
+    std::copy(missing.begin(),missing.end(),invalid.begin()+0xA60);invalid[0xAE0]=1;
+    CHECK(!scene.restore_pc_save(invalid,&error));CHECK(snapshot()==before);
+    // Simulate a PC overwrite. A stale companion must never win over native.
+    native[0xAFC]=1;write_file(save,native);CHECK(scene.load_state(save.string()));CHECK(scene.current_line()=="SECOND");
+    // Translation byte lengths differ, but the native checkpoint stays stable.
+    script.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,0xAA,0};
+    script.bytes.insert(script.bytes.end(),{3,0,0});script.text("MUCHLONGERTRANSLATEDFIRSTLINE");
+    script.bytes.insert(script.bytes.end(),{3,1,0});script.text("TRANSLATEDSECOND");script.bytes.push_back(0);
+    write_file(data/"MES/native.mes",script.bytes);
+    CHECK(scene.restore_pc_save(native,&error));CHECK(scene.current_line()=="TRANSLATEDSECOND");
+    Script choice;
+    choice.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,0xAA,0};
+    choice.bytes.insert(choice.bytes.end(),{3,0,0});choice.text("QUESTION");
+    choice.bytes.insert(choice.bytes.end(),{4,1,0,9,1,0});
+    choice.string(0x5C,"left");choice.string(0x6C,"LEFT");
+    choice.string(0x5C,"right");choice.string(0x6C,"RIGHT");
+    choice.bytes.insert(choice.bytes.end(),{10,0,0});
+    choice.string(0x4B,"left");choice.text("LEFTBRANCH");choice.bytes.push_back(0);
+    choice.string(0x4B,"right");choice.text("RIGHTBRANCH");choice.bytes.push_back(0);
+    write_file(data/"MES/choice.mes",choice.bytes);
+    CHECK(scene.load_script((data/"MES/choice.mes").string()));CHECK(scene.advance_to_next_text());
+    CHECK(!scene.advance_to_next_text());CHECK(scene.waiting_for_choice());
+    CHECK(scene.capture_pc_save(&native,&error));
+    CHECK(scene.choose(0));CHECK(scene.advance_to_next_text());CHECK(scene.current_line()=="LEFTBRANCH");
+    CHECK(scene.restore_pc_save(native,&error));
+    CHECK(scene.waiting_for_choice() && scene.choices().size()==2 && scene.current_line()=="QUESTION");
+    CHECK(scene.choose(1));CHECK(scene.advance_to_next_text());CHECK(scene.current_line()=="RIGHTBRANCH");
+    // PC changes its scale divisor at raw 1000. Large zooms must use
+    // ten-thousandths so 10x does not silently reload as 0.1x.
+    for(const auto dimensions : {std::pair<int,int>{128,72},{64,36}}) {
+        write_image(data/"GRP/BG/native.CRX",dimensions.first,dimensions.second);
+        Script zoom;zoom.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,0xAA,0};
+        zoom.slot(1,"BG\\native");zoom.bytes.insert(zoom.bytes.end(),{3,0,0});zoom.text("ZOOM");zoom.bytes.push_back(0);
+        write_file(data/"MES/zoom.mes",zoom.bytes);
+        CHECK(scene.load_script((data/"MES/zoom.mes").string()));CHECK(scene.advance_to_next_text());
+        CHECK(scene.capture_pc_save(&native,&error));
+        const float raw=scalar(renderer+120), decoded=raw/(raw>=1000?10000.f:100.f);
+        CHECK(std::abs(decoded-1280.f/dimensions.first)<0.001f);
+        CHECK(std::abs(scalar(renderer)+scalar(renderer+144)*(1-decoded))<0.01f);
+        CHECK(std::abs(scalar(renderer+4)+scalar(renderer+148)*(1-decoded))<0.01f);
+    }
 }
 int main(int argc, char** argv) {
     try {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
-        dc2pc_dialogue_regressions(root);
+        dc2pc_dialogue_regressions(root);native_save_regressions(root);native_sprite_placement_regressions(root);
         if (argc > 1) game_round_trip(argv[1], root);
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     std::cout << (failures ? "Scene regressions FAILED\n" : "Scene regressions passed\n");

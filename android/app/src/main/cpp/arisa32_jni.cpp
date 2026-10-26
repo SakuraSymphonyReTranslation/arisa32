@@ -1,3 +1,4 @@
+#include "arisa32/save_paths.h"
 // Android shell bridge. All VM, graphics, choices and audio dispatch stay in core.
 #include "arisa32/audio.h"
 #include "arisa32/log_screen.h"
@@ -52,6 +53,7 @@ struct Engine {
     int pressed_choice = -1;
     std::string pressed_action;
     bool paused = false;
+    Clock::time_point pause_started;
     bool pause_saved = false;
     std::string pause_file;
     // Increments on every line/choice entry; Java builds the backlog from it.
@@ -259,7 +261,9 @@ bool play_system_voice(Engine* e, int event_id) {
     if (!cfg.voice_enabled || !cfg.master_enabled) return false;
     std::string asset = e->menu.system_voice(event_id);
     e->audio.set_channel_user_volume(8, 100);
-    return play_row_voice(e, asset);
+    const bool played = play_row_voice(e, asset);
+    if (played) LOGI("system voice event=%d asset=%s", event_id, asset.c_str());
+    return played;
 }
 
 // シーンジャンプ: rebuild the opening scene settled at the row's dialogue
@@ -352,35 +356,11 @@ bool blit_frame(JNIEnv* env, jobject bitmap) {
 }
 
 void refresh_menu_saves(Engine* e) {
-    bool latest = false;
-    bool quick = false;
-    bool automatic = false;
+    const auto version=e->scene->save_format_version();
     std::error_code ec;
-    if (std::filesystem::is_directory(e->save_dir, ec)) {
-        for (const auto& entry : std::filesystem::directory_iterator(e->save_dir, ec)) {
-            if (!entry.is_regular_file()) continue;
-            std::string name = entry.path().filename().string();
-            std::string ext = entry.path().extension().string();
-            std::string lower_ext = ext;
-            for (char& c : lower_ext) c = char(std::tolower(static_cast<unsigned char>(c)));
-            std::string lower_name = name;
-            for (char& c : lower_name) c = char(std::tolower(static_cast<unsigned char>(c)));
-
-            if (lower_ext == ".dc4sav") {
-                if (lower_name == "quicksave.dc4sav") quick = true;
-                else if (lower_name == "autosave.dc4sav") automatic = true;
-                else latest = true;
-            } else if (lower_ext == ".dat") {
-                if (lower_name != "system.dat" && lower_name != "system-profile.dat" && lower_name.rfind("uinst", 0) != 0) {
-                    if (lower_name.find("00.dat") != std::string::npos || lower_name.find("quick") != std::string::npos) {
-                        quick = true;
-                    } else {
-                        latest = true;
-                    }
-                }
-            }
-        }
-    }
+    const bool latest=!dc4::latest_save(e->save_dir,version).empty();
+    const bool quick=std::filesystem::is_regular_file(dc4::resolve_save(e->save_dir,version,0),ec);
+    const bool automatic=std::filesystem::is_regular_file(e->save_dir+"/autosave.dc4sav",ec);
     std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
     for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
         if (dir.empty()) continue;
@@ -842,45 +822,16 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
     }
     case A::Save: case A::Load:
         if (action.type == A::Save && !e->in_game) return {};
-        play_system_voice(e, action.type == A::Save ? 12 : 13);
+        // dc4SlotsOpen owns the entry announcement after Java scans the slots.
+        // Starting it here too repeats the opening words after that scan.
         e->menu_return = e->menu_open; e->return_page = e->menu.page(); e->menu_open = false;
         return action.type == A::Save ? "save" : "load";
     case A::QuickLoad: case A::AutoLoad: case A::LatestLoad: {
         play_system_voice(e, 8);
-        std::string path;
-        std::error_code ec;
-        if (action.type == A::LatestLoad) {
-            std::filesystem::file_time_type newest{};
-            if (std::filesystem::is_directory(e->save_dir, ec)) {
-                for (const auto& entry : std::filesystem::directory_iterator(e->save_dir, ec)) {
-                    if (!entry.is_regular_file()) continue;
-                    std::string lower = entry.path().filename().string();
-                    for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
-                    if (lower == "system.dat" || lower == "system-profile.dat" || lower.rfind("uinst", 0) == 0) continue;
-                    std::string ext = entry.path().extension().string();
-                    for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
-                    if (ext == ".dc4sav" || ext == ".dat") {
-                        const auto time = entry.last_write_time(ec);
-                        if (!ec && (path.empty() || time > newest)) { path = entry.path().string(); newest = time; }
-                    }
-                }
-            }
-            if (path.empty()) return "No saved game";
-        } else {
-            path = e->save_dir + (action.type == A::AutoLoad ? "/autosave.dc4sav" : "/quicksave.dc4sav");
-            if (!std::filesystem::is_regular_file(path, ec)) {
-                if (std::filesystem::is_directory(e->save_dir, ec)) {
-                    for (const auto& entry : std::filesystem::directory_iterator(e->save_dir, ec)) {
-                        if (!entry.is_regular_file()) continue;
-                        std::string lower = entry.path().filename().string();
-                        for (char& c : lower) c = char(std::tolower(static_cast<unsigned char>(c)));
-                        if (lower.find("00.dat") != std::string::npos || lower.find("quicksave") != std::string::npos) {
-                            path = entry.path().string(); break;
-                        }
-                    }
-                }
-            }
-        }
+        const auto version=e->scene->save_format_version();
+        const std::string path=action.type==A::LatestLoad ? dc4::latest_save(e->save_dir,version).string() :
+            action.type==A::AutoLoad ? e->save_dir+"/autosave.dc4sav" : dc4::resolve_save(e->save_dir,version,0).string();
+        if(path.empty())return "No saved game";
         auto error = restore_save(e,path); return error.empty() ? "start" : error;
     }
     case A::SettingsChanged: apply_config(e); save_profile(e); return {};
@@ -1284,7 +1235,7 @@ Java_org_dc4engine_Dc4Activity_dc4RequestConfirm(JNIEnv* env,jobject,jstring req
         if(!e->in_game)return env->NewStringUTF("Start a game before saving");
         kind=dc4ui::ConfirmKind::QuickSave;
     }else if(action=="quick-load"){
-        if(!std::filesystem::is_regular_file(e->save_dir+"/quicksave.dc4sav"))return env->NewStringUTF("No quick save");
+        if(!std::filesystem::is_regular_file(dc4::resolve_save(e->save_dir,e->scene->save_format_version(),0)))return env->NewStringUTF("No quick save");
         kind=dc4ui::ConfirmKind::QuickLoad;
     }else if(action=="title")kind=dc4ui::ConfirmKind::Title;
     else if(action=="quit")kind=dc4ui::ConfirmKind::Quit;
@@ -1484,11 +1435,26 @@ Java_org_dc4engine_Dc4Activity_dc4SetPaused(JNIEnv* env, jobject, jboolean pause
     e->menu.cancel_pointer(); e->menu_down = false;
     e->save_screen.cancel_pointer(); e->save_down = false;
     if(paused){answer_confirm(e,false);e->menu.answer_confirmation(false);e->save_screen.cancel_confirm();}
-    e->fully_revealed = true;
+    const auto now=Clock::now();
+    if(paused) e->pause_started=now;
+    else e->line_start+=now-e->pause_started;
     e->movie.set_paused(paused || e->movie_suspended);
     if (!e->audio.set_device_paused(paused)) message = "Audio device pause/resume failed";
     e->paused = paused; e->tick = Clock::now();
-    if (paused) save_profile(e);
+    if (paused) {
+        save_profile(e);
+        const auto path = jstr_to_std(env, checkpoint);
+        if (!path.empty()) {
+            if (e->in_game && !e->scene->scene_ended()) {
+                if (!e->scene->save_state(path)) {
+                    message = "Cannot keep paused session: " + e->scene->last_error();
+                    std::error_code ec; std::filesystem::remove(path,ec);
+                }
+            } else {
+                std::error_code ec; std::filesystem::remove(path, ec);
+            }
+        }
+    }
     if (!message.empty()) LOGE("%s", message.c_str());
     return env->NewStringUTF(message.c_str());
 }
@@ -1726,7 +1692,6 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(JNIEnv* env, jobject, jint action, 
         case Action::Slot:
             return env->NewStringUTF(("slot:" + std::to_string(selected.index)).c_str());
         case Action::Mode:
-            play_system_voice(e, selected.index == 1 ? 13 : 12);
             return env->NewStringUTF(selected.index == 1 ? "load" : "save");
         case Action::Back:
             play_system_voice(e, 11);
