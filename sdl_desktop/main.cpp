@@ -800,7 +800,7 @@ int run(const Options& o) {
         if (movie.active()) {
             title += " | Movie";
         } else if (menu_open) {
-            static const char* names[]={"Title","Extras","Config","Gallery","Music","Scenes"};
+            static const char* names[]={"Title","Extras","Config","Gallery","Music","Scenes","Interview"};
             title += std::string(" | ")+names[int(system_menu.page())];
         } else if (slots.open) {
             title += save_screen.mode() == dc4ui::SaveMode::Load ? " | Load" : " | Save";
@@ -849,6 +849,7 @@ int run(const Options& o) {
             auto_mode=skip_mode=false;menu_open=true;system_menu.set_in_game(false);
             if(scene->variable(9,7))system_menu.resume_scenes();
             else system_menu.open(dc4ui::SystemMenuPage::Title);
+            scene->finish_replay();
             audio.engine.stop_all();title_music();update_title();
         } else if(!scene->last_error().empty())notify(scene->last_error());
     };
@@ -914,6 +915,7 @@ int run(const Options& o) {
     };
     auto persist_state = [&](bool load, int slot, int character_icon=-1) {
         if (!scene || slot < -2 || slot >= dc4ui::SaveScreen::kSlotCount || (slot == -2 && !load)) return;
+        if (!scene->save_load_allowed()) return;
         auto_mode = skip_mode = false;
         mouse_down = false;
         save_screen.cancel_pointer();
@@ -961,6 +963,7 @@ int run(const Options& o) {
         }
     };
     auto open_slots = [&](bool load) {
+        if (scene && !scene->save_load_allowed()) return;
         if (!scene) {
             if(!load)return;
             scene=std::make_unique<dc4scene::SceneRunner>(data);scene->set_font(&font);scene->set_observer(observe);
@@ -1002,17 +1005,26 @@ int run(const Options& o) {
     };
     auto prompt_quit = [&]() {prompt(dc4ui::ConfirmKind::Quit,[&]{run_loop=false;});};
 
+    auto play_sys_voice = [&](int event_id) {
+        if (!audio_ready || !voices.loaded()) return;
+        const auto cfg = system_menu.config();
+        if (!cfg.voice_enabled || !cfg.master_enabled) return;
+        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
+    };
     auto open_system = [&](dc4ui::SystemMenuPage page) {
         const bool from_scene=!menu_open && scene && !scene->script_name().empty();
         auto_mode=skip_mode=false;slots.open=false;backlog.open=false;mouse_down=false;
         system_menu.set_in_game(page==dc4ui::SystemMenuPage::Config && from_scene);
+        if (page==dc4ui::SystemMenuPage::Title && scene) scene->finish_replay();
         system_menu.open(page);menu_open=true;
         if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
         else if(page==dc4ui::SystemMenuPage::Music)audio.engine.stop_bgm();
+        play_sys_voice(system_menu.page_voice_event());
         status.clear();update_title();
     };
     auto prompt_title = [&]() {prompt(dc4ui::ConfirmKind::Title,[&]{open_system(dc4ui::SystemMenuPage::Title);});};
     auto prompt_quick = [&](bool load) {
+        if (scene && !scene->save_load_allowed()) return;
         if(load&&!fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0))){notify("No quick save");return;}
         prompt(load?dc4ui::ConfirmKind::QuickLoad:dc4ui::ConfirmKind::QuickSave,[&,load]{persist_state(load,-1);});
     };
@@ -1037,12 +1049,6 @@ int run(const Options& o) {
         if(resume && scene){scene->finish_movie();advance_script();}
         else if(!o.movie.empty() && !o.title) run_loop = false;
     };
-    auto play_sys_voice = [&](int event_id) {
-        if (!audio_ready || !voices.loaded()) return;
-        const auto cfg = system_menu.config();
-        if (!cfg.voice_enabled || !cfg.master_enabled) return;
-        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
-    };
     auto menu_action = [&](const dc4ui::SystemMenuAction& selected) {
         using T=dc4ui::SystemMenuActionType;
         switch(selected.type) {
@@ -1050,7 +1056,10 @@ int run(const Options& o) {
             play_sys_voice(11);
             if(scene && !scene->script_name().empty()){menu_open=false;scene->set_message_visible(true);}
             break;
-        case T::NewGame:case T::StartScene:play_sys_voice(7);start_scene(selected);break;
+        case T::NewGame:case T::StartScene:
+            if (system_menu.scene_ui_script() != "start.mes" || selected.type != T::StartScene)
+                play_sys_voice(selected.voice_event ? selected.voice_event : 7);
+            start_scene(selected);break;
         case T::Load:play_sys_voice(13);open_slots(true);break;
         case T::Save:play_sys_voice(12);open_slots(false);break;
         case T::LatestLoad:
@@ -1065,6 +1074,7 @@ int run(const Options& o) {
         case T::Quit:run_loop=false;break; // Already confirmed by SystemMenu.
         case T::Title:
             audio.engine.stop_all();
+            if(scene) scene->finish_replay();
             system_menu.set_in_game(false);
             system_menu.open(dc4ui::SystemMenuPage::Title);
             title_music();
@@ -1090,22 +1100,17 @@ int run(const Options& o) {
         }
         profile_dirty=true;apply_settings();flush_profile();update_title();
     };
-    auto activate_menu = [&](const std::string& tag) {
-        const auto before=system_menu.page();
-        menu_action(system_menu.activate(tag));
+    auto menu_page_changed = [&](dc4ui::SystemMenuPage before) {
         if(menu_open&&before!=system_menu.page()){
             if(system_menu.page()==dc4ui::SystemMenuPage::Music){
                 audio.engine.stop_bgm();
-                play_sys_voice(16);
+                music_running=false;
             }
             else if(system_menu.page()==dc4ui::SystemMenuPage::Title||system_menu.page()==dc4ui::SystemMenuPage::Extras){
                 title_music();
-                if(system_menu.page()==dc4ui::SystemMenuPage::Extras) play_sys_voice(15);
-                else play_sys_voice(2);
+                music_running=false;
             }
-            else if(system_menu.page()==dc4ui::SystemMenuPage::Config) play_sys_voice(14);
-            else if(system_menu.page()==dc4ui::SystemMenuPage::Gallery) play_sys_voice(15);
-            else if(system_menu.page()==dc4ui::SystemMenuPage::Scenes) play_sys_voice(17);
+            play_sys_voice(system_menu.page_voice_event());
         }
     };
     auto save_action = [&](const dc4ui::SaveAction& selected) {
@@ -1378,10 +1383,7 @@ int run(const Options& o) {
                         if(event.type==SDL_MOUSEBUTTONDOWN){mouse_down=true;system_menu.pointer_down(mx,my);}
                         else {mouse_down=false;menu_action(system_menu.pointer_up(mx,my));}
                     }
-                    if(menu_open&&before!=system_menu.page()) {
-                        if(system_menu.page()==dc4ui::SystemMenuPage::Music){audio.engine.stop_bgm();music_running=false;}
-                        else if(system_menu.page()==dc4ui::SystemMenuPage::Title||system_menu.page()==dc4ui::SystemMenuPage::Extras){title_music();music_running=false;}
-                    }
+                    menu_page_changed(before);
                     continue;
                 }
                 if (slots.open) {
@@ -1469,6 +1471,7 @@ int run(const Options& o) {
             }
             if(menu_open) {
                 if(event.key.repeat)continue;
+                const auto before=system_menu.page();
                 if(key==SDLK_ESCAPE) {
                     if (system_menu.page() == dc4ui::SystemMenuPage::Title) prompt_quit();
                     else menu_action(system_menu.back());
@@ -1476,11 +1479,12 @@ int run(const Options& o) {
                 else if(key==SDLK_LEFT || key==SDLK_PAGEUP)system_menu.scroll(-1);
                 else if(key==SDLK_RIGHT || key==SDLK_PAGEDOWN)system_menu.scroll(1);
                 else if(key==SDLK_SPACE || key==SDLK_RETURN) {
-                    if(system_menu.page()==dc4ui::SystemMenuPage::Title)activate_menu("prologue");
+                    if(system_menu.page()==dc4ui::SystemMenuPage::Title)menu_action(system_menu.activate("prologue"));
                     else {system_menu.pointer_down(mx,my);menu_action(system_menu.pointer_up(mx,my));}
                 } else if(key>=SDLK_1&&key<=SDLK_7 && system_menu.page()==dc4ui::SystemMenuPage::Config)system_menu.set_config_page(int(key-SDLK_1));
                 else if(key==SDLK_F1)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,"dc4engine controls",kHelp,window.get());
                 else if(key==SDLK_F8)prompt_quit();
+                menu_page_changed(before);
                 continue;
             }
             if ((key == SDLK_F5 || key == SDLK_F9) && !event.key.repeat) {

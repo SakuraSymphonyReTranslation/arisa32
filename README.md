@@ -12,7 +12,7 @@
 
 A portable C++17 reimplementation of the CIRCUS adv32 visual novel engine runtime for **Da Capo & Dal Segno series** on Windows (SDL2) and Android (NativeActivity + JNI). It reads the original game's installed MES scripts, CRX/CRM artwork, and XPCM audio directly in place.
 
-**Latest release: [v0.6.0](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.0)** — D.C. II P.C. support, native PC saves, export companion options, and refreshed application icons. See [CHANGELOG.md](CHANGELOG.md) for details.
+**Latest release: [v0.6.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.1)** — Auto update check, dynamic FPS meter on game frame corner, scene replay save/load restrictions matching native PC, and engine stability improvements. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 > [!NOTE]
 > **Game assets are not included.** A legitimate copy of supported games is required. Game files (`AdvData`) are read in place and are never modified by the engine.

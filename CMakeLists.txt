@@ -26,6 +26,7 @@ add_library(arisa32_core STATIC
     core/src/resource.cpp
     core/src/system_menu.cpp
     core/src/movie.cpp
+    core/src/movie_resource.cpp
     core/src/confirm_dialog.cpp
 )
 add_library(dc4core ALIAS arisa32_core)
@@ -86,6 +87,9 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(dc2pc_menu_transition_test tests/dc2pc_menu_transition_test.cpp)
+    target_include_directories(dc2pc_menu_transition_test PRIVATE core/include)
+    add_test(NAME dc2pc_menu_transition_test COMMAND dc2pc_menu_transition_test)
     add_executable(crm_test tests/crm_test.cpp)
     target_link_libraries(crm_test PRIVATE dc4core)
     add_test(NAME crm_test COMMAND crm_test)
@@ -114,9 +118,15 @@ if(BUILD_TESTING)
     add_executable(system_menu_test tests/system_menu_test.cpp)
     target_link_libraries(system_menu_test PRIVATE dc4core)
     add_test(NAME system_menu_test COMMAND system_menu_test)
+    add_executable(menu_music_test tests/menu_music_test.cpp)
+    target_link_libraries(menu_music_test PRIVATE dc4core)
+    add_test(NAME menu_music_test COMMAND menu_music_test)
     add_executable(media_test tests/media_test.cpp)
     target_link_libraries(media_test PRIVATE dc4core)
     add_test(NAME media_test COMMAND media_test)
+    add_executable(movie_audio_queue_test tests/movie_audio_queue_test.cpp)
+    target_include_directories(movie_audio_queue_test PRIVATE core/src)
+    add_test(NAME movie_audio_queue_test COMMAND movie_audio_queue_test)
     add_executable(mesvm_test tests/mesvm_test.cpp)
     target_link_libraries(mesvm_test PRIVATE dc4core)
     add_test(NAME mesvm_test COMMAND mesvm_test)

@@ -21,8 +21,55 @@ static void put32(std::vector<uint8_t>& bytes, size_t at, uint32_t v) {
     for (int i = 0; i < 4; ++i) bytes[at + i] = uint8_t(v >> (8 * i));
 }
 
+static void deferred_channel_adoption() {
+    using namespace dc4;
+    AudioEngine authored, staged, live, expected;
+    const std::vector<int16_t> samples{10000, 12000, 16000, 18000};
+    check(authored.play_pcm(0, samples, 22050, 1, {true}), "prepare saved track");
+    authored.set_group_volume(AudioGroup::Bgm, 60, 100);
+    authored.fade_group_pan(AudioGroup::Bgm, -5000, 100);
+    render(authored, 31);
+    const auto saved = authored.capture_snapshot();
+    AudioPreparedChannel track;
+    track.channel = 0; track.pcm = samples; track.rate = 22050;
+    track.channels = 1; track.options = {true};
+    track.position_frames = saved.channels[0].position_frames;
+    check(staged.restore_channels({track}, saved.groups) &&
+          expected.restore_channels({track}, saved.groups), "stage fully validated saved audio");
+    check(live.play_pcm(0, {1000}, 44100, 1, {true}), "outgoing menu track");
+    for (auto* mixer : {&live, &expected}) {
+        mixer->set_master_volume(80);
+        mixer->set_user_volume(AudioGroup::Bgm, 70);
+        mixer->set_channel_user_volume(0, 60);
+    }
+    staged.set_master_volume(10);
+    staged.set_user_volume(AudioGroup::Bgm, 20);
+    staged.set_channel_user_volume(0, 30);
+    check(render(live, 16) == std::vector<int16_t>(32, 336),
+          "preparing a load leaves outgoing audio audible until commit");
+    const auto waiting = staged.capture_snapshot();
+    check(waiting.channels[0].position_frames == saved.channels[0].position_frames &&
+          waiting.groups[0].volume_remaining_frames == saved.groups[0].volume_remaining_frames,
+          "detached playback position and volume ramp remain frozen before commit");
+    live.adopt_channels_from(staged);
+    check(live.master_volume() == 80 && live.user_volume(AudioGroup::Bgm) == 70 &&
+          live.channel_position(0) == saved.channels[0].position_frames,
+          "commit preserves live controls and adopts exact saved position");
+    check(render(live, 256) == render(expected, 256),
+          "committed samples preserve source position, ramps and live channel volume");
+    check(render(staged, 1) == std::vector<int16_t>(2, 6),
+          "source retains its controls and usable retired channels");
+    live.adopt_channels_from(live);
+    check(render(live, 64) == render(expected, 64), "self adoption is a no-op");
+    for (auto* mixer : {&live, &expected})
+        check(mixer->play_pcm(1, {3000}, 44100, 1, {true}), "start track after adoption");
+    check(render(live, 64) == render(expected, 64),
+          "new channels inherit the adopted script group ramps");
+}
+
 int main(int argc, char** argv) {
     using namespace dc4;
+    deferred_channel_adoption();
     AudioEngine audio;
     check(audio.play_pcm(0, {100, 200, 300, 400, 500}, 44100, 1, {true, 1, 4}), "loop PCM load");
     auto output = render(audio, 8);

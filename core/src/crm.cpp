@@ -215,6 +215,59 @@ bool decode_crxd(const uint8_t* blk, size_t blk_size, const CrmArchive* arc,
         return false;
     }
 
+    // A 32-bit patch can contain pixels outside the shared base's crop (for
+    // example Otome's hair and right arm in DC2PC). Keep the union in the same
+    // registration frame, extending the base's transparent background.
+    // Empty patches carry no bounds; their default (0,0) must not enlarge it.
+    if (base.info.bpp == 32 && diff.info.width && diff.info.height) {
+        const bool has_base = base.info.width && base.info.height;
+        const int left = has_base ? std::min<int>(base.info.offset_x, diff.info.offset_x)
+                                  : diff.info.offset_x;
+        const int top = has_base ? std::min<int>(base.info.offset_y, diff.info.offset_y)
+                                 : diff.info.offset_y;
+        const int right = std::max<int>(has_base ? base.info.offset_x + base.info.width : left,
+                                        diff.info.offset_x + diff.info.width);
+        const int bottom = std::max<int>(has_base ? base.info.offset_y + base.info.height : top,
+                                         diff.info.offset_y + diff.info.height);
+        const int width = right - left, height = bottom - top;
+        const int stride = width * 4;
+        if (width > UINT16_MAX || height > UINT16_MAX ||
+            size_t(height) > SIZE_MAX / size_t(stride)) {
+            if (err) *err = "CRXD combined bounds out of range";
+            return false;
+        }
+        if (left != base.info.offset_x || top != base.info.offset_y ||
+            width != base.info.width || height != base.info.height) {
+            const uint8_t transparent_alpha = base.info.mode == 1 || base.info.mode == 2 ? 0 : 255;
+            uint8_t background[4]{transparent_alpha,0,0,0};
+            // Transparent pixels still carry RGB in an additive delta format.
+            // DC2PC commonly uses magenta: zeroing that RGB changes restored
+            // ribbon/hair edges to cyan or green. Use the most frequent fully
+            // transparent base color, falling back to black if none exists.
+            std::map<uint32_t, size_t> colors;
+            size_t most = 0;
+            for (int y = 0; y < base.info.height; ++y) for (int x = 0; x < base.info.width; ++x) {
+                const uint8_t* pixel = base.pixels.data() + size_t(y) * base.stride + x * 4;
+                if (pixel[0] != transparent_alpha) continue;
+                const uint32_t color = uint32_t(pixel[1]) | uint32_t(pixel[2]) << 8 | uint32_t(pixel[3]) << 16;
+                if (++colors[color] > most) { most = colors[color]; memcpy(background, pixel, 4); }
+            }
+            std::vector<uint8_t> pixels(size_t(stride) * height);
+            for (size_t i = 0; i < pixels.size(); i += 4) memcpy(pixels.data() + i, background, 4);
+            if (has_base) {
+                const int bx = base.info.offset_x - left, by = base.info.offset_y - top;
+                for (int y = 0; y < base.info.height; ++y)
+                    memcpy(pixels.data() + size_t(by + y) * stride + bx * 4,
+                           base.pixels.data() + size_t(y) * base.stride,
+                           size_t(base.info.width) * 4);
+            }
+            base.pixels = std::move(pixels);
+            base.stride = stride;
+            base.info.offset_x = int16_t(left); base.info.offset_y = int16_t(top);
+            base.info.width = uint16_t(width); base.info.height = uint16_t(height);
+        }
+    }
+
     // --- blend over the intersected rectangle ------------------------------
     int x0 = std::max<int>(diff.info.offset_x, base.info.offset_x);
     int y0 = std::max<int>(diff.info.offset_y, base.info.offset_y);

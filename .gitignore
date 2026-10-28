@@ -29,6 +29,7 @@ Makefile
 .ninja_log
 
 # Android build outputs
+third_party/ffmpeg/android/
 android/.gradle/
 android/build/
 android/app/build/
@@ -90,4 +91,14 @@ stats
 /scratch_*
 *.rar
 *.db
+
+
+# Release distribution artifacts
+dist-*/
+release_notes_*.md
+
+# Agent and AI artifacts
+.agents/
+.codex/
+AGENTS.md
 

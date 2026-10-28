@@ -350,6 +350,16 @@ bool AudioEngine::restore_channels(std::vector<AudioPreparedChannel> prepared,
     if (error) error->clear();
     return true;
 }
+void AudioEngine::adopt_channels_from(AudioEngine& source) {
+    if (&source == this) return;
+    std::scoped_lock lock(mutex_, source.mutex_);
+    channels_.swap(source.channels_);
+    // Channel volume is a user control, not part of the saved playback state.
+    for (size_t i = 0; i < channels_.size(); ++i)
+        std::swap(channels_[i].user_percent, source.channels_[i].user_percent);
+    group_volume_.swap(source.group_volume_);
+    group_pan_.swap(source.group_pan_);
+}
 void AudioEngine::stop_channel_locked(int channel, uint32_t fade_ms) {
     Channel& sound = channels_[channel];
     if (!fade_ms) sound.playing = false;

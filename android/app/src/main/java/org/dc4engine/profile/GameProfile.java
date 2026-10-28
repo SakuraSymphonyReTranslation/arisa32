@@ -1,5 +1,7 @@
 package org.dc4engine.profile;
 
+import android.graphics.RectF;
+
 import java.io.File;
 import java.util.List;
 import java.util.Map;
@@ -69,4 +71,14 @@ public interface GameProfile {
 
     /** Resolves movie file path prioritizing .mpg format according to patch rules. */
     File resolveMovieFile(File dataRoot, String language, String assetName);
+
+    /**
+     * Active rendered frame rectangle within the 1280x720 canvas.
+     * Modern 16:9 games fill (0, 0, 1280, 720).
+     * 4:3 titles like DC2PC render within (160, 0, 1120, 720).
+     */
+    default RectF getActiveFrameRect() {
+        return new RectF(0, 0, 1280, 720);
+    }
+
 }

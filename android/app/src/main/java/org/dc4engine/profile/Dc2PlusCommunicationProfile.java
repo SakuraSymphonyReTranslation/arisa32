@@ -1,5 +1,7 @@
 package org.dc4engine.profile;
 
+import android.graphics.RectF;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -86,4 +88,10 @@ public final class Dc2PlusCommunicationProfile implements GameProfile {
     @Override public File resolveMovieFile(File root, String language, String asset) {
         return common.resolveMovieFile(root, language, asset);
     }
+
+    @Override
+    public RectF getActiveFrameRect() {
+        return new RectF(160, 0, 1120, 720);
+    }
+
 }

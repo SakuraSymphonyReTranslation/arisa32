@@ -27,7 +27,8 @@ set(DC4_CORE_SRC
     ${DC4_CORE}/src/save_screen.cpp
     ${DC4_CORE}/src/resource.cpp
     ${DC4_CORE}/src/system_menu.cpp
-    ${DC4_CORE}/src/movie.cpp
+    ${DC4_CORE}/src/movie_ffmpeg.cpp
+    ${DC4_CORE}/src/movie_resource.cpp
     ${DC4_CORE}/src/confirm_dialog.cpp
     # miniz (zlib inflate for CRX) — vendored C sources
     ${DC4_ROOT}/third_party/miniz/miniz.c
@@ -72,4 +73,26 @@ target_link_libraries(arisa32 PRIVATE
 
 # Support 16 KB page sizes for Android 15 and Android 16 (Baklava)
 target_link_options(arisa32 PRIVATE "-Wl,-z,max-page-size=16384")
+
+# Built once with android/build_ffmpeg.sh; Android Studio then builds normally.
+set(FFMPEG_ROOT "${DC4_ROOT}/third_party/ffmpeg/android/${ANDROID_ABI}")
+foreach(component avformat avcodec swscale swresample avutil)
+    if(NOT EXISTS "${FFMPEG_ROOT}/lib/lib${component}.so")
+        message(FATAL_ERROR "Missing FFmpeg for ${ANDROID_ABI}. Run bash android/build_ffmpeg.sh first.")
+    endif()
+    add_library(ffmpeg_${component} SHARED IMPORTED)
+    set_target_properties(ffmpeg_${component} PROPERTIES
+        IMPORTED_LOCATION "${FFMPEG_ROOT}/lib/lib${component}.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_ROOT}/include")
+    target_link_libraries(arisa32 PRIVATE ffmpeg_${component})
+endforeach()
+
+# Optional isolated device probe, excluded from APK builds.
+option(DC4_BUILD_MOVIE_PROBE "Build the app_process movie decoder probe" OFF)
+if(DC4_BUILD_MOVIE_PROBE)
+    add_library(movie_probe SHARED "${DC4_ROOT}/tests/android/movie_probe.cpp")
+    target_include_directories(movie_probe PRIVATE "${DC4_CORE}/include")
+    target_link_libraries(movie_probe PRIVATE arisa32 ffmpeg_avcodec)
+    target_link_options(movie_probe PRIVATE "-Wl,-z,max-page-size=16384")
+endif()
 

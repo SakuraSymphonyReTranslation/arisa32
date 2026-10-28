@@ -1,4 +1,5 @@
 #include "arisa32/resource.h"
+#include "arisa32/movie.h"
 
 #include <chrono>
 #include <filesystem>
@@ -94,11 +95,30 @@ void utf8() {
     }
     CHECK(dc4::decode_utf8("\xf4\x8f\xbf\xbf", &out)); CHECK(out == u"\U0010ffff");
 }
+void movie_paths(const fs::path& root) {
+    const auto game = root / "MovieGame", data = game / "AdvData", overlay = root / "MovieTranslation";
+    put(data / "MOVIE/OP1.MPG", "original-one");
+    put(data / "MOVIE/OP2.MPG", "original-two");
+    put(overlay / "Movie/Opening01.WMV", "translated-one");
+    put(game / "patch/MOVIE/OP2.wmv", "patched-two");
+    put(game / "eng_Data/Movie/Ending.ASF", "english-ending");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "MOVIE/op1.mpg")) == "translated-one");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "jp", "op1")) == "original-one");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "op2.mpg")) == "patched-two");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "en", "ending.mpg")) == "english-ending");
+    CHECK(dc4::resolve_movie_file(data.u8string(), {}, "jp", "stop").empty());
+    CHECK(dc4::resolve_movie_file(data.u8string(), {}, "jp", "../OP1.mpg").empty());
+    CHECK(dc4::resolve_movie_file(data.u8string(), {}, "jp", "C:/OP1.mpg").empty());
+    CHECK(dc4::resolve_movie_file(data.u8string(), {}, "jp", "op1.exe").empty());
+    // A patch copied over Movie/ is returned byte-for-byte in its new container.
+    put(data / "MOVIE/OP1.MPG", "overwritten-container");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "jp", "op1.mpg")) == "overwritten-container");
+}
 }
 int main() {
     const auto root = fs::temp_directory_path() / ("dc4-resource-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    try { overlays(root); utf8(); }
+    try { overlays(root); utf8(); movie_paths(root); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     dc4::configure_resources({});
     std::error_code ignored; fs::remove_all(root, ignored);

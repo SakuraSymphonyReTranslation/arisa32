@@ -126,6 +126,19 @@ void movie_test(const fs::path& root) {
     std::string error;
     CHECK(movie.open(root.string(), "FIXTURE", nullptr, &error));
     CHECK(movie.active() && movie.width() == 64 && movie.height() == 48);
+    CHECK(movie.frame_width() == 64 && movie.frame_height() == 48);
+    const size_t row = size_t(movie.frame_width()) * 4, stride = row + 16;
+    std::vector<uint8_t> padded(stride * movie.frame_height(), 0xa5), native;
+    CHECK(movie.copy_frame_rgba(padded.data(), 64, 48, stride));
+    movie.draw_rgba(&native, 64, 48);
+    for (int y = 0; y < 48; ++y) {
+        CHECK(std::equal(native.begin() + y * row, native.begin() + (y + 1) * row, padded.begin() + y * stride));
+        CHECK(std::all_of(padded.begin() + y * stride + row, padded.begin() + (y + 1) * stride,
+                          [](uint8_t value) { return value == 0xa5; }));
+    }
+    CHECK(!movie.copy_frame_rgba(nullptr, 64, 48, row));
+    CHECK(!movie.copy_frame_rgba(padded.data(), 64, 48, row - 1));
+    CHECK(!movie.copy_frame_rgba(padded.data(), 63, 48, stride));
     std::vector<uint8_t> frame;
     movie.draw_rgba(&frame, 128, 72);
     CHECK(frame.size() == 128 * 72 * 4 && frame[3] == 255);

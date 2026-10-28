@@ -101,6 +101,25 @@ std::u16string sjis_to_utf16(const std::string& s) {
 // ---------------------------------------------------------------------------
 
 namespace {
+bool has_dc4_replay_profile(const std::string& data) {
+    // A parent directory can contain "dc4" for every Android profile. Require
+    // the actual game format and a named scenario, never the container path.
+    dc4::MesFile main;
+    if (!main.load_file(dc4::resolve_asset(data + "/MES/main.mes")) ||
+        (main.version != 0xAAB6 && main.version != 0xABB6)) return false;
+    for (const char* name : {"dc4_kyo20190204a1", "dc4_start",
+                             "dc4_sen20181213b", "dc4_asu20190506c"}) {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(std::filesystem::u8path(
+                dc4::resolve_asset(data + "/MES/" + name + ".mes")), error)) return true;
+    }
+    return false;
+}
+
+bool dc4_persistence_action(const std::string& action) {
+    return action == ":qs" || action == ":ql" || action == ":ds" || action == ":dl";
+}
+
 void clip_dc2pc_viewport(std::vector<uint8_t>& frame) {
     // Native DC2PC clips all layers to its 800x600 drawing surface.
     for (int y=0;y<kScreenH;++y) for (int x=0;x<160;++x) {
@@ -351,7 +370,8 @@ int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool 
 SceneRunner::SceneRunner(const std::string& data_dir)
     : data_(data_dir),
       scene_audio_(data_dir),
-      is_dc4_or_dc4ph_(dc4::is_dc4_or_dc4ph_game(data_dir)) {
+      is_dc4_or_dc4ph_(dc4::is_dc4_or_dc4ph_game(data_dir)),
+      dc4_replay_profile_(has_dc4_replay_profile(data_dir)) {
     frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
     set_latin_mode(dc4::is_latin());
 }
@@ -415,6 +435,8 @@ bool SceneRunner::browse_dialogue(int direction) {
 }
 
 bool SceneRunner::set_sidebar_visible(bool visible) {
+    if (visible && dc2pc_ui_ && sidebar_replay_ != !save_load_allowed())
+        load_dc2pc_sidebar();
     if (!dc2pc_ui_ || (visible && sidebar_buttons_.empty())) return false;
     sidebar_visible_ = visible;
     pointer_x_ = pointer_y_ = -1;
@@ -467,6 +489,19 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     }
     if (!vm_.bind(mes_)) { last_error_ = vm_.error(); return false; }
     if (!entry_label.empty() && !vm_.jump(entry_label)) { last_error_ = vm_.error(); return false; }
+
+    finish_dc2pc_transition();
+    if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id != dc4::MesProfileId::DC2PC) {
+        dc2pc_present_pending_ = dc2pc_black_ = false;
+        dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
+    } else if (dc2pc_displayed_frame_.empty()) {
+        // A fresh scenario begins behind the host's black boundary. The UI
+        // may already be loaded, but it has not been presented by the script.
+        // Seed the display before any draw can capture the empty textbox.
+        dc2pc_displayed_frame_.assign(frame_.size(), 0);
+        for (size_t i = 3; i < frame_.size(); i += 4) dc2pc_displayed_frame_[i] = 255;
+        dc2pc_present_pending_ = true;
+    }
     script_name_ = std::filesystem::path(resolved).filename().string();
     last_error_.clear();
     scene_end_ = false;
@@ -479,6 +514,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     effect_movie_.clear();
     script_wait_pending_ = false;
     script_wait_ms_ = 0;
+    script_wait_skippable_ = true;
     credits_active_ = false;
     credits_pages_.clear();
     credits_archive_.clear();
@@ -510,7 +546,8 @@ bool SceneRunner::jump_to_label(const std::string& label) {
 }
 
 void SceneRunner::finish_script_wait() {
-    if (!script_wait_pending_) return;
+    if (!script_wait_pending_ || !script_wait_skippable_) return;
+    if (dc2pc_transition_active_) finish_dc2pc_transition();
     if (!input_skip_label_.empty()) {
         if (!vm_.jump(input_skip_label_)) last_error_ = vm_.error();
     }
@@ -605,6 +642,30 @@ bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
 
 bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    if (c.dc2pc && c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT) {
+        if (!animation_enabled_) return true;
+        // Native 0x42448F: bit1 doubles the count and uses 100ms; bit3
+        // then overrides that unit to 10ms. Unlike modern scripts, 254/255
+        // are ordinary counts. Bit2 measures from an explicitly armed timer.
+        const double count = double(c.p1) * ((c.p2 & 2) ? 2 : 1);
+        const double unit = (c.p2 & 8) ? 10 : (c.p2 & 2) ? 100 : 200;
+        if ((c.p2 & 4) && (!c.p1 || !dc2pc_wait_reference_valid_)) {
+            dc2pc_wait_reference_ms_ = dc2pc_clock_ms_;
+            dc2pc_wait_reference_valid_ = true;
+            return true;
+        }
+        script_wait_ms_ = c.p1 ? count * unit : -1;
+        if (c.p2 & 4) {
+            // Native 0x422501 advances the reference by the full interval,
+            // so successive timer waits keep cadence even after a late tick.
+            dc2pc_wait_reference_ms_ += count * unit;
+            script_wait_ms_ = std::max(0.0, dc2pc_wait_reference_ms_ - dc2pc_clock_ms_);
+        }
+        // The native timer-reference branch precedes input/skip handling.
+        script_wait_skippable_ = (c.p2 & 1) != 0 && !(c.p2 & 4);
+        script_wait_pending_ = script_wait_ms_ != 0;
+        return true;
+    }
     if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT && animation_enabled_) {
         // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
         if (c.p1 == 254) {
@@ -782,6 +843,10 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
 bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
     if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::TRANSITION) {
+        if (c.dc2pc) {
+            start_dc2pc_transition(c.p1);
+            return true;
+        }
         if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
         if (c.p1 == 21) {
             if (!transition_pending_ || transition_snap_.empty()) {
@@ -1031,14 +1096,21 @@ bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
         return true;
     }
     current_line_ = c.str;
+    if (c.dc2pc) dc2pc_present_pending_ = dc2pc_black_ = false;
     return true;
 }
 
 bool SceneRunner::advance_to_next_text() {
     if (reviewing_dialogue() || sidebar_visible_ || scene_end_ || vm_.waiting_for_choice() || !pending_movie_.empty() || waiting_for_time()) return false;
     last_error_.clear();
+    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    // Record the last presented dialogue even when the interactive host did
+    // not request a frame between advances. Pending commands stay off screen.
+    if (dc2pc && animation_enabled_) draw(-1);
     script_wait_pending_ = false;
+    script_wait_skippable_ = true;
     finish_animations();
+    if (dc2pc) dc2pc_present_pending_ = true;
     scene_dirty_ = true;
     std::string prev_speaker = speaker_;
     std::string prev_line = current_line_;
@@ -1065,6 +1137,7 @@ bool SceneRunner::advance_to_next_text() {
     if (vm_.waiting_for_choice()) {
         speaker_ = prev_speaker;
         current_line_ = prev_line;
+        if (dc2pc) dc2pc_present_pending_ = dc2pc_black_ = false;
         return false;
     }
     last_error_ = vm_.error();
@@ -1110,6 +1183,7 @@ bool SceneRunner::load_sheets(const std::string& mes_path) {
 
 void SceneRunner::load_dc2pc_sidebar() {
     sidebar_visible_ = false;
+    sidebar_replay_ = !save_load_allowed();
     sidebar_buttons_.clear();
     sidebar_background_ = UiChip{};
     dc4::MesFile menu;
@@ -1125,8 +1199,13 @@ void SceneRunner::load_dc2pc_sidebar() {
     const std::map<std::string, std::string> actions = {
         {"screenChange", ":sidebarwin"}, {"save", ":ds"}, {"load", ":dl"},
         {"config", ":option"}, {"title", ":aatitle"}, {"return", ":sidebarclose"}};
+    bool found_layout = !sidebar_replay_;
     while (stream.next(&c)) {
         c = dc4::mes_engine_command(c);
+        if (!found_layout) {
+            if (c.opcode() == dc4::Opcode::LABEL && c.str == "kaiso_menu") found_layout = true;
+            continue;
+        }
         if (c.opcode() == dc4::Opcode::ENTRY && !sidebar_buttons_.empty()) break;
         if (c.opcode() == dc4::Opcode::CONTROL) {
             UiButton button;
@@ -1675,6 +1754,63 @@ void SceneRunner::set_sprite_transform(uint16_t scale_pct, uint16_t x, uint16_t 
 // 0x0F(32) runs just before the 0x3C/0x37/0x49 batch that rebuilds the
 // scene, so the old composed frame is still on screen here. Holding the
 // snapshot lets draw() crossfade from it once 0xB4 fires after the commit.
+void SceneRunner::start_dc2pc_transition(int mode) {
+    // Native 0x42511F: mode14 is the optional screen-break effect. Its
+    // second operand selects a variation, never a duration. Until the tile
+    // renderer is recovered, use the native disabled-effect fallback (2).
+    if (mode == 14) mode = 2;
+    if (mode != 0 && mode != 1 && mode != 2 && mode != 5 && mode != 10 && mode != 12) return;
+    compose_scene();
+    if (dc2pc_displayed_frame_.size() != frame_.size()) {
+        dc2pc_displayed_frame_.assign(frame_.size(), 0);
+        for (size_t i = 3; i < frame_.size(); i += 4) dc2pc_displayed_frame_[i] = 255;
+    }
+    dc2pc_transition_target_ = scene_frame_;
+    if (mode == 2) {
+        std::fill(dc2pc_transition_target_.begin(), dc2pc_transition_target_.end(), 0);
+        for (size_t i = 3; i < frame_.size(); i += 4) dc2pc_transition_target_[i] = 255;
+    }
+    dc2pc_transition_mode_ = mode;
+    // 0x619CE8 is bank99[12]. The unrelated bank99[16] config value and
+    // modern centre-5 effect_speed_ must not change these native 40ms ticks.
+    dc2pc_transition_speed_ = std::clamp(vm_.read_variable(99, 12), 0, 3);
+    dc2pc_transition_elapsed_ms_ = 0;
+    dc2pc_transition_duration_ms_ = 640.0 / (1 << dc2pc_transition_speed_);
+    dc2pc_present_pending_ = true;
+    dc2pc_transition_active_ = true;
+    if (!animation_enabled_ || !effects_enabled_ || mode == 5 || mode == 10 || mode == 12) {
+        finish_dc2pc_transition();
+        return;
+    }
+    script_wait_ms_ = dc2pc_transition_duration_ms_;
+    script_wait_pending_ = true;
+    script_wait_skippable_ = true;
+}
+
+void SceneRunner::finish_dc2pc_transition() {
+    if (!dc2pc_transition_active_) return;
+    dc2pc_displayed_frame_ = std::move(dc2pc_transition_target_);
+    dc2pc_black_ = dc2pc_transition_mode_ == 2;
+    dc2pc_transition_active_ = false;
+    dc2pc_transition_elapsed_ms_ = dc2pc_transition_duration_ms_ = 0;
+    // Only an active DC2PC effect owns this wait. Keep pending set so the
+    // host sees script_ready(), including when skip settles the effect.
+    script_wait_ms_ = 0;
+}
+
+void SceneRunner::draw_dc2pc_transition() {
+    frame_ = dc2pc_displayed_frame_;
+    if (!dc2pc_transition_active_ || dc2pc_transition_mode_ == 0) return;
+    const int step = 1 << dc2pc_transition_speed_;
+    int level = std::min(16, int(dc2pc_transition_elapsed_ms_ / 40) * step);
+    if (dc2pc_transition_mode_ == 1) frame_ = dc2pc_transition_target_;
+    else level = 16 - level;
+    // Native 0x40DA07 multiplies RGB directly, preserving an exact black
+    // endpoint rather than repeatedly blending against the previous frame.
+    for (size_t i = 0; i < frame_.size(); i += 4)
+        for (size_t c = 0; c < 3; ++c) frame_[i+c] = uint8_t(int(frame_[i+c]) * level / 16);
+}
+
 void SceneRunner::snapshot_for_transition() {
     if (!animation_enabled_ || !effects_enabled_) return;
     // Compose layers only: the message window and UI chips must not be part
@@ -2108,7 +2244,7 @@ void SceneRunner::apply_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, ui
     motion.to_scale = std::max(1.0f, float(scale_pct) / 100.0f);
     motion.to_x = float(512 + std::clamp(int(int16_t(x)), -639, 639));
     motion.to_y = float(288 + std::clamp(int(int16_t(y)), -359, 359));
-    motion.duration_ms = double(camera_duration_) * 12 * 1000 / 60;
+    motion.duration_ms = double(camera_duration_) * 12.0 * 1000.0 / 60.0;
     // Native sub_448210 does not move the pivot when returning to 100%.
     // Leaving 100% establishes the new pivot before the zoom starts.
     if (mode == 1) {
@@ -2133,6 +2269,7 @@ void SceneRunner::apply_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, ui
 
 void SceneRunner::update(uint32_t elapsed_ms) {
     if (sidebar_visible_ || reviewing_dialogue() || !pending_movie_.empty()) return;
+    dc2pc_clock_ms_ += elapsed_ms;
     if (script_wait_pending_ && script_wait_ms_ > 0)
         script_wait_ms_ = std::max(0.0, script_wait_ms_ - elapsed_ms);
     if (credits_active_) {
@@ -2141,6 +2278,24 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         if (credits_elapsed_ms_ >= credits_duration_ms_) credits_active_ = false;
     }
     double remaining = elapsed_ms;
+    if (dc2pc_transition_active_) {
+        const int previous_tick = int(dc2pc_transition_elapsed_ms_ / 40);
+        dc2pc_transition_elapsed_ms_ += elapsed_ms;
+        if (dc2pc_transition_elapsed_ms_ >= dc2pc_transition_duration_ms_) {
+            finish_dc2pc_transition();
+        } else if (dc2pc_transition_mode_ == 0) {
+            // 0x423470 repeatedly blends with weights 3/6/8/10 out of 16,
+            // then copies the destination exactly after 16/8/4/2 ticks.
+            static constexpr int weights[] = {3, 6, 8, 10};
+            const int weight = weights[dc2pc_transition_speed_];
+            for (int tick = previous_tick; tick < int(dc2pc_transition_elapsed_ms_ / 40); ++tick)
+                for (size_t i = 0; i < dc2pc_displayed_frame_.size(); i += 4)
+                    for (size_t c = 0; c < 3; ++c)
+                        dc2pc_displayed_frame_[i+c] = uint8_t(
+                            (int(dc2pc_displayed_frame_[i+c]) * (16-weight) +
+                             int(dc2pc_transition_target_[i+c]) * weight) / 16);
+        }
+    }
     // 0x8E slide clocks.
     for (BstSprite& s : sprites_) {
         if (!s.slide.active()) continue;
@@ -2195,6 +2350,7 @@ void SceneRunner::update(uint32_t elapsed_ms) {
 }
 
 void SceneRunner::finish_animations() {
+    finish_dc2pc_transition();
     for (BstSprite& s : sprites_) {
         if (s.slide.active()) {
             s.slide.from_dx = 0; s.slide.from_dy = 0;
@@ -2222,8 +2378,7 @@ void SceneRunner::finish_animations() {
     camera_motion_.clear(); scene_dirty_ = true;
 }
 
-void SceneRunner::draw(int reveal_chars) {
-    if (credits_active_) { draw_credits(); return; }
+void SceneRunner::compose_scene() {
     if (scene_dirty_) {
     std::fill(frame_.begin(), frame_.end(), 0);
     for (size_t i = 3; i < frame_.size(); i += 4) frame_[i] = 255;
@@ -2301,6 +2456,18 @@ void SceneRunner::draw(int reveal_chars) {
     } else {
         frame_ = scene_frame_;
     }
+}
+
+void SceneRunner::draw(int reveal_chars) {
+    if (credits_active_) { draw_credits(); return; }
+    compose_scene();
+    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2pc_held = dc2pc && (dc2pc_present_pending_ || dc2pc_black_ || dc2pc_transition_active_) &&
+        dc2pc_displayed_frame_.size() == frame_.size();
+    if (dc2pc_held) {
+        draw_dc2pc_transition();
+        if (!sidebar_visible_) return;
+    }
     if (transition_active_) draw_transition(frame_.data());
     // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
     if (effect_pck_.active && effect_pck_.current_img.valid()) {
@@ -2318,8 +2485,12 @@ void SceneRunner::draw(int reveal_chars) {
         if (taskbar_visible_) {
             for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
             for (const UiButton& b : buttons_) {
+                if (!save_load_allowed() && (b.action == ":qsave" || b.action == ":qload")) continue;
                 if (b.y >= ui_bar_top_) {
-                    bool hover = pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+                    // Native win_size.mes uses the normal artwork for every
+                    // state of these four anonymous replay controls.
+                    const bool disabled = dc4_replay_profile_ && !save_load_allowed() && dc4_persistence_action(b.action);
+                    bool hover = !disabled && pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
                     int state = hover ? (pointer_down_ ? 2 : 1) : 0;
                     const UiChip* ch = b.state[state].valid ? &b.state[state] : &b.state[0];
                     if (ch && ch->valid) blit_chip(*ch, 255);
@@ -2367,8 +2538,10 @@ void SceneRunner::draw(int reveal_chars) {
     } else if (vm_.waiting_for_choice()) {
         draw_choices();
     }
-    if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
+    if (dc2pc)
         clip_dc2pc_viewport(frame_);
+    if (dc2pc && !dc2pc_held && !sidebar_visible_ && !reviewing_dialogue())
+        dc2pc_displayed_frame_ = frame_;
 }
 
 std::vector<uint8_t> SceneRunner::capture_thumbnail(int width, int height) {
@@ -2580,7 +2753,7 @@ void SceneRunner::start_pck_effect(uint16_t w0, uint16_t w1, uint16_t w2) {
     effect_pck_.current_img = Image{};
     effect_pck_.x = int(int16_t(w0));
     effect_pck_.y = int(int16_t(w1));
-    effect_pck_.loop = int(w2);
+    effect_pck_.loop = (is_dc4_or_dc4ph_ || w2 <= 2) ? 0 : int(w2);
     if (decode_pck_frame(0, &effect_pck_.current_img)) {
         effect_pck_.current_frame = 0;
         if (effect_pck_.current_img.w == kScreenW && effect_pck_.current_img.h == kScreenH) {
@@ -3071,9 +3244,11 @@ const std::string* SceneRunner::hit_test(int x, int y) const {
     }
     if (vm_.waiting_for_choice()) return nullptr;
     if (dc2pc_ui_) {
-        if (!message_visible_) return nullptr;
+        if (!message_visible_ || script_wait_pending_ || dc2pc_present_pending_ ||
+            dc2pc_black_ || dc2pc_transition_active_) return nullptr;
         for (const auto& b : buttons_)
-            if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
+            if ((save_load_allowed() || (b.action != ":qsave" && b.action != ":qload")) &&
+                x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
                 return &b.action;
         return nullptr;
     }
@@ -3099,8 +3274,14 @@ const std::string* SceneRunner::hit_test(int x, int y) const {
     }
     for (const UiButton& b : buttons_) {
         if (b.y < 690) continue;
-        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
+        if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty()) {
+            if (dc4_replay_profile_ && !save_load_allowed() && dc4_persistence_action(b.action)) {
+                // Consume the click; an absent target would advance dialogue.
+                static const std::string disabled = ":disabled";
+                return &disabled;
+            }
             return &b.action;
+        }
     }
     if (x >= 1234 && x <= kScreenW && y >= 690 && y <= kScreenH) {
         static const std::string s_n = ":n";

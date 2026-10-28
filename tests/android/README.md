@@ -53,3 +53,87 @@ the harness currently fails at `wrong game rejected`.
 The generated save records have valid emulator envelopes/checksums; complete
 VM/resource restoration is tested by the C++ `scene_test` target. Android UI,
 document-provider permissions, fonts and lifecycle still require device tests.
+
+## Replay JNI regression probe
+
+After building the debug APK, run this focused test on a connected arm64 Android
+device (API 26 or newer):
+
+```powershell
+python tests/android/run_replay_probe.py
+```
+
+The runner accepts `--apk`, `--jdk` and `--sdk` paths. It compiles a small Java
+fixture host, extracts the APK's actual arm64 libraries, and uses `app_process`
+without installing or opening an app. All generated MES fixtures, saves,
+profiles and checkpoints stay in a unique `/data/local/tmp/arisa32-replay-probe-*`
+directory. It does not read or change installed game data. Local evidence,
+including the tested library SHA-256 and `result.log`, is retained under
+`build/dc4-replay-validation/jni-probe-*`.
+
+The six cases cover both DC4 MES versions (`AAB6` and `ABB6`) with replay,
+ordinary-story and unidentified-game fixtures. They verify that all four replay
+Save/Load toolbar taps return no message and leave dialogue unchanged, native
+Save/Load and their screens reject replay, and backgrounding preserves existing
+checkpoint bytes. Ordinary stories and other modern games still dispatch the
+four normal actions and complete a save/load round trip. Synthetic fixtures omit
+artwork and audio, so this complements the real-asset desktop menu tests rather
+than establishing visual Android UI behavior.
+
+For a negative regression check, `--libraries <directory>` runs against a
+previously extracted set of arm64 shared libraries. The library before the
+disabled-tap fix fails with `touch :qs returned: Not available on Android:
+:disabled`.
+
+## Original movie decoder probe
+
+Build FFmpeg first, then configure the Android CMake project with
+`-DDC4_BUILD_MOVIE_PROBE=ON`, the NDK toolchain, and the desired Android ABI.
+Build target `movie_probe`. Compile `MovieProbe.java` with `javac --release 8`
+and convert it to `classes.dex` with the SDK's `d8`.
+
+Push `classes.dex`, `libmovie_probe.so`, `libarisa32.so`, `libc++_shared.so`,
+and the five FFmpeg libraries into `/data/local/tmp/arisa32-movie-probe/`.
+Use copies of existing movies in the same temporary directory; no encoding
+or changes to installed game data are required.
+
+```sh
+adb shell 'CLASSPATH=/data/local/tmp/arisa32-movie-probe/classes.dex LD_LIBRARY_PATH=/data/local/tmp/arisa32-movie-probe app_process /data/local/tmp MovieProbe /data/local/tmp/arisa32-movie-probe --duration=120000 --audio /data/local/tmp/arisa32-movie-probe/original.mpg'
+```
+
+The default probe lasts three seconds per movie with no audio device. `--audio`
+opens the device mixer and tests the audio-driven clock; `--duration=` sets
+the wall-clock limit for subsequent files. The result reports decoded frames,
+audio peak, changing pixels, pause behavior, direct bitmap copies, padded-row
+preservation, completion, errors, and CPU time for update plus frame copy.
+This timing excludes Canvas/GPU presentation and is not a screen frame-rate
+measurement. Check `finished=1` for a complete-playback run and `error=` for
+decoder errors; hardware selection appears in the FFmpeg/Android logs.
+
+### Audio timing and silent endings
+
+The portable `movie_audio_queue_test` CTest target checks exact five-second
+silence, bounded feeding, sample rounding, overlaps, and recovery trimming.
+It does not require FFmpeg or a device.
+
+Generate independent test media with a desktop FFmpeg installation:
+
+```powershell
+.\tests\android\make_movie_regressions.ps1
+```
+
+The script uses only generated patterns and tones. It validates packet timestamps
+with `ffprobe` and writes the exact commands and metadata to
+`work/movie-regression/manifest.json`. Existing fixtures are revalidated; use
+`-Regenerate` to replace them. `-Ffmpeg` and `-Ffprobe` accept explicit tool paths.
+
+Push the three generated files into the probe directory and run them with
+`--audio --duration=15000`. Expect 210, 240 and 90 video frames respectively for
+`delayed-audio.mkv`, `silent-tail.mpg` and `synchronized-control.mpg`, each with
+`finished=1` and no error. The silent-tail fixture contains over 2 MiB of
+compressed video after its one-second soundtrack ends; this exercises demux
+backpressure with an active audio clock.
+
+The probe's audio peak and frame counts describe decoded/prebuffered sound, not
+the instant a speaker emits it. Exact silent-prefix timing is asserted by the
+portable PCM queue test; device runs establish complete decoder playback.

@@ -353,8 +353,24 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
     } catch(const std::exception& error) {if(capture_error)*capture_error=error.what();return false;}
 }
 
+bool SceneRunner::save_load_allowed() const {
+    if (dc2pc_ui_ || dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
+        return variable(9, 7) != 1;
+    // DC4 and DC4PH win_size.mes disable persistence for any nonzero replay
+    // flag. Other modern games can assign this variable a different meaning.
+    return !dc4_replay_profile_ || variable(9, 7) == 0;
+}
+
+void SceneRunner::finish_replay() {
+    if (save_load_allowed()) return;
+    set_variable(9, 7, 0);
+    if (dc2pc_ui_ || dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
+        set_variable(3, 30, 0);
+}
+
 bool SceneRunner::save_state(const std::string& filename) {
     try {
+        if (!save_load_allowed()) throw std::runtime_error("Save/Load unavailable during scene replay");
         std::vector<uint8_t> snapshot;
         std::string error;
         if (!capture_state(&snapshot, &error)) throw std::runtime_error(error);
@@ -378,6 +394,7 @@ bool SceneRunner::save_state(const std::string& filename) {
 
 bool SceneRunner::load_state(const std::string& filename) {
     try {
+        if (!save_load_allowed()) throw std::runtime_error("Save/Load unavailable during scene replay");
         std::ifstream file(filename, std::ios::binary | std::ios::ate);
         if (!file) throw std::runtime_error("save not found: " + filename);
         const auto size = file.tellg();
@@ -843,10 +860,15 @@ void SceneRunner::reset_restore_transients() {
     next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
     pending_movie_.clear(); pending_movie_is_effect_ = false; input_skip_label_.clear();
     script_wait_pending_ = false; script_wait_ms_ = 0;
+    script_wait_skippable_ = true;
+    dc2pc_clock_ms_ = dc2pc_wait_reference_ms_ = 0; dc2pc_wait_reference_valid_ = false;
     credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
     credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();
     effect_pck_.clear();
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
+    dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;
+    dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
+    dc2pc_transition_elapsed_ms_ = dc2pc_transition_duration_ms_ = 0;
     scene_chips_.clear(); pending_scene_blit_ = false;
     sidebar_visible_ = false;
     if (mes_.version == 0x9969) {

@@ -11,8 +11,8 @@ android {
         applicationId 'org.dc4engine'
         minSdk 21          // Android 5.0 (Lollipop)+
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 7
-        versionName '0.6.0'
+        versionCode 8
+        versionName '0.6.1'
         externalNativeBuild {
             cmake {
                 // Scene save/lifecycle snapshots use C++17 exceptions.
@@ -63,9 +63,6 @@ android {
     }
 }
 
-dependencies {
-    implementation 'org.videolan.android:libvlc-all:3.6.5'
-}
 
 // dc4core lives at the repo root, two levels above android/app/.
 gradle.projectsEvaluated {

@@ -1,4 +1,5 @@
 #include "arisa32/movie.h"
+#include <cstring>
 #include "arisa32/audio.h"
 #include "arisa32/resource.h"
 
@@ -229,6 +230,16 @@ void MoviePlayer::draw_rgba(std::vector<uint8_t>* rgba, int width, int height) c
     }
 }
 bool MoviePlayer::active() const { return impl_->decoder && !impl_->done; }
+int MoviePlayer::frame_width() const { return impl_->width; }
+int MoviePlayer::frame_height() const { return impl_->height; }
+bool MoviePlayer::copy_frame_rgba(uint8_t* rgba, int width, int height, size_t stride) const {
+    if (!rgba || impl_->pixels.empty() || width != frame_width() || height != frame_height() ||
+        stride < size_t(width) * 4) return false;
+    const size_t row = size_t(width) * 4;
+    for (int y = 0; y < height; ++y)
+        std::memcpy(rgba + size_t(y) * stride, impl_->pixels.data() + size_t(y) * row, row);
+    return true;
+}
 bool MoviePlayer::finished() const { return impl_->done; }
 const std::string& MoviePlayer::error() const { return impl_->failure; }
 int MoviePlayer::width() const { return impl_->width; }

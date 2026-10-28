@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.dc4engine">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- The library's default folder picker uses SAF without broad access.
          These permissions are only requested by the optional existing-path flow. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"

@@ -17,6 +17,7 @@ struct SystemMenuAction {
     int index = -1;
     std::string asset; // Original script/music/voice/movie resource name.
     std::string label; // Original MES entry label for scene replay.
+    int voice_event = 0; // Optional host event for a distinct authored start button.
 };
 struct SystemConfig {
     int master_volume = 100, music_volume = 80, se_volume = 80;
@@ -63,6 +64,7 @@ public:
     void draw(int mouse_x, int mouse_y, bool down,
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;
+    int page_voice_event() const;
     std::string system_voice(int event_id) const;
     std::string title_music() const;
     std::string scene_ui_script() const;

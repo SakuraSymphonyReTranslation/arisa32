@@ -4,6 +4,10 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.media.AudioAttributes;
@@ -51,12 +55,12 @@ import android.graphics.SurfaceTexture;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Toast;
-import org.videolan.libvlc.LibVLC;
-import org.videolan.libvlc.Media;
-import org.videolan.libvlc.interfaces.IVLCVout;
-import org.videolan.libvlc.util.VLCVideoLayout;
 
 import java.io.BufferedReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -106,6 +110,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native String dc4BackOrSidemenu(boolean slots, boolean backlog);
     private native boolean dc4SidebarVisible();
     private native void dc4Render(Bitmap bitmap);
+    private native int dc4MovieFrameSize();
+    private native boolean dc4MovieFrame(Bitmap bitmap, boolean force);
     private native String dc4CurrentLine();
     private native String dc4Touch(int action, int x, int y);
     private native String dc4SetPaused(boolean paused, String checkpoint);
@@ -113,6 +119,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native String dc4Speaker();
     private native boolean dc4SkipAdvance();
     private native String dc4Save(String path);
+    private native boolean dc4SaveLoadAllowed();
     private native String dc4Load(String path);
     private native void dc4RenderPreview(Bitmap bitmap);
     private native void dc4LogOpen();
@@ -137,7 +144,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private TextView bubble;
     private TextView backSidemenu;
     private FrameLayout movieContainer;
-    private VLCVideoLayout vlcVideoLayout;
     private TextureView movieTextureView;
     private Surface movieSurface;
     private MediaPlayer movieMediaPlayer;
@@ -194,13 +200,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             movieContainer = new FrameLayout(this);
             movieContainer.setBackgroundColor(Color.BLACK);
 
-            vlcVideoLayout = new VLCVideoLayout(this);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    Gravity.CENTER);
-            movieContainer.addView(vlcVideoLayout, lp);
-
             gameLayout.addView(movieContainer, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT));
@@ -216,7 +215,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 return true;
             });
 
-            startVlcPlayer(file, path);
+            startMediaPlayer(file, path);
         });
     }
 
@@ -242,58 +241,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         movieTextureView.setTransform(matrix);
     }
 
-    private org.videolan.libvlc.LibVLC vlcInstance;
-    private org.videolan.libvlc.MediaPlayer vlcPlayer;
-
-    private org.videolan.libvlc.LibVLC getLibVLC() {
-        if (vlcInstance == null) {
-            ArrayList<String> options = new ArrayList<>();
-            options.add("--no-drop-late-frames");
-            options.add("--no-skip-frames");
-            options.add("--quiet");
-            vlcInstance = new org.videolan.libvlc.LibVLC(this, options);
-        }
-        return vlcInstance;
-    }
-
-    private void startVlcPlayer(File file, String path) {
-        try {
-            releaseMoviePlayer();
-            org.videolan.libvlc.LibVLC libvlc = getLibVLC();
-            vlcPlayer = new org.videolan.libvlc.MediaPlayer(libvlc);
-            vlcPlayer.attachViews(vlcVideoLayout, null, false, false);
-
-            Media media = new Media(libvlc, file.getAbsolutePath());
-            media.setHWDecoderEnabled(true, false);
-            vlcPlayer.setMedia(media);
-            media.release();
-
-            vlcPlayer.setEventListener(event -> {
-                if (event.type == org.videolan.libvlc.MediaPlayer.Event.EndReached) {
-                    runOnUiThread(this::onMovieFinished);
-                } else if (event.type == org.videolan.libvlc.MediaPlayer.Event.EncounteredError) {
-                    Log.e(TAG, "LibVLC playback error: " + path);
-                    runOnUiThread(this::onMovieFinished);
-                }
-            });
-
-            if (isKotoriSongMovie(path)) {
-                vlcPlayer.setVolume(0);
-            }
-            vlcPlayer.play();
-            Log.i(TAG, "LibVLC movie playback started: " + path);
-        } catch (Throwable t) {
-            Log.e(TAG, "Failed to initialize LibVLC, falling back to MediaPlayer for: " + path, t);
-            startMediaPlayer(file, path);
-        }
-    }
-
     private void startMediaPlayer(File file, String path) {
         if (movieContainer == null) return;
-        if (vlcVideoLayout != null) {
-            try { movieContainer.removeView(vlcVideoLayout); } catch (Throwable ignored) {}
-            vlcVideoLayout = null;
-        }
         movieTextureView = new TextureView(this);
         movieContainer.addView(movieTextureView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -382,14 +331,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void releaseMoviePlayer() {
-        if (vlcPlayer != null) {
-            try {
-                vlcPlayer.stop();
-                vlcPlayer.detachViews();
-                vlcPlayer.release();
-            } catch (Throwable ignored) {}
-            vlcPlayer = null;
-        }
         if (movieMediaPlayer != null) {
             try { movieMediaPlayer.stop(); } catch (Throwable ignored) {}
             try { movieMediaPlayer.release(); } catch (Throwable ignored) {}
@@ -414,7 +355,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             try { gameLayout.removeView(movieContainer); } catch (Throwable ignored) {}
             movieContainer = null;
         }
-        vlcVideoLayout = null;
         movieTextureView = null;
         if (renderThread != null) {
             menuCommands.offer(this::dc4MovieCompleted);
@@ -577,6 +517,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private AlertDialog saveDialog;  // UI thread only.
     private Bitmap previewBitmap;
     private Paint badgePaint, badgeBgPaint;
+    private Paint fpsPaint, fpsBgPaint;
+    private volatile boolean showFps = true;
+    private volatile boolean autoCheckUpdate = true;
+    private float currentFps = 60.0f;
+    private static boolean updateCheckedThisSession = false;
     private SimpleDateFormat dateFormat;
 
     // Parsed dc4Status fields.
@@ -652,6 +597,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         preferences = getSharedPreferences("launcher", MODE_PRIVATE);
         uiLanguage = preferences.getString("uiLanguage", "en");
         retainSession = preferences.getBoolean("retainSession", true);
+        showFps = preferences.getBoolean("showFps", true);
+        autoCheckUpdate = preferences.getBoolean("autoCheckUpdate", true);
         if (!storageAccessGranted()) {
             ensureStorageAccess();
         }
@@ -664,6 +611,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         frame = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         showLibrary();
+        if (autoCheckUpdate) {
+            checkForUpdates(false);
+        }
         String resumeGame = preferences.getString("pausedGame", "");
         String resumeLanguage = preferences.getString("pausedLanguage", "");
         if (retainSession && storageAccessGranted() && !resumeGame.isEmpty()) {
@@ -1055,8 +1005,20 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final View pendingOverlay = launchOverlay;
         renderThread = new Thread(() -> {
             Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+            Bitmap movieBitmap = null;
+            boolean hardwareCanvas = Build.VERSION.SDK_INT >= 26;
+            long fpsLastTime = SystemClock.uptimeMillis();
+            int fpsFrameCount = 0;
             while (running) {
                 long started = SystemClock.uptimeMillis();
+                if (showFps) {
+                    fpsFrameCount++;
+                    if (started - fpsLastTime >= 500) {
+                        currentFps = (fpsFrameCount * 1000.0f) / Math.max(1, started - fpsLastTime);
+                        fpsFrameCount = 0;
+                        fpsLastTime = started;
+                    }
+                }
                 Canvas canvas = null;
                 SurfaceHolder holder = surface.getHolder();
                 try {
@@ -1069,14 +1031,39 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     else if (slotMenuOpen) dc4SlotsFrame(frame);
                     else if (backlogOpen) dc4LogFrame(frame);
                     else dc4Render(frame);
+                    Bitmap displayBitmap = frame;
+                    int movieSize = dc4ConfirmActive() ? 0 : dc4MovieFrameSize();
+                    if (movieSize != 0) {
+                        int movieWidth = movieSize >>> 16, movieHeight = movieSize & 0xffff;
+                        boolean newBitmap = movieBitmap == null || movieBitmap.getWidth() != movieWidth ||
+                                movieBitmap.getHeight() != movieHeight;
+                        if (newBitmap) {
+                            // Drop the previous texture reference; the render thread owns this bitmap.
+                            movieBitmap = Bitmap.createBitmap(movieWidth, movieHeight, Bitmap.Config.ARGB_8888);
+                        }
+                        if (dc4MovieFrame(movieBitmap, newBitmap)) displayBitmap = movieBitmap;
+                    } else movieBitmap = null;
                     pollStatus();
                     driveModes(SystemClock.uptimeMillis());
-                    canvas = holder.lockCanvas();
+                    if (hardwareCanvas) {
+                        try { canvas = holder.lockHardwareCanvas(); }
+                        catch (RuntimeException unavailable) { hardwareCanvas = false; }
+                    }
+                    if (canvas == null) canvas = holder.lockCanvas();
                     if (canvas != null) {
                         canvas.drawColor(Color.BLACK);
                         RectF vp = viewport(canvas.getWidth(), canvas.getHeight());
-                        canvas.drawBitmap(frame, null, vp, paint);
-                        drawOverlays(canvas, vp);
+                        RectF destination = vp;
+                        if (displayBitmap == movieBitmap) {
+                            float scale = Math.min(vp.width() / displayBitmap.getWidth(), vp.height() / displayBitmap.getHeight());
+                            float w = displayBitmap.getWidth() * scale, h = displayBitmap.getHeight() * scale;
+                            destination = new RectF(vp.centerX() - w / 2, vp.centerY() - h / 2,
+                                    vp.centerX() + w / 2, vp.centerY() + h / 2);
+                        }
+                        boolean isMovie = displayBitmap == movieBitmap && movieBitmap != null;
+                        canvas.drawBitmap(displayBitmap, null, destination, paint);
+                        RectF activeFrame = getActiveFrameInVp(isMovie, destination, vp);
+                        drawOverlays(canvas, vp, activeFrame);
                     }
                 } catch (RuntimeException error) {
                     Log.e(TAG, "render loop failed", error);
@@ -1299,6 +1286,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void openSlots(boolean loading) {
+        if (!dc4SaveLoadAllowed()) return;
         final long started = android.os.SystemClock.elapsedRealtime();
         dc4SetSidebarVisible(false);
         autoMode = false;
@@ -1518,6 +1506,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void persistState(boolean load, int slot, int characterIcon) {
+        if (!dc4SaveLoadAllowed()) return;
         if (slot < -2 || slot >= SLOT_COUNT || (slot == -2 && !load)) return;
         autoMode = false;
         skipMode = false;
@@ -1729,33 +1718,79 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     // ---------------------------------------------------------------- drawing
 
-    private void drawOverlays(Canvas canvas, RectF vp) {
-        if (!autoMode && !skipMode) return;
+    private RectF getActiveFrameInVp(boolean isMovie, RectF movieDest, RectF vp) {
+        if (isMovie && movieDest != null && vp != null && vp.width() > 0 && vp.height() > 0) {
+            float scale = (float) W / vp.width();
+            float left = (movieDest.left - vp.left) * scale;
+            float top = (movieDest.top - vp.top) * scale;
+            float right = (movieDest.right - vp.left) * scale;
+            float bottom = (movieDest.bottom - vp.top) * scale;
+            return new RectF(left, top, right, bottom);
+        }
+        GameProfile profile = currentProfile();
+        if (profile != null) {
+            return profile.getActiveFrameRect();
+        }
+        return new RectF(0, 0, W, H);
+    }
+
+    private void drawOverlays(Canvas canvas, RectF vp, RectF activeFrame) {
+        if (!autoMode && !skipMode && !showFps) return;
         ensurePaints();
         canvas.save();
         canvas.translate(vp.left, vp.top);
         final float scale = vp.width() / (float) W;
         canvas.scale(scale, scale);
-        drawModeBadge(canvas);
+        drawModeBadge(canvas, activeFrame);
+        if (showFps) drawFpsMeter(canvas, activeFrame);
         canvas.restore();
     }
 
     private void ensurePaints() {
-        if (badgePaint != null) return;
-        badgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        badgePaint.setColor(Color.WHITE);
-        badgePaint.setTextSize(20);
-        badgePaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-        badgeBgPaint = new Paint();
-        badgeBgPaint.setColor(0x90101820);
+        if (badgePaint == null) {
+            badgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            badgePaint.setColor(Color.WHITE);
+            badgePaint.setTextSize(20);
+            badgePaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            badgeBgPaint = new Paint();
+            badgeBgPaint.setColor(0x90101820);
+        }
+        if (fpsPaint == null) {
+            fpsPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            fpsPaint.setColor(0xff38bdf8);
+            fpsPaint.setTextSize(18);
+            fpsPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+            fpsBgPaint = new Paint();
+            fpsBgPaint.setColor(0xb00c121c);
+        }
     }
 
-    private void drawModeBadge(Canvas canvas) {
+    private void drawFpsMeter(Canvas canvas, RectF activeFrame) {
+        final String label = String.format(Locale.US, "%.1f FPS", currentFps);
+        final float textWidth = fpsPaint.measureText(label);
+        final float padH = 12;
+        final float width = textWidth + padH * 2;
+        final float height = 32;
+        final float margin = 14;
+        final float right = activeFrame != null ? activeFrame.right : W;
+        final float top = activeFrame != null ? activeFrame.top : 0;
+        final float x = right - width - margin;
+        final float y = top + margin;
+        RectF rect = new RectF(x, y, x + width, y + height);
+        canvas.drawRoundRect(rect, 6, 6, fpsBgPaint);
+        canvas.drawText(label, x + padH, y + 23, fpsPaint);
+    }
+
+    private void drawModeBadge(Canvas canvas, RectF activeFrame) {
         if (!autoMode && !skipMode) return;
         final String label = skipMode ? "SKIP" : "AUTO";
         final float width = badgePaint.measureText(label) + 28;
-        canvas.drawRect(16, 14, 16 + width, 50, badgeBgPaint);
-        canvas.drawText(label, 30, 39, badgePaint);
+        final float left = activeFrame != null ? activeFrame.left : 0;
+        final float top = activeFrame != null ? activeFrame.top : 0;
+        final float x = left + 16;
+        final float y = top + 14;
+        canvas.drawRect(x, y, x + width, y + 36, badgeBgPaint);
+        canvas.drawText(label, x + 14, y + 25, badgePaint);
     }
 
     // ------------------------------------------------------- Android library
@@ -1884,8 +1919,31 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         LinearLayout body = ArisaUi.column(this);
         section(body, tr("PREFERENCES", "PREFERENSI", "環境設定"));
         addSessionSetting(body);
+        setting(body, tr("FPS Meter", "FPS Meter", "FPS メーター"),
+                showFps
+                        ? tr("On · displayed in top-right corner", "Aktif · tampil di pojok kanan atas", "オン · 右上に表示")
+                        : tr("Off · hidden", "Nonaktif · disembunyikan", "オフ · 非表示"),
+                () -> {
+                    showFps = !showFps;
+                    preferences.edit().putBoolean("showFps", showFps).apply();
+                    notifyUser(showFps ? tr("FPS meter enabled.", "FPS meter diaktifkan.", "FPS メーターを有効にしました。")
+                                       : tr("FPS meter disabled.", "FPS meter dinonaktifkan.", "FPS メーターを無効にしました。"));
+                });
         setting(body, tr("App language", "Bahasa aplikasi", "アプリ言語"), uiLanguage.equals("jp") ? "日本語" : uiLanguage.equals("id") ? "Bahasa Indonesia" : "English", this::chooseUiLanguage);
         section(body, tr("APPEARANCE", "TAMPILAN", "外観"));
+        setting(body, tr("FPS Meter", "FPS Meter", "FPS メーター"),
+                showFps
+                        ? tr("On · display framerate in top-right corner", "Aktif · tampilkan frame rate di pojok kanan atas", "オン · 右上に表示")
+                        : tr("Off · hidden", "Nonaktif · disembunyikan", "オフ · 非表示"),
+                () -> {
+                    settingsDialog = dialog().setTitle(tr("FPS Meter", "FPS Meter", "FPS メーター"))
+                            .setSingleChoiceItems(new String[]{tr("On", "Aktif", "オン"), tr("Off", "Nonaktif", "オフ")}, showFps ? 0 : 1, (d, which) -> {
+                                showFps = which == 0;
+                                preferences.edit().putBoolean("showFps", showFps).apply();
+                                d.dismiss();
+                                showAppSettings();
+                            }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+                });
         setting(body, tr("Custom wallpaper", "Wallpaper latar belakang", "カスタム壁紙"),
                 ArisaUi.hasCustomWallpaper(this)
                         ? tr("Custom image active (tap to change)", "Gambar kustom aktif (ketuk untuk ganti)", "カスタム画像設定中（タップで変更）")
@@ -1905,6 +1963,23 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         setting(body, tr("Storage access", "Akses penyimpanan", "ストレージ権限"), tr("Required for reading external AdvData folders", "Diperlukan untuk membaca folder AdvData eksternal", "外部 AdvData 読み取りに必要"), () -> {
             if (ensureStorageAccess()) notifyUser(tr("Storage access is already enabled.", "Akses penyimpanan sudah aktif.", "ストレージへのアクセスは許可されています。"));
         });
+        section(body, tr("UPDATES", "PEMBARUAN", "アップデート"));
+        setting(body, tr("Auto check updates", "Cek pembaruan otomatis", "自動アップデート確認"),
+                autoCheckUpdate
+                        ? tr("On · check repository releases on startup", "Aktif · cek rilis repository saat dibuka", "オン · 起動時に確認")
+                        : tr("Off · check manually", "Nonaktif · cek secara manual", "オフ · 手動で確認"),
+                () -> {
+                    settingsDialog = dialog().setTitle(tr("Auto check updates", "Cek pembaruan otomatis", "自動アップデート確認"))
+                            .setSingleChoiceItems(new String[]{tr("On", "Aktif", "オン"), tr("Off", "Nonaktif", "オフ")}, autoCheckUpdate ? 0 : 1, (d, which) -> {
+                                autoCheckUpdate = which == 0;
+                                preferences.edit().putBoolean("autoCheckUpdate", autoCheckUpdate).apply();
+                                d.dismiss();
+                                showAppSettings();
+                            }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+                });
+        setting(body, tr("Check for updates now", "Periksa pembaruan sekarang", "今すぐ更新を確認"),
+                tr("Check GitHub repository releases", "Periksa rilis di repository GitHub", "GitHubリポジトリの最新リリースを確認"),
+                () -> checkForUpdates(true));
         section(body, tr("ENGINE SPECIFICATION", "SPESIFIKASI ENGINE", "エンジン仕様"));
         body.addView(text("Arisa32 · adv32 Runtime v" + BuildConfig.VERSION_NAME, 16, TEXT)); ArisaUi.gap(body, 6);
         body.addView(text(tr("CIRCUS Visual Novel Engine runtime for Android. Executes native MES scripts, CRM/CRX graphics, and XPCM audio.",
@@ -3252,9 +3327,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         super.onResume();
         resumed = true;
         if (moviePlaying) {
-            if (vlcPlayer != null) {
-                try { vlcPlayer.play(); } catch (Throwable ignored) {}
-            } else if (movieMediaPlayer != null) {
+            if (movieMediaPlayer != null) {
                 try { movieMediaPlayer.start(); } catch (Throwable ignored) {}
             }
         }
@@ -3279,14 +3352,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         backlogOpen = false;
         slotMenuOpen = false;
         if (moviePlaying) {
-            if (vlcPlayer != null) {
-                try { vlcPlayer.pause(); } catch (Throwable ignored) {}
-            } else if (movieMediaPlayer != null) {
+            if (movieMediaPlayer != null) {
                 try { movieMediaPlayer.pause(); } catch (Throwable ignored) {}
             }
         }
         stopRendering();
-        if (retainSession && !inLibrary && selected != null && pauseCheckpoint != null
+        if (retainSession && initialized && dc4SaveLoadAllowed() && !inLibrary && selected != null && pauseCheckpoint != null
                 && new File(pauseCheckpoint).isFile()) {
             preferences.edit().putString("pausedGame", selected.id)
                     .putString("pausedLanguage", selected.language).commit();
@@ -3309,10 +3380,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onDestroy() {
         stopRendering();
         stopMovie();
-        if (vlcInstance != null) {
-            try { vlcInstance.release(); } catch (Throwable ignored) {}
-            vlcInstance = null;
-        }
         if (initialized) dc4Quit();
         initialized = false;
         destroyed = true;
@@ -3323,4 +3390,203 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (frame != null) frame.recycle();
         super.onDestroy();
     }
+
+    static boolean isVersionNewer(String remoteTag, String localVersion) {
+        if (remoteTag == null || localVersion == null) return false;
+        String cleanRemote = remoteTag.trim();
+        if (cleanRemote.startsWith("v") || cleanRemote.startsWith("V")) {
+            cleanRemote = cleanRemote.substring(1);
+        }
+        String cleanLocal = localVersion.trim();
+        if (cleanLocal.startsWith("v") || cleanLocal.startsWith("V")) {
+            cleanLocal = cleanLocal.substring(1);
+        }
+        int dashRemote = cleanRemote.indexOf('-');
+        if (dashRemote > 0) cleanRemote = cleanRemote.substring(0, dashRemote);
+        int dashLocal = cleanLocal.indexOf('-');
+        if (dashLocal > 0) cleanLocal = cleanLocal.substring(0, dashLocal);
+
+        String[] rParts = cleanRemote.split("\\.");
+        String[] lParts = cleanLocal.split("\\.");
+        int length = Math.max(rParts.length, lParts.length);
+        for (int i = 0; i < length; i++) {
+            int r = 0, l = 0;
+            if (i < rParts.length) {
+                try { r = Integer.parseInt(rParts[i].replaceAll("[^0-9]", "")); } catch (Exception ignored) {}
+            }
+            if (i < lParts.length) {
+                try { l = Integer.parseInt(lParts[i].replaceAll("[^0-9]", "")); } catch (Exception ignored) {}
+            }
+            if (r > l) return true;
+            if (r < l) return false;
+        }
+        return false;
+    }
+
+    private void checkForUpdates(boolean manual) {
+        if (!manual && updateCheckedThisSession) return;
+        if (manual) {
+            notifyUser(tr("Checking for updates...", "Memeriksa pembaruan...", "更新を確認中..."));
+        }
+        Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                URL url = new URL("https://api.github.com/repos/SakuraSymphonyReTranslation/arisa32/releases/latest");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "Arisa32-App/" + BuildConfig.VERSION_NAME);
+                conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+                int code = conn.getResponseCode();
+                if (code != 200) {
+                    if (manual) {
+                        runOnUiThread(() -> notifyUser(tr("Failed to check for updates (HTTP " + code + ")",
+                                "Gagal memeriksa pembaruan (HTTP " + code + ")",
+                                "更新の確認に失敗しました (HTTP " + code + ")")));
+                    }
+                    return;
+                }
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+
+                JSONObject release = new JSONObject(sb.toString());
+                String tagName = release.optString("tag_name", "");
+                String releaseName = release.optString("name", tagName);
+                String htmlUrl = release.optString("html_url", "https://github.com/SakuraSymphonyReTranslation/arisa32/releases");
+                String body = release.optString("body", "");
+
+                String apkDownloadUrl = null;
+                JSONArray assets = release.optJSONArray("assets");
+                if (assets != null) {
+                    for (int i = 0; i < assets.length(); i++) {
+                        JSONObject asset = assets.getJSONObject(i);
+                        String assetName = asset.optString("name", "");
+                        if (assetName.endsWith(".apk") && !assetName.toLowerCase(Locale.US).contains("debug")) {
+                            apkDownloadUrl = asset.optString("browser_download_url", null);
+                            break;
+                        }
+                    }
+                    if (apkDownloadUrl == null) {
+                        for (int i = 0; i < assets.length(); i++) {
+                            JSONObject asset = assets.getJSONObject(i);
+                            String assetName = asset.optString("name", "");
+                            if (assetName.endsWith(".apk")) {
+                                apkDownloadUrl = asset.optString("browser_download_url", null);
+                                break;
+                            }
+                        }
+                    }
+                }
+                final String finalDownloadUrl = (apkDownloadUrl != null && !apkDownloadUrl.isEmpty()) ? apkDownloadUrl : htmlUrl;
+
+                boolean isNewer = isVersionNewer(tagName, BuildConfig.VERSION_NAME);
+                updateCheckedThisSession = true;
+
+                runOnUiThread(() -> {
+                    if (destroyed || isFinishing()) return;
+                    if (isNewer) {
+                        Toast.makeText(Arisa32Activity.this,
+                                tr("New update available: " + tagName,
+                                   "Pembaruan baru tersedia: " + tagName,
+                                   "新しいアップデートがあります: " + tagName),
+                                Toast.LENGTH_LONG).show();
+                        showSystemNotification(tagName, releaseName, body, finalDownloadUrl);
+                        showUpdateDialog(tagName, releaseName, body, finalDownloadUrl, htmlUrl);
+                    } else if (manual) {
+                        notifyUser(tr("Arisa32 is up to date (v" + BuildConfig.VERSION_NAME + ").",
+                                "Arisa32 sudah versi terbaru (v" + BuildConfig.VERSION_NAME + ").",
+                                "Arisa32 は最新バージョンです (v" + BuildConfig.VERSION_NAME + ")。"));
+                    }
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "check update failed", e);
+                if (manual) {
+                    runOnUiThread(() -> notifyUser(tr("Update check error: " + e.getMessage(),
+                            "Gagal cek pembaruan: " + e.getMessage(),
+                            "更新確認エラー: " + e.getMessage())));
+                }
+            }
+        });
+    }
+
+    private void showUpdateDialog(String tag, String name, String body, String downloadUrl, String releaseUrl) {
+        LinearLayout content = ArisaUi.column(this);
+        content.addView(ArisaUi.badge(this, tag));
+        ArisaUi.gap(content, 6);
+        TextView titleView = text(name, 18, ArisaUi.TEXT);
+        titleView.setTypeface(Typeface.create("sans-serif-bold", Typeface.BOLD));
+        content.addView(titleView);
+        ArisaUi.gap(content, 8);
+
+        if (body != null && !body.trim().isEmpty()) {
+            String changelog = body.trim();
+            if (changelog.length() > 500) {
+                changelog = changelog.substring(0, 500) + "...";
+            }
+            TextView bodyView = text(changelog, 13, ArisaUi.MUTED);
+            content.addView(bodyView);
+            ArisaUi.gap(content, 12);
+        }
+
+        dialog().setTitle(tr("New Version Available", "Versi Baru Tersedia", "新しいバージョンが利用可能です"))
+                .setView(content)
+                .setPositiveButton(tr("Download APK", "Unduh APK", "APKをダウンロード"), (d, w) -> {
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl));
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        try {
+                            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)));
+                        } catch (Exception ignored) {}
+                    }
+                })
+                .setNeutralButton(tr("View Release", "Lihat Rilis", "リリースを見る"), (d, w) -> {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)));
+                    } catch (Exception ignored) {}
+                })
+                .setNegativeButton(tr("Later", "Nanti", "後で"), null)
+                .show();
+    }
+
+
+    private void showSystemNotification(String tag, String name, String body, String downloadUrl) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            String channelId = "arisa_updates";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                    channelId,
+                    "Arisa32 Updates",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                );
+                channel.setDescription("Notifications for new Arisa32 releases");
+                nm.createNotificationChannel(channel);
+            }
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl));
+            PendingIntent pi = PendingIntent.getActivity(
+                this, 0, intent,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+            );
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder = new Notification.Builder(this, channelId);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+            builder.setSmallIcon(R.mipmap.ic_launcher)
+                   .setContentTitle(tr("Arisa32 Update Available: " + tag, "Pembaruan Arisa32 Tersedia: " + tag, "Arisa32 アップデート: " + tag))
+                   .setContentText(name)
+                   .setContentIntent(pi)
+                   .setAutoCancel(true);
+            nm.notify(1001, builder.build());
+        } catch (Throwable t) {
+            Log.w(TAG, "Could not show system notification: " + t.getMessage());
+        }
+    }
+
 }

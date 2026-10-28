@@ -120,6 +120,48 @@ void capture(dc4ui::SystemMenu& menu, const std::string& name) {
     for (size_t i = 0; i < rgba.size(); i += 4)
         out.write(reinterpret_cast<const char*>(rgba.data() + i), 3);
 }
+void catalogue_redraws(const char* data) {
+    using Page = dc4ui::SystemMenuPage;
+    dc4ui::SystemMenu direct, visited;
+    std::string error;
+    for (auto* menu : {&direct, &visited}) {
+        CHECK(menu->load(data, &error));
+        for (int id = 0; id < 10; ++id) menu->set_variable(98, id, 1);
+    }
+    direct.open(Page::Scenes);
+    dc4scene::FontRenderer font;
+    std::vector<uint8_t> expected, actual;
+    const auto rows = direct.controls();
+    auto compare_rows = [&] {
+        direct.draw(-1, -1, false, font, &expected);
+        visited.draw(-1, -1, false, font, &actual);
+        CHECK(actual == expected);
+        int count = 0;
+        for (const auto& row : rows) {
+            if (row.tag.rfind("sce", 0) != 0 || !row.enabled) continue;
+            ++count;
+            const int x = row.x + row.w / 2, y = row.y + row.h / 2;
+            direct.draw(x, y, false, font, &expected);
+            visited.draw(x, y, false, font, &actual);
+            CHECK(actual == expected);
+        }
+        CHECK(count == 10);
+        CHECK(visited.error().empty());
+    };
+    // Music's smaller artwork count must not truncate the next replay layout.
+    visited.open(Page::Extras);
+    visited.activate("bgm"); CHECK(visited.page() == Page::Music);
+    visited.back(); CHECK(visited.page() == Page::Extras);
+    visited.activate("scene"); CHECK(visited.page() == Page::Scenes);
+    compare_rows();
+    capture(visited, "scene-after-music");
+    visited.activate("nanaka"); visited.activate("otome");
+    compare_rows();
+    visited.scroll(1); visited.scroll(-1);
+    compare_rows();
+    visited.back(); visited.activate("bgm"); visited.back(); visited.activate("scene");
+    compare_rows();
+}
 void sprite_scenarios(const char* data) {
     for (const auto& script : {"fst_1216_b1_cmn", "fst_1216_b11_cmn", "fst_1216_b2_cmn", "fst_1216_c1_cmn"}) {
         dc4scene::SceneRunner scene(data);
@@ -312,6 +354,7 @@ int main(int argc, char** argv) {
     native_pc_saves(data);
     legacy_quick_save(data);
     save_interactions(data);
+    catalogue_redraws(data);
     sprite_scenarios(data);
     using Page = dc4ui::SystemMenuPage;
     using Type = dc4ui::SystemMenuActionType;
@@ -347,6 +390,19 @@ int main(int argc, char** argv) {
         CHECK(dc4::decode_xpcm_pcm(voice_bytes.data(),voice_bytes.size(),&pcm,&rate,&channels));
         CHECK(rate>0 && channels>0 && !pcm.empty());
         CHECK(std::any_of(pcm.begin(),pcm.end(),[](int16_t sample){return sample!=0;}));
+    }
+    for (int actor=0;actor<16;++actor) {
+        menu.set_variable(100,56,actor);
+        for (int event : {7,8,10,13,19,20,21}) {
+            const auto name=menu.system_voice(event);
+            const auto* entry=voices.find(name);
+            CHECK(entry);
+            if (entry) {
+                CHECK(voices.read_entry(*entry,&voice_bytes,&error));
+                CHECK(dc4::decode_xpcm_pcm(voice_bytes.data(),voice_bytes.size(),&pcm,&rate,&channels));
+                CHECK(std::any_of(pcm.begin(),pcm.end(),[](int16_t sample){return sample!=0;}));
+            }
+        }
     }
     std::ifstream names_file(std::string(data)+"/DAT/names.dat",std::ios::binary);
     std::vector<uint8_t> names_bytes((std::istreambuf_iterator<char>(names_file)),{});
@@ -392,6 +448,40 @@ int main(int argc, char** argv) {
     opening.update(1000);
     std::vector<uint8_t> sidebar_state; CHECK(opening.capture_state(&sidebar_state)); CHECK(sidebar_state == live);
     CHECK(opening.restore_state(live,&error)); CHECK(!opening.sidebar_visible());
+    CHECK(opening.save_load_allowed());
+    menu.initialize_scene(opening,true);
+    CHECK(!opening.save_load_allowed());
+    for(const auto& button:opening.buttons()) if(button.action==":qsave")
+        CHECK(!opening.hit_test(button.x+button.w/2,button.y+button.h/2));
+    CHECK(opening.set_sidebar_visible(true));
+    for(const auto& row:{std::pair<int,const char*>{89,":sidebarwin"}, {119,":option"},
+                        {149,":aatitle"}, {179,":sidebarclose"}}) {
+        const auto* hit=opening.hit_test(160+int(670*1.2),int(std::lround(row.first*1.2)));
+        CHECK(hit && *hit==row.second);
+    }
+    CHECK(!opening.hit_test(964,int(209*1.2)));
+    capture_scene(opening,"sidebar-replay");
+    // Neither a rejected save nor a rejected load may touch a story file or
+    // change the replay position. Internal snapshots still support backlog.
+    std::vector<uint8_t> replay_state, after_rejection;
+    CHECK(opening.capture_state(&replay_state));
+    const auto blocked_path=std::filesystem::temp_directory_path()/
+        ("arisa32-replay-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".dc4sav");
+    {std::ofstream sentinel(blocked_path,std::ios::binary);sentinel<<"story-save-preserved";}
+    CHECK(!opening.save_state(blocked_path.string()));
+    CHECK(opening.last_error().find("scene replay")!=std::string::npos);
+    CHECK(!opening.load_state(blocked_path.string()));
+    CHECK(opening.last_error().find("scene replay")!=std::string::npos);
+    CHECK(opening.capture_state(&after_rejection));CHECK(after_rejection==replay_state);
+    {std::ifstream sentinel(blocked_path,std::ios::binary);std::string content((std::istreambuf_iterator<char>(sentinel)),{});CHECK(content=="story-save-preserved");}
+    std::filesystem::remove(blocked_path);
+    CHECK(opening.restore_state(replay_state,&error));CHECK(!opening.save_load_allowed());
+    CHECK(opening.set_sidebar_visible(true));
+    CHECK(opening.hit_test(964,143) && *opening.hit_test(964,143)==":option");
+    CHECK(opening.restore_state(live,&error));CHECK(opening.save_load_allowed());
+    CHECK(opening.set_sidebar_visible(true));
+    CHECK(opening.hit_test(964,143) && *opening.hit_test(964,143)==":ds");
+    CHECK(opening.restore_state(live,&error));
     opening.set_window_opacity(100);
     opening.set_message_visible(false);opening.draw(-1);
     const auto without_window=opening.frame();
@@ -521,6 +611,18 @@ int main(int argc, char** argv) {
     const auto interview = menu.activate("talk");
     CHECK(interview.type == Type::None);
     CHECK(menu.page()==Page::Interview);
+    menu.set_variable(100,56,0);
+    CHECK(menu.system_voice(menu.page_voice_event())=="VOICE/sys/sys_otm_09");
+    CHECK(menu.system_voice(10)=="VOICE/sys/sys_otm_05");
+    CHECK(menu.system_voice(14)=="VOICE/sys/sys_otm_10");
+    CHECK(menu.system_voice(15)=="VOICE/sys/sys_otm_06");
+    CHECK(menu.system_voice(16)=="VOICE/sys/sys_otm_07");
+    CHECK(menu.system_voice(17)=="VOICE/sys/sys_otm_08");
+    CHECK(menu.system_voice(7)=="VOICE/sys/sys_otm_03");
+    CHECK(menu.system_voice(8)=="VOICE/sys/sys_otm_04");
+    CHECK(menu.system_voice(13)=="VOICE/sys/sys_otm_04");
+    CHECK(menu.system_voice(20)=="VOICE/sys/sys_otm_11");
+    CHECK(menu.system_voice(21)=="VOICE/sys/sys_otm_12");
     CHECK(has(menu,"otome") && has(menu,"anzu") && has(menu,"page") && has(menu,"return"));
     CHECK(menu.controls().size()==7);
     capture(menu,"interview-first");
@@ -533,7 +635,14 @@ int main(int argc, char** argv) {
         CHECK(!has(menu,actors[actor])); // active actor is an authored static chip
         capture(menu,std::string("interview-")+actors[actor]);
     }
-    menu.back();CHECK(menu.page()==Page::Extras && has(menu,"talk"));
+    CHECK(menu.back().type!=Type::PlayVoice);CHECK(menu.page()==Page::Extras && has(menu,"talk"));
+    // Button voice registration while rebuilding these destinations must not
+    // leak a PlayVoice action ahead of the host's single page announcement.
+    for (Page page : {Page::Music,Page::Scenes,Page::Gallery,Page::Interview}) {
+        menu.open(page);
+        CHECK(menu.back().type!=Type::PlayVoice);
+        CHECK(menu.page()==Page::Extras);
+    }
     CHECK(menu.error().empty());capture(menu,"interview-return");
     const auto path = std::filesystem::temp_directory_path() / ("arisa32-dc2pc-menu-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".profile");

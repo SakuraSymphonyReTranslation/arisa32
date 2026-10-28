@@ -270,11 +270,14 @@ public:
     void set_animation_enabled(bool enabled);
     void update(uint32_t elapsed_ms);
     void finish_animations();
-    bool animating() const { return !camera_motion_.empty(); }
+    bool animating() const { return !camera_motion_.empty() || dc2pc_transition_active_; }
     float camera_scale() const { return camera_scale_; }
     // Native .dat saves for supported games; snapshots for legacy/checkpoints.
     bool save_state(const std::string& path);
     bool load_state(const std::string& path);
+    bool save_load_allowed() const;
+    // Restore normal persistence when a supported replay returns to its menu.
+    void finish_replay();
     bool capture_state(std::vector<uint8_t>* bytes, std::string* error = nullptr);
     bool capture_pc_save(std::vector<uint8_t>* bytes, std::string* error = nullptr);
     uint32_t save_format_version() const { return mes_.version; }
@@ -350,6 +353,10 @@ private:
     void start_transition(int frames = 30);
     void snapshot_for_transition();
     void draw_transition(uint8_t* dst);
+    void compose_scene();
+    void start_dc2pc_transition(int mode);
+    void finish_dc2pc_transition();
+    void draw_dc2pc_transition();
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
@@ -369,8 +376,12 @@ private:
     std::string pending_movie_, input_skip_label_;
     bool pending_movie_is_effect_ = false;
     bool is_dc4_or_dc4ph_ = false;
+    bool dc4_replay_profile_ = false;
     double script_wait_ms_ = 0;
     bool script_wait_pending_ = false;
+    bool script_wait_skippable_ = true;
+    double dc2pc_clock_ms_ = 0, dc2pc_wait_reference_ms_ = 0;
+    bool dc2pc_wait_reference_valid_ = false;
     bool credits_active_ = false;
     double credits_elapsed_ms_ = 0, credits_duration_ms_ = 0, credits_scroll_ms_ = 0;
     std::vector<uint8_t> credits_archive_;
@@ -401,6 +412,7 @@ private:
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
     bool sidebar_visible_ = false;
+    bool sidebar_replay_ = false;
     UiChip sidebar_background_;
     std::vector<UiButton> sidebar_buttons_;
     struct ChoiceUi {
@@ -438,6 +450,13 @@ private:
     bool transition_active_ = false;
     bool transition_pending_ = false;
     double transition_elapsed_ms_ = 0, transition_duration_ms_ = 0;
+    // DC2PC raw0D presents a pending composition. Keep the displayed pixels
+    // separately: raw30 must not replace the source of an outgoing fade.
+    std::vector<uint8_t> dc2pc_displayed_frame_, dc2pc_transition_target_;
+    bool dc2pc_present_pending_ = false, dc2pc_black_ = false;
+    bool dc2pc_transition_active_ = false;
+    int dc2pc_transition_mode_ = 0, dc2pc_transition_speed_ = 0;
+    double dc2pc_transition_elapsed_ms_ = 0, dc2pc_transition_duration_ms_ = 0;
     std::string current_line_;
     std::string speaker_;
     struct Dialogue { std::string text, name; };

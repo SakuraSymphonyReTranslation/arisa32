@@ -48,6 +48,8 @@ const auto dc2pc = [] {
                    {0x09, Opcode::WAIT_INPUT},
                    {0x0A, Opcode::WAIT_INPUT},
                    {0x0B, Opcode::WAIT_INPUT},
+                   {0x0D, Opcode::TRANSITION},
+                   {0x12, Opcode::WAIT},
                    {0x1E, Opcode::SCOPE},
                    {0x21, Opcode::CLEAR_LAYOUT},
                    {0x17, Opcode::END_CONTROL},

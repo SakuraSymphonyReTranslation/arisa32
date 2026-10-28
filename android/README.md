@@ -14,15 +14,22 @@ The header keeps a fixed 40 dp square aligned vertically with the Arisa32 title.
 bash android/build_apk.sh          # -> android/Arisa32-debug.apk
 ```
 
-Requires Android SDK build-tools 35.0.0, platform android-35, CMake 3.22.1,
-NDK 27.3.13750724 and JDK 17+. Override defaults with `ANDROID_SDK`,
-`ANDROID_NDK_HOME`, `JAVA_HOME` and `DC4_BUILD_DIR`. The packaging script clears
-`DC4_BUILD_DIR`; use a dedicated build directory, never a source or game-data
-folder. Gradle/Android Studio can also build `android/`.
+Build FFmpeg first as described under movie playback below. Requires Android SDK
+platform android-36, CMake 3.22.1, NDK 27.3.13750724 and JDK 17+. Configure the
+SDK in `android/local.properties` or `ANDROID_HOME`, and the JDK with `JAVA_HOME`.
+The helper invokes the Gradle wrapper, packages both ABIs and all FFmpeg shared
+libraries, and copies the debug APK to the historical output paths. It also
+accepts Gradle options. Android Studio builds the same `android/` project.
+
+On Windows, Gradle can also be invoked directly:
+
+```powershell
+cd android
+.\gradlew.bat assembleRelease --console=plain  # -> app/build/outputs/apk/release/app-release.apk
+```
 
 The APK targets API 36 (Android 16), supports Android 5.0/API 21 onward, and contains
-`arm64-v8a` and `armeabi-v7a` libraries. The standalone script compiles every
-Java helper with UTF-8 source encoding. C++ exceptions must remain enabled for
+`arm64-v8a` and `armeabi-v7a` libraries. C++ exceptions must remain enabled for
 checked scene snapshots.
 
 ## Add and choose games
@@ -117,10 +124,40 @@ scene jumps. Slot menus have 100 numbered slots with timestamps, 128×72 preview
 and scenario titles; overwrites require a confirmation and queue the write
 onto the render thread.
 
-MPEG-1 Program Stream movies and MPEG Layer II sound decode through portable
-`pl_mpeg` and the core mixer, including scripted movie completion and tap-to-skip.
+Android movies use a minimal FFmpeg 7.1.3 build and the core mixer, including
+scripted completion, pause/resume and tap-to-skip. Game and patch movies are
+read directly in their original containers; playback never transcodes files.
+FFmpeg probes the contents even when a patch keeps an old `.mpg` filename.
+Explicit translation folders and matching patch movies take precedence, with
+case-insensitive lookup and base-game fallback, including `.wmv` and `.asf`.
+MediaCodec is tried for supported H.264, HEVC, MPEG-2/4, VP8 and VP9 streams. Missing
+or failing hardware decoders fall back to FFmpeg software decoding. WMV/WMA
+and MPEG-1 remain playable through software on devices lacking those codecs.
+NEON and speed optimization are enabled. Decoded-frame buffering is bounded,
+late frames are dropped before color conversion, and RGBA output is capped at
+1280×720. Smaller originals keep their decoded dimensions for fast NEON conversion.
+Timestamped audio is fed in bounded chunks, preserving delayed soundtracks.
+When audio ends before video, playback advances through the silent ending while
+the demuxer waits for room in its compressed-video queue.
+Frames copy directly into the Android bitmap with row-stride handling; unchanged
+frames reuse it. On Android 8+, a hardware canvas scales the movie with its original
+aspect ratio. Older devices, or unavailable hardware canvases, use the canvas fallback.
 COMU, camera animation, transitions and credits use the shared scene renderer.
-Other video codecs are outside this decoder's scope.
+Codec support still depends on the selected FFmpeg build and device. Performance
+on Helio P35/G81 or Snapdragon 660 needs testing on those actual chipsets.
+
+Build the decoder libraries for both ABIs before the APK:
+
+```powershell
+android\build_ffmpeg_windows.bat
+```
+
+On Linux/WSL use `bash android/build_ffmpeg.sh` with the Linux NDK. Android Studio
+and Gradle then link the generated libraries in `third_party/ffmpeg/android/`.
+The isolated `tests/android/MovieProbe.java`/`movie_probe.cpp` harness measures
+original-stream decoding on a device without opening a game or changing saves.
+Regression instructions are in `tests/android/README.md`; the latest validation
+record is in `docs/ffmpeg-validation.md`.
 
 ## Saves and portable archives
 

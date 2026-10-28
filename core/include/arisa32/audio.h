@@ -84,6 +84,10 @@ public:
     bool restore_channels(std::vector<AudioPreparedChannel> prepared,
                            const std::array<SceneAudioGroupSnapshot, 3>& groups,
                            std::string* error = nullptr);
+    // Publish channels prepared in a detached mixer without decoding again.
+    // Both mixers retain their user controls, device and movie stream; source
+    // receives the retired playback state and may be destroyed after return.
+    void adopt_channels_from(AudioEngine& source);
     static bool valid_group_snapshot(const SceneAudioGroupSnapshot& group);
 
     void stop_channel(int channel, uint32_t fade_ms = 0);
