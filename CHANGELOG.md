@@ -16,6 +16,13 @@
     - Otomatis beradaptasi secara mulus saat pemutaran video / movie cutscene dengan rasio khusus dan saat perubahan mode windowed/fullscreen.
   - Tombol sakelar On / Off tersedia di menu Pengaturan aplikasi dan menu gelembung (in-game Extra menu).
 
+### Backend Video FFmpeg & Optimasi Ukuran File APK
+
+- **Migrasi backend pemutaran video dari LibVLC ke FFmpeg**:
+  - Menggantikan ketergantungan LibVLC dengan build FFmpeg kustom yang ramping, dikonfigurasi khusus hanya untuk menyertakan komponen, demuxer, dan codec video/audio yang benar-benar dibutuhkan oleh engine visual novel (MPEG-1/2, H.264, WMV, AAC, MP3, Vorbis, WMA).
+  - Mengurangi ukuran file APK (filesize) secara signifikan karena membuang modul-modul eksternal yang tidak diperlukan.
+  - Integrasi rendering langsung ke pipeline grafis native Arisa32 dengan sinkronisasi frame audio-video yang presisi serta pemakaian memori yang lebih efisien.
+
 ### Pembatasan Save / Load pada Scene Replay & Scenario Mode (Akurasi Native PC)
 
 - **Penonaktifan Save, Load, QuickSave, dan QuickLoad saat Replay/Scenario Mode**:
