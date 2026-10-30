@@ -12,7 +12,7 @@ std::string lower(std::string value) {
     return value;
 }
 const std::vector<std::string> extensions = {
-    ".mpg", ".mpeg", ".wmv", ".asf", ".mp4", ".m4v", ".ogv", ".mkv", ".avi", ".webm", ".ts"
+    ".mpg", ".mpeg", ".wmv", ".asf", ".mp4", ".m4v", ".ogv", ".mkv", ".avi", ".webm", ".ts", ".mp5"
 };
 fs::path child(const fs::path& directory, const std::string& name) {
     std::error_code ec;
@@ -83,32 +83,42 @@ std::string resolve_movie_file(const std::string& data_dir, const std::string& o
     std::vector<std::string> names;
     if (!extension.empty()) names.push_back(relative);
     for (const auto& ext : extensions) if (ext != extension) names.push_back(stem + ext);
-    std::error_code ec;
-    // Directory precedence applies to renamed openings too, preserving the overlay.
-    for (const auto& directory : directories) {
-        for (const auto& name : names) {
-            const auto file = child(directory, name);
-            if (!file.empty() && fs::is_regular_file(file, ec) && fs::file_size(file, ec) > 0) return file.u8string();
+    auto resolve = [&](bool mpg_only) -> std::string {
+        std::error_code ec;
+        // Directory precedence applies to renamed openings too, preserving the overlay.
+        for (const auto& directory : directories) {
+            for (const auto& name : names) {
+                if (mpg_only && lower(fs::u8path(name).extension().u8string()) != ".mpg") continue;
+                const auto file = child(directory, name);
+                if (!file.empty() && fs::is_regular_file(file, ec) && fs::file_size(file, ec) > 0) return file.u8string();
+            }
+            if (!opening(stem)) continue;
+            std::vector<fs::path> matches;
+            ec.clear();
+            for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                const auto file_stem = it->path().stem().u8string();
+                const auto file_ext = lower(it->path().extension().u8string());
+                if (mpg_only && file_ext != ".mpg") continue;
+                const char requested = opening_number(stem);
+                if (opening(file_stem) && (!requested || requested == opening_number(file_stem)) &&
+                    std::find(extensions.begin(), extensions.end(), file_ext) != extensions.end() && it->file_size(ec) > 0)
+                    matches.push_back(it->path());
+            }
+            std::sort(matches.begin(), matches.end(), [](const fs::path& a, const fs::path& b) {
+                const auto ai = std::find(extensions.begin(), extensions.end(), lower(a.extension().u8string()));
+                const auto bi = std::find(extensions.begin(), extensions.end(), lower(b.extension().u8string()));
+                return ai != bi ? ai < bi : a.u8string() < b.u8string();
+            });
+            if (!matches.empty()) return matches.front().u8string();
         }
-        if (!opening(stem)) continue;
-        std::vector<fs::path> matches;
-        ec.clear();
-        for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
-            if (!it->is_regular_file(ec)) continue;
-            const auto file_stem = it->path().stem().u8string();
-            const auto file_ext = lower(it->path().extension().u8string());
-            const char requested = opening_number(stem);
-            if (opening(file_stem) && (!requested || requested == opening_number(file_stem)) &&
-                std::find(extensions.begin(), extensions.end(), file_ext) != extensions.end() && it->file_size(ec) > 0)
-                matches.push_back(it->path());
-        }
-        std::sort(matches.begin(), matches.end(), [](const fs::path& a, const fs::path& b) {
-            const auto ai = std::find(extensions.begin(), extensions.end(), lower(a.extension().u8string()));
-            const auto bi = std::find(extensions.begin(), extensions.end(), lower(b.extension().u8string()));
-            return ai != bi ? ai < bi : a.u8string() < b.u8string();
-        });
-        if (!matches.empty()) return matches.front().u8string();
+        return {};
+    };
+    // DC2DM's converted MPG files take precedence over native MP5 backups.
+    if (lower(stem).rfind("dc2dm_", 0) == 0) {
+        const auto mpg = resolve(true);
+        if (!mpg.empty()) return mpg;
     }
-    return {};
+    return resolve(false);
 }
 } // namespace dc4

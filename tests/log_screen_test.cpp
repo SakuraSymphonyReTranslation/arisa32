@@ -131,6 +131,35 @@ void capture(const fs::path& root) {
     CHECK(pixel(scene.frame(),1270,710)==(Color{10,200,70}));
     CHECK(scene.capture_thumbnail(0,72).empty());
 }
+void dc2dm(const fs::path& root) {
+    write(root/"MES/main.mes",{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,0});
+    crx(root/"GRP/SYSTEM/LOG_BACK.CRX",1024,576,false);
+    crx(root/"GRP/SYSTEM/LOG_CHIP.CRX",1024,596,true);
+    dc4ui::LogScreen log;
+    CHECK(log.load(root.string()));
+    CHECK(log.visible_rows()==3 && log.row_pitch()==205);
+    CHECK(log.last_scroll(3)==0 && log.last_scroll(7)==4);
+    CHECK(log.back_hit(1180,650) && !log.back_hit(1100,680));
+    CHECK(!log.checkbox_hit(400,50));
+    CHECK(log.jump_hit(60,180,2,6)==2);
+    CHECK(log.jump_hit(60,385,2,6)==3);
+    CHECK(log.jump_hit(60,590,2,6)==4);
+    CHECK(log.jump_hit(60,590,2,4)==-1);
+    CHECK(log.voice_hit(210,50,2,6)==2);
+    CHECK(log.scroll_button(1160,40)==-1 && log.scroll_button(1160,90)==1);
+    CHECK(log.thumb_scroll(0,7)==0 && log.thumb_scroll(720,7)==4);
+    CHECK(!log.thumb_hit(1240,300,0,3) && log.thumb_hit(1240,300,0,7));
+    dc4ui::LogRow row;row.voice="voice";
+    const dc4scene::FontRenderer no_font;
+    std::vector<uint8_t> frame(1280*720*4,0);
+    log.draw({row},0,true,-1,-1,no_font,&frame);
+    CHECK(pixel(frame,1200,710)==(Color{10,200,70}));
+    CHECK(pixel(frame,300,50)==atlas(269,20));
+    CHECK(pixel(frame,30,165)==atlas(0,204));
+    log.draw({row},0,true,60,180,no_font,&frame);
+    CHECK(pixel(frame,30,165)==atlas(0,252));
+    CHECK(!log.load((root/"missing").string()) && !log.loaded());
+}
 }
 int main() {
     const auto parent=fs::canonical(fs::temp_directory_path());
@@ -139,7 +168,7 @@ int main() {
         if (!fs::create_directory(root)) throw std::runtime_error("Cannot create isolated log fixture");
         crx(root/"GRP/SYSTEM/BKLOGBACK.CRX",1280,720,false);
         crx(root/"GRP/SYSTEM/BKLOGCHIP.CRX",1224,854,true);
-        text_layout(); row_art(root); capture(root);
+        text_layout(); row_art(root); capture(root); dc2dm(root);
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; ++failures; }
     std::error_code ec;
     if (fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)

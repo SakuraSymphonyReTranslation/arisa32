@@ -1202,7 +1202,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 notifyUser(dc4OpenMenu("config"));
                 break;
             case ":aatitle":
-                dc4SetSidebarVisible(false);
+                if (!"dc2dm".equals(currentProfile().getId())) dc4SetSidebarVisible(false);
                 autoMode=skipMode=false;handleOriginalAction(dc4RequestConfirm("title"));
                 break;
             case ":n":

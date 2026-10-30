@@ -27,7 +27,7 @@ enum class SaveActionType {
 
 struct SaveAction {
     SaveActionType type = SaveActionType::None;
-    // Slot: zero-based 0..99. Page: 0..9. Mode: 0=Save, 1=Load.
+    // Slot: zero-based 0..99. Page: zero-based. Mode: 0=Save, 1=Load.
     // Hosts retain existing save IDs by using index + 1 for storage.
     int index = -1;
 };
@@ -45,12 +45,16 @@ public:
 
     SaveMode mode() const { return mode_; }
     int page() const { return page_; }
+    int page_count() const {
+        return dc2dm_ && (occupied_[97] || occupied_[98] || occupied_[99]) ? 11 : kPageCount;
+    }
     bool dc2pc() const { return dc2pc_; }
+    bool dc2dm() const { return dc2dm_; }
     int selected_icon() const { return selected_icon_; }
     bool choosing_icon() const { return choosing_icon_; }
     void set_special_slots(const SaveSlot& quick, const SaveSlot& latest) { quick_slot_=quick; latest_slot_=latest; }
     void set_mode(SaveMode mode);
-    void set_page(int page);       // Clamp to 0..9.
+    void set_page(int page);       // Clamp to available pages.
     void change_page(int delta);   // Wrap as in the original scripts.
     void set_shortcuts(bool latest, bool automatic, bool quick);
     void set_navigation(bool config, bool title, bool quit);
@@ -62,6 +66,7 @@ public:
 
     // The ten rows on each page run down the left column, then the right.
     static int slot_index(int page, int visible_index);
+    SaveAction visible_slot_action(int visible_index) const;
     int slot_hit(int x, int y) const;
     SaveAction hit_test(int x, int y) const;
 
@@ -92,13 +97,16 @@ public:
 private:
     void draw_dc2pc(const std::vector<SaveSlot>& slots, int x, int y, bool down,
                    const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
+    void draw_dc2dm(const std::vector<SaveSlot>& slots, int x, int y, bool down,
+                   const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
+    int dc2dm_slot_index(int visible) const;
     int icon_hit(int x, int y) const;
     SaveAction finish_confirmation(bool yes);
     int control_id(int x, int y) const;
     SaveMode mode_ = SaveMode::Save;
     int page_ = 0;
     bool loaded_ = false;
-    bool dc2pc_ = false, choosing_icon_ = false;
+    bool dc2pc_ = false, dc2dm_ = false, choosing_icon_ = false;
     int selected_icon_ = -1, pressed_icon_ = -1;
     SaveSlot quick_slot_, latest_slot_;
     bool latest_ = false, automatic_ = false, quick_ = false;
@@ -110,7 +118,8 @@ private:
     bool pointer_held_ = false;
     SaveAction pending_action_;
     mutable ConfirmDialog confirm_dialog_;
-    dc4scene::Image save_back_, load_back_, chip_, system_goto_, common_chip_;
+    dc4scene::Image save_back_, load_back_, save_back_later_, load_back_later_;
+    dc4scene::Image chip_, system_goto_, common_chip_;
     dc4::Language language_ = dc4::Language::Japanese;
 };
 

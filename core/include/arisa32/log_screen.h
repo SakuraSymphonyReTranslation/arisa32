@@ -12,6 +12,7 @@
 //   jump button (328,top+28)-(488,top+62);
 //   voice button (328,top+68)-(488,top+101); checkbox (327,44); back (1100,672)
 #pragma once
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,12 @@ public:
     int thumb_scroll(int y, size_t row_count) const;
     bool thumb_hit(int x, int y, int scroll, size_t row_count) const;
     static int thumb_y(size_t row_count, int scroll);
+    int scroll_button(int x, int y) const;
+    int visible_rows() const { return dc2dm_ ? 3 : kVisibleRows; }
+    int row_pitch() const { return dc2dm_ ? 205 : kRowPitch; }
+    int last_scroll(size_t row_count) const {
+        return std::max(0, int(row_count) - visible_rows());
+    }
 
     static constexpr int kRowPitch = 150;
     static constexpr int kTopY = 82;
@@ -67,6 +74,9 @@ public:
     static std::vector<std::u16string> text_lines(const std::u16string& text, bool latin);
 
 private:
+    void draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
+                    int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
+                    std::vector<uint8_t>* frame) const;
     void blit(const dc4scene::Image& img, int sx, int sy, int sw, int sh,
               int dx, int dy, std::vector<uint8_t>* frame) const;
     void blit_image(const std::vector<uint8_t>& rgba, int w, int h,
@@ -79,6 +89,7 @@ private:
     std::vector<std::u16string> face_names_;
     std::vector<std::pair<std::u16string, int>> alias_names_;
     bool latin_mode_ = false;
+    bool dc2dm_ = false;
 };
 
 }  // namespace dc4ui

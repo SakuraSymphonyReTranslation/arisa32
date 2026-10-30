@@ -217,7 +217,7 @@ public:
     bool waiting_for_time() const { return script_wait_pending_ && script_wait_ms_ != 0; }
     bool script_ready() const { return !sidebar_visible_ && !reviewing_dialogue() && script_wait_pending_ && script_wait_ms_ == 0; }
     void finish_script_wait();
-    bool credits_active() const { return credits_active_; }
+    bool credits_active() const { return credits_active_ || dc2dm_ending_.active; }
     bool effect_pck_active() const { return effect_pck_.active; }
     void set_window_opacity(int percent);
     void set_effects_enabled(bool enabled);
@@ -285,7 +285,10 @@ public:
     bool restore_pc_save(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
     int variable(uint16_t bank, uint16_t index) const { return vm_.read_variable(bank, index); }
     uint32_t script_position() const { return vm_.pos(); }
-    void set_variable(uint16_t bank, uint16_t index, int value) { vm_.write_variable(bank, index, value); }
+    void set_variable(uint16_t bank, uint16_t index, int value) {
+        vm_.write_variable(bank, index, value);
+        if (dc2dm_ui_ && bank == 9 && index == 7 && value != 0) sidebar_visible_ = false;
+    }
 
     // Loads the message-window UI script (MES/win_size.mes) and the sheets it
     // blits from (0x3D registers a sheet at index slot + 37).
@@ -316,6 +319,7 @@ private:
     bool load_grp_crx(const std::string& rel, Image* out, std::string* err) const;
     void load_slot(int slot, const std::string& raw);
     void load_bst(int idx, const std::string& name, int slot);
+    void release_dc2dm_sprite(size_t index);
     bool load_bst_expression(int idx, const std::string& name);
     void load_preload(int slot, const std::string& name);
     void load_layer(int layer, const std::string& path);
@@ -344,6 +348,9 @@ private:
     void draw_comu();
     bool start_credits(uint32_t duration_ms);
     void draw_credits();
+    bool start_dc2dm_ending();
+    void draw_dc2dm_ending();
+    void finish_dc2dm_ending(bool skipped);
     bool load_pck_effect(const std::string& rel);
     void start_pck_effect(uint16_t w0, uint16_t w1, uint16_t w2);
     void update_pck_effect(double elapsed_ms);
@@ -368,6 +375,7 @@ private:
     bool dispatch_sprite_command(const dc4::MesCommand& c);
     bool dispatch_camera_command(const dc4::MesCommand& c);
     bool dispatch_text_command(const dc4::MesCommand& c);
+    bool replay_action_disabled(const std::string& action) const;
 
     EffectPck effect_pck_;
     std::string data_;
@@ -387,6 +395,28 @@ private:
     std::vector<uint8_t> credits_archive_;
     std::vector<std::pair<uint32_t, uint32_t>> credits_entries_;
     std::map<size_t, Image> credits_pages_;
+    struct EndingArchive {
+        std::string path;
+        std::vector<std::pair<uint32_t, uint32_t>> entries;
+        bool open(const std::string& name, size_t max_entries, int width, int height, std::string* error);
+        bool decode(size_t index, Image* image, std::string* error) const;
+    };
+    struct EndingCard {
+        EndingArchive animation;
+        Image image;
+        int frame = -1;
+    };
+    struct Dc2dmEnding {
+        bool active = false;
+        double elapsed_ms = 0, duration_ms = 0, card_ms = 0;
+        int credits_speed = 0;
+        EndingArchive credits, montage;
+        std::map<size_t, Image> pages;
+        std::map<size_t, EndingCard> cards;
+        Image photo;
+    } dc2dm_ending_;
+    bool dc2dm_ending_reference_valid_ = false;
+    double dc2dm_ending_reference_elapsed_ms_ = 0;
     dc4::MesFile mes_;
     dc4::MesVm vm_;
     dc4::SceneAudio scene_audio_;
@@ -411,6 +441,8 @@ private:
     bool pending_has_button_ = false;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
+    bool dc2dm_ui_ = false;
+    size_t dc2dm_toolbar_count_ = 0;
     bool sidebar_visible_ = false;
     bool sidebar_replay_ = false;
     UiChip sidebar_background_;
@@ -421,6 +453,7 @@ private:
         int text_x = 0, text_y = 0;
     };
     std::vector<ChoiceUi> dc2pc_choices_;
+    std::vector<ChoiceUi> dc2dm_toolbar_;
     int ui_bar_top_ = 690;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered

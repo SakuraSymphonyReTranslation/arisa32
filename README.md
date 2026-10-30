@@ -12,7 +12,7 @@
 
 A portable C++17 reimplementation of the CIRCUS adv32 visual novel engine runtime for **Da Capo & Dal Segno series** on Windows (SDL2) and Android (NativeActivity + JNI). It reads the original game's installed MES scripts, CRX/CRM artwork, and XPCM audio directly in place.
 
-**Latest release: [v0.6.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.1)** — Auto update check, dynamic FPS meter on game frame corner, scene replay save/load restrictions matching native PC, and engine stability improvements. See [CHANGELOG.md](CHANGELOG.md) for details.
+**Latest release: [v0.6.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.2)**. D.C. II Dearest Marriage compatibility beta, Sakuramusubi text fixes, and opening/ending playback fixes. See [CHANGELOG.md](CHANGELOG.md) for details and known bugs.
 
 > [!NOTE]
 > **Game assets are not included.** A legitimate copy of supported games is required. Game files (`AdvData`) are read in place and are never modified by the engine.
@@ -40,7 +40,7 @@ Arisa32 mengenali dan mendukung 21 judul resmi dari seri Da Capo & Dal Segno ber
 - `D.C. II P.C. ~Da Capo II Plus Communication~`
 - `D.C. II To You ~Da Capo II To You~`
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
-- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
+- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` *(beta: fully playable according to user testing, with remaining UI and voice bugs; see the [known issues](CHANGELOG.md#bug-dc2dm-yang-masih-diketahui))*
 
 ### Da Capo (Original) Series
 - `D.C. ~Da Capo~`

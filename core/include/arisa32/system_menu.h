@@ -50,7 +50,7 @@ public:
     SystemMenuPage page() const;
     void set_in_game(bool value);
     void set_save_available(bool latest, bool quick, bool automatic = false);
-    void set_config_page(int zero_based_page); // Seven original pages.
+    void set_config_page(int zero_based_page);
     int config_page() const;
     void pointer_down(int x, int y);
     SystemMenuAction pointer_move(int x, int y); // Updates a captured slider.

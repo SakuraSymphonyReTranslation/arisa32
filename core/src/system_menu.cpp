@@ -2,6 +2,7 @@
 #include "arisa32/resource.h"
 #include "arisa32/mem_safe.h"
 #include "arisa32/names.h"
+#include "arisa32/dc2dm_music_titles.h"
 #include <algorithm>
 #include <array>
 #include <unordered_map>
@@ -179,8 +180,14 @@ struct Widget {
     bool vertical = false;
     std::string slider_image;
     int thumb_position = -1;
+    bool filled_slider = false;
 };
-struct Caption { int x, y, size, control = -1, state = 99; std::string text; int max_width = 0; };
+struct Caption {
+    int x, y, size, control = -1, state = 99;
+    std::string text;
+    int max_width = 0;
+    std::u16string unicode;
+};
 struct MenuProfile {
     dc4::MesProfileId id;
     int canvas_width, canvas_height;
@@ -194,8 +201,11 @@ constexpr MenuProfile ModernMenu{
     dc4::MesProfileId::Modern, 1280, 720, 100, 150, "main", "ex_main", "config", "menu1"};
 constexpr MenuProfile DC2PCMenu{
     dc4::MesProfileId::DC2PC, 800, 600, 0, 23, "", "extra", "option", "init_menu"};
+constexpr MenuProfile DC2DMMenu{
+    dc4::MesProfileId::ClassicDM, 1024, 576, 0, 23, "start_main", "ex_main", "option", "menu1"};
 struct Script {
     bool dc2pc = false;
+    bool dc2dm = false;
     std::vector<Command> code;
     std::map<std::string, size_t> labels;
 };
@@ -219,6 +229,7 @@ void blit(const dc4scene::Image& image, const Rect& src, const Rect& dst, std::v
 
 struct SystemMenu::Impl {
     bool dc2pc = false;
+    bool dc2dm = false;
     const MenuProfile* profile = &ModernMenu;
     std::string title_script = "title_00";
     Rect destination(Rect r) const {
@@ -241,6 +252,7 @@ struct SystemMenu::Impl {
     mutable std::map<std::string, dc4scene::Image> images;
     std::map<int, std::string> sheets;
     std::vector<std::string> bgm_names, cg_names, scene_names;
+    std::vector<int> dc2dm_music_ids;
     std::vector<Widget> widgets;
     std::vector<Chip> chips;
     std::vector<Caption> captions;
@@ -257,6 +269,7 @@ struct SystemMenu::Impl {
     bool catalogue_drawn = false;
     std::set<int> playlist;
     int music_top = 0, music_selected = -1;
+    int dc2dm_music_volume = 25, dc2dm_music_enabled = 1;
     int pressed = -1;
     int thumb_grab = 0;
     bool held = false, gallery_view = false, movie_menu = false;
@@ -276,9 +289,14 @@ struct SystemMenu::Impl {
         vars[{100,49}] = 80;
         for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
         for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
+        if (dc2dm) {
+            for (const auto& value : {std::pair<int,int>{7,25},{8,25},{9,29},{11,8},{12,1}})
+                vars[{99,value.first}] = value.second;
+            vars[{100,49}] = 0;
+        }
     }
     int get(int b, int i) const {
-        if (dc2pc && b >= 200 && b < 210) {
+        if ((dc2pc || dc2dm) && b >= 200 && b < 210) {
             if (i < 0 || i >= 97) return 0;
             uint32_t bits = 0;
             for (int n = 0; n < 4; ++n) bits = (bits << 8) | uint8_t(get(b-200,i+n));
@@ -298,7 +316,7 @@ struct SystemMenu::Impl {
         return at->second;
     }
     void put(int b, int i, int value) {
-        if (dc2pc && b >= 200 && b < 210) {
+        if ((dc2pc || dc2dm) && b >= 200 && b < 210) {
             if (i < 0 || i >= 97) return;
             for (int n=0;n<4;++n) put(b-200,i+n,(uint32_t(value) >> (24-8*n)) & 255);
             return;
@@ -311,8 +329,8 @@ struct SystemMenu::Impl {
         if (dc2pc && b == 100 && i >= 100) return;
         vars[{b,i}] = value;
         if ((b==94 || b==95) && i==50) for(int character=0;character<18;++character)vars[{b,character}]=value;
-        if (b == 100 && i == 49) vars[{99,11}] = value;
-        if (b == 99 && i == 11) vars[{100,49}] = value;
+        if (!dc2dm && b == 100 && i == 49) vars[{99,11}] = value;
+        if (!dc2dm && b == 99 && i == 11) vars[{100,49}] = value;
     }
     dc4scene::Image* image(const std::string& raw) const {
         std::string name = key(raw);
@@ -342,6 +360,7 @@ struct SystemMenu::Impl {
         if (!mes.load_file(resolve(data + "/MES", name + ".mes"), &last_error)) return nullptr;
         Script result;
         result.dc2pc = mes.dialect == dc4::MesDialect::ClassicDC2 && mes.version == 0x9969;
+        result.dc2dm = mes.dialect == dc4::MesDialect::ClassicDM;
         dc4::MesStream stream(mes); Command c;
         while (stream.next(&c) && c.op) {
             c = dc4::mes_engine_command(c);
@@ -410,7 +429,7 @@ struct SystemMenu::Impl {
     void menu_stop(Opcode, RunState& context, const Command&) { context.finish(context.output); }
 
     void menu_yield_menu(Opcode, RunState& context, const Command& c) {
-        if (context.source->dc2pc) {
+        if (context.source->dc2pc || context.source->dc2dm) {
             context.finish(context.output);
             return;
         }
@@ -489,9 +508,9 @@ struct SystemMenu::Impl {
         put(w[0], w[1], get(w[0], w[1]) + get(w[2], w[3]));
     }
 
-    void menu_sheet(Opcode opcode, RunState&, const Command& c) {
-        if (c.p1 != 0 && c.p1 != 28) {
-            sheets[c.p1 + (opcode == Opcode::LOAD_SHEET ? 37 : 0)] = c.str;
+    void menu_sheet(Opcode opcode, RunState& context, const Command& c) {
+        if ((c.p1 != 0 || (context.source->dc2dm && opcode == Opcode::LOAD_SHEET)) && c.p1 != 28) {
+            sheets[c.p1 + (opcode == Opcode::LOAD_SHEET ? (context.source->dc2dm ? 21 : 37) : 0)] = c.str;
             image(c.str);
         }
     }
@@ -637,6 +656,8 @@ struct SystemMenu::Impl {
                 widget.slider_count = context.pending.words[2];
                 widget.slider_left = sw(context.pending.words[0]);
                 widget.slider_right = sw(context.pending.words[1]);
+            } else if (context.source->dc2dm && chip_state == 6 && w[0] == 2 && w[1] == 16) {
+                widget.filled_slider = true;
             } else if (context.source->dc2pc && chip_state>=22 && chip_state<=26)
                 chips.push_back(chip);
             else if (chip_state == 6 || chip_state == 8 || chip_state == 10)
@@ -677,7 +698,7 @@ struct SystemMenu::Impl {
             legacy_items[context.list_id].tag = c.str;
     }
     void menu_bgm(Opcode, RunState& context, const Command& c) {
-        if (!context.action || !context.source->dc2pc) return;
+        if (!context.action || (!context.source->dc2pc && !context.source->dc2dm)) return;
         const int id = c.words[0];
         if (id == 255) context.output = {Type::StopMusic};
         else if (id >= 0 && size_t(id) < bgm_names.size()) {
@@ -705,6 +726,30 @@ struct SystemMenu::Impl {
 
     void menu_transfer(Opcode, RunState& context, const Command& c) {
         const std::string dest = key(c.str);
+        if (context.source->dc2dm) {
+            if (dest == "load" || dest == "save") {
+                context.finish({dest == "load" ? Type::Load : Type::Save});
+                return;
+            }
+            if (dest == "main") {
+                page = context.entry == "ex_main" || context.entry == "rex" ? Page::Extras : Page::Title;
+            } else if (dest == "option") {
+                if (page != Page::Config) config_return = page;
+                page = Page::Config;
+            } else if (dest == "cgmode" || dest.rfind("cg_", 0) == 0) {
+                page = Page::Gallery;
+            } else if (dest == "scemode" || dest.rfind("sce_", 0) == 0) {
+                page = Page::Scenes;
+            } else if (dest == "music") {
+                page = Page::Music;
+            } else {
+                context.finish({page == Page::Scenes ? Type::StartScene : Type::NewGame,
+                                -1, c.str, context.entry});
+                return;
+            }
+            context.finish(run(dest, context.entry, context.action, context.transfer_depth + 1));
+            return;
+        }
         if (context.source->dc2pc) {
             if (dest.rfind("title_", 0) == 0) {
                 page = context.entry == "rextra" ? Page::Extras : Page::Title;
@@ -771,7 +816,12 @@ struct SystemMenu::Impl {
             context.output = {Type::PlayVoice, -1, c.str, {}};
     }
 
-    void menu_playlist(Opcode, RunState&, const Command& c) {
+    void menu_playlist(Opcode, RunState& context, const Command& c) {
+        if (context.source->dc2dm && c.p1 == 213) {
+            dc2dm_music_layout();
+            context.finish(context.output);
+            return;
+        }
         if (c.p1 == 202)
             put(3, 0, playlist.count(music_top + c.p2) ? 1 : 0);
     }
@@ -911,22 +961,81 @@ struct SystemMenu::Impl {
             ++item;
         }
     }
-    int music_count() const { return int(list_titles.size()); }
+    int music_count() const { return dc2dm ? int(dc2dm_music_ids.size()) : int(list_titles.size()); }
     int music_max_scroll() const {
         return std::max(0, music_count() - int(list_rects.size()));
     }
     int music_bgm_id(int row) const {
+        if (dc2dm) return row >= 0 && size_t(row) < dc2dm_music_ids.size() ? dc2dm_music_ids[size_t(row)] : -1;
         // Modern music.mes rows start at zero; NAMES.DAT reserves BGM 0
         // for the dummy music/000. The catalogue starts with music/001.
         return row + 1;
     }
     bool music_unlocked(int row) const {
         const int id = music_bgm_id(row);
-        return row >= 0 && list_titles.count(row) && size_t(id) < bgm_names.size() &&
+        return row >= 0 && (dc2dm || list_titles.count(row)) && id >= 0 && size_t(id) < bgm_names.size() &&
                seen_music.count(key(bgm_names[size_t(id)]));
     }
+    std::u16string dc2dm_music_title(int row) const {
+        const int id = music_bgm_id(row);
+        for (const auto& track : Dc2DmMusicTracks)
+            if (track.id == id) return track.title;
+        return {};
+    }
+    void dc2dm_music_layout() {
+        clear_layout();
+        const auto button = [&](const char* tag, Rect hit, Rect source, int pitch, bool selected = false,
+                                const char* sheet = "system/music_chip") {
+            const int control = int(widgets.size());
+            widgets.push_back({hit,tag});
+            for (int state = 0; state < 3; ++state) {
+                auto src = source;
+                src.y += (selected && state == 0 ? 2 : state) * pitch;
+                chips.push_back({sheet,src,hit,state == 0 ? 99 : state,control});
+            }
+        };
+        // Service 213 owns these controls; the script supplies only the two atlases.
+        button("back",{66,290,92,54},{16,135,92,54},56);
+        const bool playing = music_selected >= 0 && !get(3,11);
+        button(playing ? "stop" : "play",{168,290,72,50},{120,playing ? 135 : 305,72,50},56);
+        button("next",{250,290,90,54},{203,135,90,54},56);
+        button("#dm:loop0",{102,373,60,45},{203,306,60,45},47,get(100,26)==0);
+        button("#dm:loop1",{173,373,63,45},{273,306,63,45},47,get(100,26)==1);
+        button("#dm:loop2",{247,373,60,45},{347,306,60,45},47,get(100,26)==2);
+        button("return",{928,498,82,67},{8,362,82,67},69,false,"system/ex_chip");
+        for (int row = 0; row < 10; ++row) list_rects.push_back({467,77+row*41,485,34});
+        music_top = std::clamp(music_top,0,music_max_scroll());
+        for (size_t row = 0; row < list_rects.size(); ++row) {
+            const int item = music_top+int(row);
+            if (item >= music_count()) break;
+            const bool unlocked = music_unlocked(item);
+            const int control = int(widgets.size());
+            const auto hit = list_rects[row];
+            widgets.push_back({hit,"#music:"+std::to_string(item),unlocked});
+            chips.push_back({"system/music_chip",{494,88,12,13},{hit.x-27,hit.y+9,12,13}});
+            char number[8];
+            std::snprintf(number,sizeof(number),"%03d",item+1);
+            const std::string digits(number);
+            captions.push_back({hit.x-14,hit.y+5,12,-1,99,{},36,
+                                std::u16string(digits.begin(),digits.end())});
+            captions.push_back({hit.x+39,hit.y+5,12,-1,99,{},hit.w-41,
+                                unlocked ? dc2dm_music_title(item) : u"????????"});
+        }
+        if (music_selected >= 0) {
+            char number[12];
+            std::snprintf(number,sizeof(number),"%03d : ",music_selected+1);
+            const std::string prefix(number);
+            captions.push_back({64,203,12,-1,99,{},300,
+                                std::u16string(prefix.begin(),prefix.end())+dc2dm_music_title(music_selected)});
+        }
+        const Rect track{963,90,9,385};
+        chips.push_back({"system/music_chip",{436,90,9,385},track});
+        const int top = 90+music_top*353/std::max(1,music_max_scroll());
+        chips.push_back({"system/music_chip",{424,33,28,32},{953,top,28,32}});
+        widgets.push_back({{950,77,34,402},"#music:scroll",true,-2,0,music_max_scroll()+1,90,443});
+    }
     void music_rows() {
-        if (page != Page::Music || movie_menu)
+        if (page != Page::Music || movie_menu || dc2dm)
             return;
         music_top = std::clamp(music_top, 0, music_max_scroll());
         for (size_t i = 0; i < list_rects.size(); ++i) {
@@ -999,10 +1108,11 @@ struct SystemMenu::Impl {
             break;
         case Page::Gallery:
         case Page::Scenes:
-            run(script_name, "menu", false);
+            run(script_name, dc2dm && (script_name == "cgmode" || script_name == "scemode") ? "" : "menu", false);
             break;
         case Page::Music:
-            if (dc2pc) run("music", "menu", false);
+            if (dc2dm) run("music", "nostopMUSIC", false);
+            else if (dc2pc) run("music", "menu", false);
             else {
                 run("music", movie_menu ? "qmovie" : "menu", false);
                 if (movie_menu) movie_back_control();
@@ -1084,11 +1194,31 @@ SystemMenu::SystemMenu(SystemMenu&&) noexcept = default;
 SystemMenu& SystemMenu::operator=(SystemMenu&&) noexcept = default;
 bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->data = data_dir; p_->scripts.clear(); p_->images.clear(); p_->last_error.clear(); p_->ready = false;
-    p_->dc4_movie_back = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear();
+    p_->dc4_movie_back = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
     p_->confirm.load(data_dir);
     p_->dc2pc = false;
+    p_->dc2dm = false;
     p_->profile = &ModernMenu;
     auto* main = p_->script("main");
+    if (main && main->dc2dm) {
+        p_->dc2dm = true;
+        p_->profile = &DC2DMMenu;
+        p_->defaults();
+        if (!p_->script("option") || !p_->names()) {
+            if (error) *error = p_->last_error.empty() ? "Invalid DC2DM names.dat" : p_->last_error;
+            return false;
+        }
+        for (const auto& track : Dc2DmMusicTracks)
+            if (size_t(track.id) < p_->bgm_names.size() &&
+                dc4::asset_exists(resolve(data_dir, key(p_->bgm_names[size_t(track.id)]) + ".pcm")))
+                p_->dc2dm_music_ids.push_back(track.id);
+        p_->progress_vars();
+        p_->ready = true;
+        p_->last_error.clear();
+        open(Page::Title);
+        if (error) *error = p_->last_error;
+        return p_->last_error.empty();
+    }
     if (main && main->dc2pc && p_->script("title_00")) {
         p_->dc2pc = true;
         p_->profile = &DC2PCMenu;
@@ -1139,10 +1269,20 @@ void SystemMenu::open(SystemMenuPage page) {
     p_->confirm.close();p_->pending_tag.clear();cancel_pointer();
     if (page == Page::Title) p_->in_game = false;
     if (page == Page::Config && p_->page != Page::Config) p_->config_return = p_->page;
+    if (p_->dc2dm && page == Page::Music && p_->page != Page::Music) {
+        p_->dc2dm_music_volume = p_->get(99,7);
+        p_->dc2dm_music_enabled = p_->get(99,14);
+    }
+    if (p_->dc2dm && p_->page == Page::Music && page != Page::Music) {
+        p_->put(99,7,p_->dc2dm_music_volume);
+        p_->put(99,14,p_->dc2dm_music_enabled);
+    }
     p_->page = page; p_->gallery_view = false; p_->movie_menu = false;
     if (page == Page::Gallery || page == Page::Scenes) {
         if(p_->dc2pc){p_->put(3,3,0);p_->put(206,80,0);}
-        p_->put(3,5,0); p_->put(3,6,0); p_->script_name = page == Page::Gallery ? (p_->dc2pc?"cg_otome":"cg_asa") : (p_->dc2pc?"sce_otome":"sce_asa");
+        p_->put(3,5,0); p_->put(3,6,0);
+        p_->script_name = page == Page::Gallery ? (p_->dc2pc ? "cg_otome" : p_->dc2dm ? "cgmode" : "cg_asa")
+                                              : (p_->dc2pc ? "sce_otome" : p_->dc2dm ? "scemode" : "sce_asa");
     }
     if (page == Page::Music) { p_->put(3,11,p_->music_selected < 0); p_->put(99,179,1); }
     p_->rebuild();
@@ -1151,8 +1291,18 @@ void SystemMenu::set_in_game(bool value) { p_->in_game = value; p_->rebuild(); }
 void SystemMenu::set_save_available(bool latest,bool quick,bool automatic) {
     p_->latest=latest; p_->quick=quick; p_->automatic=automatic; p_->rebuild();
 }
-void SystemMenu::set_config_page(int n) { if(confirming())return;p_->put(100,54,std::clamp(n,0,6)); if(p_->page==Page::Config)p_->rebuild(); }
-int SystemMenu::config_page() const { return p_->get(100,54); }
+void SystemMenu::set_config_page(int n) {
+    if (confirming()) return;
+    if (p_->dc2dm) {
+        const int pages[]{0,3,4};
+        p_->put(3,17,pages[std::clamp(n,0,2)]);
+    } else p_->put(100,54,std::clamp(n,0,6));
+    if (p_->page == Page::Config) p_->rebuild();
+}
+int SystemMenu::config_page() const {
+    if (p_->dc2dm) return p_->get(3,17) == 3 ? 1 : p_->get(3,17) == 4 ? 2 : 0;
+    return p_->get(100,54);
+}
 void SystemMenu::pointer_down(int x,int y) {
     if(confirming()){p_->confirm.pointer_down(x,y);return;}
     x=p_->input_x(x);y=p_->input_y(y);
@@ -1320,6 +1470,30 @@ Action SystemMenu::answer_confirmation(bool yes){
 Action SystemMenu::activate_confirmed(const std::string& tag) {
     if (tag.empty()) return {};
     const MenuTag menu_tag = resolve_menu_tag(tag);
+
+    if (p_->dc2dm) {
+        if (p_->page == Page::Music && tag.rfind("#dm:loop",0) == 0 && tag.size() == 9) {
+            const int mode = tag.back()-'0';
+            if (mode >= 0 && mode <= 2) { p_->put(100,26,mode); p_->rebuild(); }
+            return {};
+        }
+        switch (menu_tag) {
+        case MenuTag::StartGame: return {Type::NewGame, -1, "SCESELECT", {}};
+        case MenuTag::Load: return {Type::Load};
+        case MenuTag::QuickLoad: return p_->latest ? Action{Type::LatestLoad} : Action{};
+        case MenuTag::Quit: return {Type::Quit};
+        case MenuTag::Config:
+        case MenuTag::Option: open(Page::Config); return {};
+        case MenuTag::Extras: open(Page::Extras); return {};
+        case MenuTag::MainMenu: open(Page::Title); return {};
+        case MenuTag::Return:
+        case MenuTag::ReturnCheck: return back();
+        case MenuTag::CgMode: open(Page::Gallery); return {};
+        case MenuTag::SceneMode: open(Page::Scenes); return {};
+        case MenuTag::MusicMode: open(Page::Music); return {};
+        default: break;
+        }
+    }
 
     // Profile: DC2PC
     if (p_->dc2pc) {
@@ -1660,7 +1834,14 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
             if(size_t(chip.control)>=p_->widgets.size())return;
             int state=state_for(chip.control);
             const auto& widget=p_->widgets[size_t(chip.control)];
-            if(p_->dc2pc && chip.state>=22 && chip.state<=26) {
+            if(widget.filled_slider && chip.dst.x==widget.slider_left && chip.dst.h==16 &&
+               chip.dst.w>=widget.slider_right-widget.slider_left) {
+                if(chip.state==2) {
+                    const int count=std::max(1,widget.slider_count-1);
+                    const int value=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,count);
+                    chip.src.w=chip.dst.w=std::min(chip.src.w,2+value*(widget.slider_right-widget.slider_left)/count);
+                } else if(chip.state!=99) return;
+            } else if(p_->dc2pc && chip.state>=22 && chip.state<=26) {
                 if(widget.slider_bank<0 || widget.slider_count<2)return;
                 const int val=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,widget.slider_count-1);
                 if(chip.state==22) {
@@ -1704,6 +1885,12 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     for(const auto& c:p_->captions) {
         if(c.control>=0 && c.state>=0 && state_for(c.control)!=c.state)continue;
+        if (!c.unicode.empty()) {
+            const auto point=p_->destination({c.x,c.y+c.size,0,0});
+            const float size=float(c.size)*H/p_->profile->canvas_height;
+            font.rasterize_line(c.unicode,point.x,point.y,frame,W,H,size,0xFFFFFF,false,0xDD5489);
+            continue;
+        }
         std::string line=c.text;
         for(size_t at=line.find("@s");at!=std::string::npos;at=line.find("@s"))line.erase(at,2);
         line = dc4::translate_ui(line);
@@ -1725,7 +1912,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
             y+=c.size+4;
         }
     }
-    if(p_->page==Page::Music && !p_->movie_menu && !p_->dc2pc) {
+    if(p_->page==Page::Music && !p_->movie_menu && !p_->dc2pc && !p_->dc2dm) {
         // Scroll thumb supplied by MUSICCHIP (0x74 state -1).
         if(auto* img=p_->image("system/musicchip"))blit(*img,{902,30,24,23},{1072,266+p_->music_top*267/std::max(1,p_->music_max_scroll()),24,23},frame);
     }
@@ -1748,6 +1935,11 @@ SystemConfig SystemMenu::config() const {
         c.voice_volume=std::clamp(v(9)*100/29,0,100);c.window_opacity=std::clamp(v(11)*100/15,0,100);
         c.text_speed=(v(13)==1 || v(13)==3)?11:std::clamp(v(12)*11/3,0,11);c.effect_speed=v(16);
     }
+    if(p_->dc2dm) {
+        c.music_volume=std::clamp(v(7)*100/29,0,100);c.se_volume=std::clamp(v(8)*100/29,0,100);
+        c.voice_volume=std::clamp(v(9)*100/29,0,100);c.window_opacity=std::clamp(v(11)*100/14,0,100);
+        for(size_t i=0;i<c.character_muted.size();++i)c.character_muted[i]=p_->get(95,int(i))==0;
+    }
     return c;
 }
 int SystemMenu::page_voice_event() const {
@@ -1764,6 +1956,21 @@ int SystemMenu::page_voice_event() const {
 }
 std::string SystemMenu::system_voice(int event_id) const {
     if (event_id <= 0) return {};
+    if (p_->dc2dm) {
+        int event = event_id;
+        switch (event_id) {
+        case 10: event = 8; break;
+        case 14: event = 13; break;
+        case 15: event = 10; break;
+        case 16: event = 11; break;
+        case 17: event = 9; break;
+        }
+        int actor = p_->get(100,56);
+        if (actor < 0 || actor > 2) actor = int(p_->random()%3);
+        char name[64];
+        std::snprintf(name,sizeof(name),"VOICE/DM_SYS/DM_SYS%02d%c",event,'A'+actor);
+        return name;
+    }
     if(p_->dc2pc) {
         static const char* actors[]={"otm","yme","mnt","kko","nnk","anz","akn","mya","myk","erk","ais","mhr","wtr","sgn","skr","hrm"};
         int id=p_->get(100,56);if(id<0 || id>=16)id=int(p_->random()%16);
@@ -1788,8 +1995,8 @@ std::string SystemMenu::system_voice(int event_id) const {
     return std::string(buf);
 }
 std::string SystemMenu::title_music() const {
-    if(p_->dc2pc) {
-        auto* source=p_->script(p_->title_script);
+    if(p_->dc2pc || p_->dc2dm) {
+        auto* source=p_->script(p_->dc2dm ? "main" : p_->title_script);
         if(source)for(const auto& c:source->code)
             if(c.opcode()==Opcode::PLAY_BGM_ONCE && c.words[0]<p_->bgm_names.size())
                 return key(p_->bgm_names[c.words[0]])+".pcm";
@@ -1797,7 +2004,7 @@ std::string SystemMenu::title_music() const {
     }
     return "music/001.pcm";
 }
-std::string SystemMenu::scene_ui_script() const { return p_->dc2pc?"start.mes":"win_size.mes"; }
+std::string SystemMenu::scene_ui_script() const { return p_->dc2pc || p_->dc2dm ? "start.mes" : "win_size.mes"; }
 int SystemMenu::variable(int b,int i)const{return p_->get(b,i);}
 void SystemMenu::set_variable(int b,int i,int value){p_->put(b,i,value);p_->rebuild();}
 void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) const {
@@ -1837,6 +2044,10 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
 }
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
+    if (p_->dc2dm) {
+        if (error) *error = "Native DC2DM system.dat import is not supported; use an emulator profile";
+        return false;
+    }
     if (p_->dc2pc) {
         std::error_code ec;
         const auto size = std::filesystem::file_size(path, ec);

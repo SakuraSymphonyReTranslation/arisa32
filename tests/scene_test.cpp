@@ -1,7 +1,10 @@
 #include "arisa32/scene.h"
+#include "arisa32/resource.h"
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -780,12 +783,376 @@ void native_save_regressions(const fs::path& root) {
         CHECK(std::abs(scalar(renderer+4)+scalar(renderer+148)*(1-decoded))<0.01f);
     }
 }
+void dc2dm_scene_regressions(const fs::path& root) {
+    struct DmScript : Script {
+        DmScript() { bytes[10] = 0x72; bytes[11] = 0x9D; }
+        void param(uint8_t op, uint8_t value, const std::string& name) {
+            bytes.push_back(op); bytes.push_back(value);
+            bytes.insert(bytes.end(), name.begin(), name.end()); bytes.push_back(0);
+        }
+        void text(uint8_t op, const std::string& value) {
+            bytes.push_back(op);
+            for (unsigned char ch : value) bytes.push_back(uint8_t(ch - 0x20));
+            bytes.push_back(0);
+        }
+        void end_group() { bytes.insert(bytes.end(), {0x17, 1, 0}); }
+        void button(int x, int y, int w, int h, const char* action, int sheet = 21) {
+            words(0x54, x, y, x + w, y + h); string(0x3D, action);
+            words(0x55, x, y, 0, 0); words(0x57, w, h, sheet, 99);
+            words(0x55, x, y, 32, 0); words(0x57, w, h, sheet, 1);
+            if (std::strcmp(action, ":qs") == 0 || std::strcmp(action, ":ql") == 0) {
+                words(0x55, x, y, 0, 32); words(0x57, w, h, sheet, 2);
+                words(0x55, 616, 348, 32, 32); words(0x57, 28, 28, sheet, 2);
+            }
+        }
+    };
+    const auto data = root / "dc2dm";
+    write_image(data / "GRP/SYSTEM/MESWIN.CRX", 64, 64);
+    write_image(data / "GRP/SYSTEM/ADVMENU_CHIP.CRX", 64, 64);
+    write_image(data / "GRP/BST/sprite.CRX", 64, 36);
+    DmScript ui;
+    ui.param(0x2C, 0, "SYSTEM\\MESWIN");
+    ui.button(907, 416, 38, 37, ":n"); ui.end_group();
+    ui.button(676, 420, 28, 28, ":auto");
+    ui.button(856, 420, 28, 28, ":option");
+    const std::pair<int, const char*> persistence_controls[] = {
+        {300, ":ds"}, {340, ":dl"}, {380, ":qsave"}, {420, ":qload"}, {748, ":qs"}, {784, ":ql"}};
+    for (const auto& control : persistence_controls) ui.button(control.first, 420, 28, 28, control.second);
+    ui.button(620, 424, 16, 22, ":n"); ui.end_group();
+    ui.button(100, 100, 28, 28, "confirmation"); ui.end_group();
+    for (int i = 0; i < 4; ++i) {
+        const std::string tag = ":" + std::to_string(i + 1);
+        ui.button(300, 64 + i * 60, 28, 28, tag.c_str());
+        ui.words(0x56, 312, 80 + i * 60, 135, 99); ui.string(0x44, "");
+    }
+    ui.end_group();
+    ui.bytes.push_back(0);
+    write_file(data / "MES/start.mes", ui.bytes);
+    DmScript sidebar;
+    sidebar.words(0x5A, 860, 16, 0, 0); sidebar.words(0x57, 32, 32, 22, 1);
+    sidebar.button(872, 72, 28, 28, "save", 22);
+    sidebar.button(872, 144, 28, 28, "config", 22);
+    sidebar.button(872, 252, 28, 28, "return", 22);
+    sidebar.bytes.insert(sidebar.bytes.end(), {0x09, 0, 0});
+    sidebar.button(10, 10, 28, 28, "title", 22);
+    sidebar.bytes.push_back(0);
+    write_file(data / "MES/advmenu.mes", sidebar.bytes);
+    DmScript story;
+    story.string(0x34, "autoload");
+    story.bytes.insert(story.bytes.end(), {0x19, 0, 0});
+    story.string(0x3D, "autoload");
+    story.words(0x6B, 20, 40, 0, 0);
+    story.words(0x6B, 100, 512, 322, 16);
+    story.param(0x2B, 2, "BST\\sprite");
+    story.param(0x2E, 0, ".");
+    story.text(0x4D, "CAPTION"); story.text(0x4E, "Sakura");
+    story.text(0x4F, "FIRST_LINE"); story.text(0x50, "CAPTION"); story.text(0x4F, "SECOND");
+    story.text(0x4F, "\x82\xa0_");
+    const std::string mixed_line = "\x81\x75" "Bukan,_bukan,_hurufnya_beda._Karena_dia_\n"
+        "menenun_(\x90\x44/Ori),_makanya_Orihime" "\x81\x76";
+    story.text(0x4F, mixed_line);
+    story.text(0x4F, "\x82\xa0\x82\xa2\x82\xa4_PC_\x82\xa6\x82\xa8");
+    story.bytes.push_back(0);
+    write_file(data / "MES/story.mes", story.bytes);
+    dc4scene::SceneRunner scene(data.string());
+    CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+    CHECK(scene.buttons().size() == 9);
+    CHECK(scene.load_script((data / "MES/story.mes").string()));
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.current_line() == "FIRST_LINE" && scene.speaker() == "Sakura");
+    CHECK(scene.visible_text() == u"FIRST LINE");
+    CHECK(scene.sprite(0).visible && scene.sprite(0).img.valid());
+    CHECK(scene.sprite(0).cur_x == 20 && scene.sprite(0).cur_y == 40);
+    CHECK(scene.sprite(0).x == 512 && scene.sprite(0).y == 322);
+    const auto* action = scene.hit_test(850, 530);
+    CHECK(action && *action == ":auto");
+    action = scene.hit_test(1075, 530); CHECK(action && *action == ":option");
+    CHECK(scene.set_sidebar_visible(true));
+    action = scene.hit_test(1095, 95); CHECK(action && *action == ":ds");
+    action = scene.hit_test(1095, 185); CHECK(action && *action == ":aaconfig");
+    action = scene.hit_test(1095, 320); CHECK(action && *action == ":sidebarclose");
+    CHECK(scene.hit_test(15, 15) == nullptr);
+    CHECK(scene.hit_test(850, 530) == nullptr);
+    scene.set_pointer(-1, -1, false); scene.draw(-1); const auto sidebar_normal = scene.frame();
+    scene.set_pointer(1095, 95, false); scene.draw(-1); CHECK(scene.frame() != sidebar_normal);
+    CHECK(scene.set_sidebar_visible(false));
+    scene.set_taskbar_visible(false);
+    action = scene.hit_test(1140, 525); CHECK(action && *action == ":n");
+    CHECK(scene.hit_test(1270, 710) == nullptr);
+    scene.set_taskbar_visible(true); scene.set_message_visible(false);
+    scene.draw(-1);
+    CHECK(scene.frame()[(size_t(50) * 1280 + 25) * 4] > 200);
+    CHECK(scene.frame()[(size_t(50) * 1280 + 24) * 4] == 0);
+    std::vector<uint8_t> snapshot;
+    CHECK(scene.capture_state(&snapshot));
+    dc4scene::SceneRunner restored(data.string());
+    CHECK(restored.restore_state(snapshot)); restored.set_message_visible(true);
+    CHECK(restored.buttons().size() == 9);
+    action = restored.hit_test(850, 530); CHECK(action && *action == ":auto");
+    restored.set_message_visible(false); restored.draw(-1);
+    CHECK(restored.frame() == scene.frame());
+    CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "SECOND");
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.visible_text().size() == 2 && scene.visible_text().back() == u'_');
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.current_line() == mixed_line);
+    CHECK(scene.visible_text() == u"\u300cBukan, bukan, hurufnya beda. Karena dia \n"
+        u"menenun (\u7e54/Ori), makanya Orihime\u300d");
+    CHECK(scene.advance_to_next_text());
+    CHECK(scene.visible_text() == u"\u3042\u3044\u3046_PC_\u3048\u304a");
+
+    scene.set_message_visible(true);
+    const auto normal_save = data / "saves/normal.dc4sav";
+    const auto replay_save = data / "saves/replay.dc4sav";
+    CHECK(scene.save_load_allowed());
+    CHECK(scene.save_state(normal_save.string()));
+    for (const auto& control : persistence_controls) {
+        action = scene.hit_test(int(control.first * 1.25) + 5, 530);
+        CHECK(action && *action == control.second);
+    }
+    scene.set_pointer(-1, -1, false); scene.draw(-1);
+    const auto normal_toolbar_frame = scene.frame();
+    CHECK(scene.set_sidebar_visible(true));
+    scene.set_variable(9, 7, 1);
+    CHECK(!scene.save_load_allowed() && !scene.sidebar_visible());
+    CHECK(!scene.set_sidebar_visible(true) && !scene.sidebar_visible());
+    CHECK(!scene.save_state(replay_save.string()));
+    CHECK(!fs::exists(replay_save));
+    const auto replay_line = scene.current_line();
+    CHECK(!scene.load_state(normal_save.string()));
+    CHECK(scene.current_line() == replay_line && scene.variable(9, 7) == 1);
+    scene.set_pointer(-1, -1, false); scene.draw(-1);
+    const auto disabled_frame = scene.frame();
+    for (const int x : {940, 985}) {
+        const size_t pixel = (size_t(530) * 1280 + x) * 4;
+        CHECK(normal_toolbar_frame[pixel + 2] == 40 && disabled_frame[pixel + 2] == 240);
+    }
+    bool only_quick_icons_changed = true;
+    for (int y = 0; y < 720; ++y) for (int x = 0; x < 1280; ++x) {
+        const bool quick_icon = y >= 525 && y < 560 && ((x >= 935 && x < 970) || (x >= 980 && x < 1015));
+        const size_t pixel = (size_t(y) * 1280 + x) * 4;
+        if (!quick_icon && std::memcmp(normal_toolbar_frame.data() + pixel, disabled_frame.data() + pixel, 4) != 0)
+            only_quick_icons_changed = false;
+    }
+    CHECK(only_quick_icons_changed);
+    for (const auto& control : persistence_controls) {
+        const int x = int(control.first * 1.25) + 5;
+        action = scene.hit_test(x, 530); CHECK(action && *action == ":disabled");
+        scene.set_pointer(x, 530, false); scene.draw(-1); CHECK(scene.frame() == disabled_frame);
+        scene.set_pointer(x, 530, true); scene.draw(-1); CHECK(scene.frame() == disabled_frame);
+    }
+    action = scene.hit_test(1075, 530); CHECK(action && *action == ":disabled");
+    scene.set_pointer(1075, 530, false); scene.draw(-1); CHECK(scene.frame() == disabled_frame);
+    action = scene.hit_test(850, 530); CHECK(action && *action == ":auto");
+    std::vector<uint8_t> replay_snapshot;
+    CHECK(scene.capture_state(&replay_snapshot));
+    dc4scene::SceneRunner restored_replay(data.string());
+    CHECK(restored_replay.restore_state(replay_snapshot));
+    CHECK(!restored_replay.save_load_allowed());
+    CHECK(!restored_replay.set_sidebar_visible(true) && !restored_replay.sidebar_visible());
+    CHECK(!restored_replay.save_state(replay_save.string()));
+    CHECK(!restored_replay.load_state(normal_save.string()));
+    for (const auto& control : persistence_controls) {
+        action = restored_replay.hit_test(int(control.first * 1.25) + 5, 530);
+        CHECK(action && *action == ":disabled");
+    }
+    action = restored_replay.hit_test(1075, 530); CHECK(action && *action == ":disabled");
+    restored_replay.finish_replay();
+    CHECK(restored_replay.save_load_allowed() && restored_replay.variable(9, 7) == 0);
+    CHECK(restored_replay.set_sidebar_visible(true));
+    scene.finish_replay();
+    CHECK(scene.save_load_allowed());
+    CHECK(scene.load_state(normal_save.string()));
+    action = scene.hit_test(1075, 530); CHECK(action && *action == ":option");
+    for (const auto& control : persistence_controls) {
+        action = scene.hit_test(int(control.first * 1.25) + 5, 530);
+        CHECK(action && *action == control.second);
+    }
+
+    DmScript selection;
+    selection.bytes.insert(selection.bytes.end(), {0x21, 0, 0});
+    selection.button(370, 264, 28, 28, "chapter"); selection.end_group();
+    selection.bytes.insert(selection.bytes.end(), {0x09, 0, 0});
+    selection.string(0x34, "chapter"); selection.text(0x4F, "CHAPTER"); selection.bytes.push_back(0);
+    write_file(data / "MES/selection.mes", selection.bytes);
+    CHECK(scene.load_script((data / "MES/selection.mes").string()));
+    scene.set_message_visible(true);
+    CHECK(!scene.advance_to_next_text()); CHECK(scene.waiting_for_time());
+    CHECK(scene.buttons().size() == 10);
+    action = scene.hit_test(465, 332); CHECK(action && *action == "chapter");
+    CHECK(scene.hit_test(850, 530) == nullptr);
+    scene.draw(-1); const auto normal = scene.frame();
+    scene.set_pointer(465, 332, false); scene.draw(-1);
+    CHECK(scene.frame() != normal);
+    CHECK(scene.jump_to_label("chapter")); CHECK(scene.advance_to_next_text());
+    CHECK(scene.current_line() == "CHAPTER");
+
+    DmScript choices;
+    choices.text(0x4F, "QUESTION");
+    choices.bytes.insert(choices.bytes.end(), {0x07, 1, 0});
+    for (int i = 0; i < 4; ++i) {
+        choices.string(0x43, "branch" + std::to_string(i));
+        choices.text(0x50, "OPTION_" + std::to_string(i));
+    }
+    choices.bytes.insert(choices.bytes.end(), {0x09, 0, 0});
+    for (int i = 0; i < 4; ++i) {
+        choices.string(0x34, "branch" + std::to_string(i));
+        choices.text(0x4F, "BRANCH" + std::to_string(i));
+    }
+    choices.bytes.push_back(0);
+    write_file(data / "MES/choices.mes", choices.bytes);
+    CHECK(scene.load_script((data / "MES/choices.mes").string()));
+    CHECK(scene.advance_to_next_text()); CHECK(!scene.advance_to_next_text());
+    CHECK(scene.waiting_for_choice() && scene.choices().size() == 4);
+    for (int i = 0; i < 4; ++i) CHECK(scene.choice_at(380, 85 + i * 75) == i);
+    CHECK(scene.choice_at(350, 85) == -1);
+    scene.set_pointer(-1, -1, false); scene.draw(-1); const auto choices_normal = scene.frame();
+    scene.set_pointer(380, 85, false); scene.draw(-1); CHECK(scene.frame() != choices_normal);
+    CHECK(scene.choose(3)); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "BRANCH3");
+}
+
+void dc2dm_game_regressions(const fs::path& data, const fs::path& root) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load("C:/Windows/Fonts/msgothic.ttc", 0, 15, false));
+    auto next_line = [](dc4scene::SceneRunner& scene) {
+        for (int i = 0; i < 256; ++i) {
+            if (scene.advance_to_next_text()) return true;
+            if (!scene.last_error().empty() || scene.scene_ended() || scene.waiting_for_choice()) return false;
+            if (!scene.pending_movie().empty()) scene.finish_movie();
+            scene.finish_script_wait();
+            scene.update(60000);
+        }
+        return false;
+    };
+    for (const auto& route : {std::pair<const char*, const char*>{"sce01", "MAR_0101_F1"},
+                              {"sce02", "SIN_0326_F1"}, {"sce03", "SUC60_0811_A1_OTM"}}) {
+        const int failures_before = failures;
+        dc4scene::SceneRunner scene(data.string());
+        scene.set_font(&font);
+        CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+        CHECK(scene.load_script((data / "MES/sceselect.mes").string()));
+        scene.set_variable(100, 1, 1); scene.set_variable(100, 2, 1);
+        CHECK(!scene.advance_to_next_text());
+        CHECK(scene.waiting_for_time() && scene.last_error().empty());
+        const auto button = std::find_if(scene.buttons().begin(), scene.buttons().end(),
+            [&](const auto& value) { return value.action == route.first; });
+        CHECK(button != scene.buttons().end());
+        if (button == scene.buttons().end()) continue;
+        const auto* action = scene.hit_test(button->x + button->w / 2, button->y + button->h / 2);
+        CHECK(action && *action == route.first);
+        CHECK(scene.jump_to_label(route.first));
+        CHECK(next_line(scene));
+        std::string script = scene.script_name();
+        std::transform(script.begin(), script.end(), script.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+        CHECK(script == std::string(route.second) + ".MES");
+        CHECK(!scene.visible_text().empty());
+        scene.draw(-1);
+        CHECK(std::count_if(scene.frame().begin(), scene.frame().end(), [](uint8_t byte) { return byte != 0; }) > 1280 * 720 * 2);
+        for (int line = 1; line < 40; ++line) CHECK(next_line(scene));
+        CHECK(scene.last_error().empty());
+        scene.draw(-1);
+        const auto frame = scene.frame();
+        const auto text = scene.current_line();
+        const auto path = root / (std::string(route.first) + ".dc4sav");
+        CHECK(scene.save_state(path.string()));
+        CHECK(next_line(scene));
+        const auto following_text = scene.current_line();
+        dc4scene::SceneRunner restored(data.string());
+        restored.set_font(&font);
+        CHECK(restored.load_state(path.string()));
+        CHECK(restored.current_line() == text);
+        restored.draw(-1); CHECK(restored.frame() == frame);
+        CHECK(restored.set_sidebar_visible(true));
+        const auto* save_action = restored.hit_test(1095, 95);
+        CHECK(save_action && *save_action == ":ds");
+        CHECK(restored.set_sidebar_visible(false));
+        CHECK(next_line(restored)); CHECK(restored.current_line() == following_text);
+        std::cout << "DC2DM route " << (failures == failures_before ? "passed: " : "FAILED: ") << route.first << '\n';
+    }
+}
+
+void sakuramusubi_text_regressions(const fs::path& root) {
+    const auto language = dc4::get_language();
+    const auto decoder = dc4scene::g_sjis_decoder;
+    dc4scene::g_sjis_decoder = [](const std::string& bytes) {
+        std::u16string text(bytes.begin(), bytes.end());
+        std::replace(text.begin(), text.end(), u'\u007f', u'\u001a');
+        return text;
+    };
+    for (const auto mode : {dc4::Language::Japanese, dc4::Language::English, dc4::Language::Indonesian}) {
+        dc4::set_language(mode);
+        CHECK(dc4scene::sjis_to_utf16("Latin\x7f" "words") == u"Latin words");
+        CHECK(dc4scene::sjis_to_utf16("literal\x1a" "control") == u"literal\u001acontrol");
+    }
+    dc4scene::g_sjis_decoder = decoder;
+#ifdef _WIN32
+    // dc4_sen20181220d.mes:0x1990 uses DEL between words and one authored LF.
+    const std::string sentence = "Apparently, even people who barely knew each other turn into lovebirds\n"
+        "  who act like soulmates once Shirakawa's through with them.";
+    std::string patched = "\x81\x75" + sentence + "\x81\x76";
+    std::replace(patched.begin(), patched.end(), ' ', '\x7f');
+    const std::u16string expected = u"\u300cApparently, even people who barely knew each other turn into lovebirds\n"
+        u"  who act like soulmates once Shirakawa's through with them.\u300d";
+    const std::string japanese = "\x81\x75\x82\xa0\x82\xa2\x82\xa4\x81\x76";
+    const auto data = root / "sakuramusubi";
+    const auto script_path = data / "MES/text.mes";
+    auto load_text = [&](dc4scene::SceneRunner& scene, const std::string& text) {
+        Script script; script.bytes[11] = 0xAB;
+        script.text(text); script.bytes.push_back(0);
+        write_file(script_path, script.bytes);
+        CHECK(scene.load_script(script_path.string()));
+        CHECK(scene.advance_to_next_text());
+    };
+    for (const auto mode : {dc4::Language::Japanese, dc4::Language::English, dc4::Language::Indonesian}) {
+        dc4::set_language(mode);
+        dc4scene::SceneRunner scene(data.string());
+        load_text(scene, patched);
+        CHECK(scene.current_line() == patched && scene.visible_text() == expected);
+        CHECK(scene.visible_text_length() == expected.size() - 1);
+        load_text(scene, japanese);
+        CHECK(scene.visible_text() == u"\u300c\u3042\u3044\u3046\u300d");
+        load_text(scene, "Selamat\xa5pagi.");
+        CHECK(scene.visible_text() == u"Selamat pagi.");
+    }
+    dc4scene::FontRenderer font;
+    const auto font_path = fs::path(__FILE__).parent_path().parent_path() /
+        "android/app/src/main/assets/fonts/MSGOTHIC.TTC";
+    CHECK(font.load(font_path.string(), 2, 20, false));
+    auto render = [&](const std::string& text) {
+        dc4scene::SceneRunner scene(data.string()); scene.set_font(&font);
+        load_text(scene, text); scene.draw(-1);
+        return scene.frame();
+    };
+    dc4::set_language(dc4::Language::English);
+    std::string supported_spaces = patched;
+    std::replace(supported_spaces.begin(), supported_spaces.end(), '\x7f', '\xa5');
+    CHECK(render(patched) == render(supported_spaces));
+    size_t fit = 0;
+    while (font.text_width(u"\u300c" + std::u16string(fit + 1, u'W'), 20) <= 750) ++fit;
+    const std::string unbroken(fit + 10, 'W');
+    CHECK(render("\x81\x75" + unbroken + "\x81\x76") ==
+        render("\x81\x75" + unbroken.substr(0, fit) + "\n" + unbroken.substr(fit) + "\x81\x76"));
+    std::string latin_prefix;
+    while (font.text_width(std::u16string(latin_prefix.size() + 1, u'W') + u"(", 20) <= 750)
+        latin_prefix += 'W';
+    CHECK(render(latin_prefix + "(WWW)") == render(latin_prefix + "\n(WWW)"));
+    dc4::set_language(dc4::Language::Japanese);
+    std::string japanese_prefix;
+    for (int i = 0; i < 29; ++i) japanese_prefix += "\x82\xa0";
+    CHECK(render(japanese_prefix + japanese) == render(japanese_prefix + "\n" + japanese));
+#endif
+    dc4::set_language(language);
+}
+
 int main(int argc, char** argv) {
     try {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
         dc2pc_dialogue_regressions(root);native_save_regressions(root);native_sprite_placement_regressions(root);
+        dc2dm_scene_regressions(root);
+        sakuramusubi_text_regressions(root);
+        if (const char* data = std::getenv("DC2DM_DATA")) dc2dm_game_regressions(data, root);
         if (argc > 1) game_round_trip(argv[1], root);
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; ++failures; }
     std::cout << (failures ? "Scene regressions FAILED\n" : "Scene regressions passed\n");

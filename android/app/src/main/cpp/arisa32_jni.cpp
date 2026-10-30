@@ -260,7 +260,7 @@ void record_log_row(Engine* e, int line) {
         total += it->snapshot.size();
         if (++snapshots > 512 || total > 16*1024*1024) { std::vector<uint8_t>().swap(it->snapshot); }
     }
-    e->log_scroll = dc4ui::LogScreen::max_scroll(e->log_rows.size());
+    e->log_scroll = e->log.last_scroll(e->log_rows.size());
 }
 
 bool play_row_voice(Engine* e, const std::string& name) {
@@ -293,7 +293,7 @@ std::string jump_to_row(Engine* e, int row_index) {
     if (!e->scene->restore_state(row.snapshot, &error)) return "Scene jump failed: " + error;
     e->dialogue_index = row.line;
     e->log_rows.resize(size_t(row_index) + 1);
-    e->log_scroll = dc4ui::LogScreen::max_scroll(e->log_rows.size());
+    e->log_scroll = e->log.last_scroll(e->log_rows.size());
     begin_line(e);
     e->fully_revealed = true;
     e->scene->set_message_visible(true);
@@ -1311,15 +1311,17 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
             if (*tag == ":disabled") {
                 // Consume disabled toolbar taps without advancing the scene or
                 // reporting an unsupported shell action.
-            } else if (*tag == ":voice") {
+            } else if (*tag == ":voice" || *tag == ":torisetu") {
                 message = e->scene->replay_voice() ? ":voice" : "No voice on this line";
+            } else if (*tag == ":sidebar") {
+                e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
             } else if (*tag == ":n") {
                 e->scene->toggle_taskbar();
             } else if (*tag == ":off" || *tag == ":close" || *tag == ":clear" || *tag == ":change") {
                 e->scene->set_message_visible(!e->scene->message_visible());
             } else if (*tag == ":auto" || *tag == ":rapid" || *tag == ":skip" ||
                        *tag == ":backlog" || *tag == ":qs" || *tag == ":ql" ||
-                       *tag == ":ds" || *tag == ":dl" || *tag == ":option" || *tag == ":aatitle" ||
+                       *tag == ":ds" || *tag == ":dl" || *tag == ":option" || *tag == ":aaconfig" || *tag == ":aatitle" ||
                        *tag == ":aaload" || *tag == ":aasave" || *tag == ":aaqload" ||
                        *tag == ":aaqsave" || *tag == ":aaskip" || *tag == ":qsave" ||
                        *tag == ":full" || *tag == ":menu" || *tag == ":change" ||
@@ -1660,7 +1662,7 @@ JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogOpen(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e) return;
-    e->log_scroll = dc4ui::LogScreen::max_scroll(e->log_rows.size());
+    e->log_scroll = e->log.last_scroll(e->log_rows.size());
     e->log_mx = e->log_my = -1;
     e->log_drag_y = -1;
     e->log_drag_moved = false;
@@ -1720,6 +1722,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     const auto control_at = [&](int px,int py) {
         if (e->log.back_hit(px,py)) return 1;
         if (e->log.checkbox_hit(px,py)) return 2;
+        if (const int direction = e->log.scroll_button(px,py)) return direction < 0 ? 3 : 4;
         const int jump = e->log.jump_hit(px,py,e->log_scroll,count);
         if (jump >= 0) return 1000+jump;
         const int voice = e->log.voice_hit(px,py,e->log_scroll,count);
@@ -1740,8 +1743,8 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
             e->log_scroll = e->log.thumb_scroll(y, count);
         } else {
             // Swipe: drag down shows newer rows (top index decreases).
-            const int delta = (y - e->log_drag_y) / dc4ui::LogScreen::kRowPitch;
-            e->log_scroll = std::clamp(e->log_drag_base - delta, 0, dc4ui::LogScreen::max_scroll(count));
+            const int delta = (y - e->log_drag_y) / e->log.row_pitch();
+            e->log_scroll = std::clamp(e->log_drag_base - delta, 0, e->log.last_scroll(count));
         }
         return env->NewStringUTF("");
     }
@@ -1759,6 +1762,10 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     e->log_pressed = 0;
     if (!had_press || pressed == 0 || control_at(x,y) != pressed) return env->NewStringUTF("");
     if (e->log.back_hit(x, y)) return env->NewStringUTF("close");
+    if (const int direction = e->log.scroll_button(x,y)) {
+        e->log_scroll = std::clamp(e->log_scroll + direction, 0, e->log.last_scroll(count));
+        return env->NewStringUTF("");
+    }
     if (e->log.checkbox_hit(x, y)) {
         e->log_thumbs = !e->log_thumbs;
         return env->NewStringUTF("check");

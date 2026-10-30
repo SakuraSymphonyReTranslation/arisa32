@@ -29,8 +29,61 @@ const auto modern = [] {
 }();
 const auto classic =
     make_profile(MesProfileId::ClassicDC2, "classic-dc2", 2, 0x29, 0x2F, 0x4A, 0x4E);
-const auto marriage =
-    make_profile(MesProfileId::ClassicDM, "classic-dm", 3, 0x2A, 0x32, 0x4D, 0x51);
+const auto marriage = [] {
+    auto p = make_profile(MesProfileId::ClassicDM, "classic-dm", 3, 0x2A, 0x32, 0x4D, 0x51);
+    for (auto& op : p.opcodes)
+        op.operation = Opcode::UNKNOWN;
+    // DC2DM main/start/scenario scripts use different service bytes from DC4.
+    const struct {
+        uint8_t raw;
+        Opcode operation;
+    } aliases[] = {{0x00, Opcode::END},
+                   {0x02, Opcode::SCOPE_MARKER},
+                   {0x07, Opcode::CLEAR_CHOICES},
+                   {0x08, Opcode::WAIT_INPUT},
+                   {0x09, Opcode::WAIT_INPUT},
+                   {0x0A, Opcode::WAIT_INPUT_ALT},
+                   {0x0D, Opcode::TRANSITION},
+                   {0x12, Opcode::WAIT},
+                   {0x17, Opcode::END_CONTROL},
+                   {0x19, Opcode::CHECKPOINT},
+                   {0x1B, Opcode::SYSTEM_SERVICE},
+                   {0x1D, Opcode::SCOPE},
+                   {0x21, Opcode::CLEAR_LAYOUT},
+                   {0x2B, Opcode::LOAD_SLOT},
+                   {0x2C, Opcode::LOAD_SHEET},
+                   {0x2E, Opcode::CHARACTER_LAYER},
+                   {0x2F, Opcode::FACE_LAYER},
+                   {0x33, Opcode::BACKGROUND},
+                   {0x34, Opcode::LABEL},
+                   {0x35, Opcode::VOICE},
+                   {0x36, Opcode::VOICE},
+                   {0x37, Opcode::VOICE},
+                   {0x38, Opcode::TRANSFER},
+                   {0x39, Opcode::TRANSFER_ALT},
+                   {0x3A, Opcode::ENTRY},
+                   {0x3B, Opcode::MOVIE},
+                   {0x3D, Opcode::JUMP},
+                   {0x43, Opcode::CHOICE},
+                   {0x4E, Opcode::SPEAKER},
+                   {0x4F, Opcode::DIALOGUE},
+                   {0x52, Opcode::PLAY_BGM_ONCE},
+                   {0x53, Opcode::PLAY_SE},
+                   {0x54, Opcode::CONTROL},
+                   {0x55, Opcode::BUTTON_POSITION},
+                   {0x56, Opcode::CONTROL_CAPTION},
+                   {0x57, Opcode::CHIP},
+                   {0x5A, Opcode::CHIP_POSITION},
+                   {0x62, Opcode::ASSIGN},
+                   {0x63, Opcode::COPY},
+                   {0x64, Opcode::SUM},
+                   {0x66, Opcode::COMPARE},
+                   {0x67, Opcode::CAPTION},
+                   {0x6B, Opcode::SPRITE_TRANSFORM}};
+    for (const auto& alias : aliases)
+        p.opcodes[alias.raw].operation = alias.operation;
+    return p;
+}();
 const auto dc2pc = [] {
     auto p = classic;
     p.id = MesProfileId::DC2PC;

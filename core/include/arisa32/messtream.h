@@ -10,10 +10,11 @@ namespace dc4 {
 
 struct MesCommand {
     bool dc2pc = false; // Exact MES 0x9969 profile; retain the raw opcode.
+    bool dc2dm = false;
     CmdKind kind = CmdKind::Nop;
     uint32_t pos = 0;      // offset of the opcode byte within `code`
     uint8_t op = 0;
-    uint8_t raw_op = 0;    // original DC2PC opcode after service translation
+    uint8_t raw_op = 0;    // original opcode after service translation
     uint8_t p1 = 0, p2 = 0;             // Param2 / ParamStr param
     uint16_t words[4] = {};             // Words4
     std::string str;                    // Str / ParamStr / Text (decoded)
@@ -21,7 +22,7 @@ struct MesCommand {
     Opcode opcode() const { return static_cast<Opcode>(op); }
 };
 
-// Adapt only proven DC2PC operations to the engine's service vocabulary.
+// Adapt recovered game operations to the engine's service vocabulary.
 // Unknown commands cannot fall through to a same-number DC4 operation.
 MesCommand mes_engine_command(const MesCommand& raw);
 

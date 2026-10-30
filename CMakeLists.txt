@@ -21,6 +21,7 @@ add_library(arisa32_core STATIC
     core/src/bgm.cpp
     core/src/scene.cpp
     core/src/scene_state.cpp
+    core/src/scene_dc2dm_ending.cpp
     core/src/log_screen.cpp
     core/src/save_screen.cpp
     core/src/resource.cpp
@@ -106,6 +107,9 @@ if(BUILD_TESTING)
     add_executable(dc2pc_menu_test tests/dc2pc_menu_test.cpp)
     target_link_libraries(dc2pc_menu_test PRIVATE dc4core)
     add_test(NAME dc2pc_menu_test COMMAND dc2pc_menu_test)
+    add_executable(dc2dm_menu_test tests/dc2dm_menu_test.cpp)
+    target_link_libraries(dc2dm_menu_test PRIVATE arisa32_core)
+    add_test(NAME dc2dm_menu_test COMMAND dc2dm_menu_test)
     add_executable(confirm_dialog_test tests/confirm_dialog_test.cpp)
     target_link_libraries(confirm_dialog_test PRIVATE dc4core)
     add_test(NAME confirm_dialog_test COMMAND confirm_dialog_test)
@@ -136,6 +140,15 @@ if(BUILD_TESTING)
     add_executable(scene_test tests/scene_test.cpp)
     target_link_libraries(scene_test PRIVATE dc4core)
     add_test(NAME scene_test COMMAND scene_test)
+    add_executable(credits_test tests/credits_test.cpp)
+    target_link_libraries(credits_test PRIVATE dc4core)
+    add_test(NAME credits_test COMMAND credits_test)
+    add_executable(dc2dm_ending_test tests/dc2dm_ending_test.cpp)
+    target_link_libraries(dc2dm_ending_test PRIVATE dc4core)
+    add_test(NAME dc2dm_ending_test COMMAND dc2dm_ending_test)
+    add_executable(dc2dm_sprite_test tests/dc2dm_sprite_test.cpp)
+    target_link_libraries(dc2dm_sprite_test PRIVATE dc4core)
+    add_test(NAME dc2dm_sprite_test COMMAND dc2dm_sprite_test)
     add_executable(save_screen_test tests/save_screen_test.cpp)
     target_link_libraries(save_screen_test PRIVATE dc4core)
     add_test(NAME save_screen_test COMMAND save_screen_test)

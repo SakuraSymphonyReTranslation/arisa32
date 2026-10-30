@@ -441,6 +441,7 @@ bool write_save_preview(dc4scene::SceneRunner& scene, const fs::path& save) {
 // Session history with exact scene snapshots and original-style row previews.
 struct Backlog {
     std::vector<dc4ui::LogRow> rows;
+    int visible_rows = dc4ui::LogScreen::kVisibleRows;
     int scroll = 0;  // oldest visible row index
     bool open = false;
     void add(dc4scene::SceneRunner& scene, int line) {
@@ -455,7 +456,7 @@ struct Backlog {
         }
         scroll = max_scroll();
     }
-    int max_scroll() const { return dc4ui::LogScreen::max_scroll(rows.size()); }
+    int max_scroll() const { return std::max(0, int(rows.size()) - visible_rows); }
     void move(int amount) { scroll = std::clamp(scroll + amount, 0, max_scroll()); }
 };
 
@@ -741,7 +742,13 @@ int run(const Options& o) {
             return 1;
         }
     } else if (!start_title) {
-        scene = build_scene(o.scene.empty() ? kOpening : o.scene, o.line,
+        std::string initial_scene=o.scene;
+        if(initial_scene.empty()) {
+            dc4::MesFile main_script;
+            initial_scene=main_script.load_file(data+"/MES/main.mes") &&
+                main_script.dialect==dc4::MesDialect::ClassicDM ? "SCESELECT.mes" : kOpening;
+        }
+        scene = build_scene(initial_scene, o.line,
                             o.shot.empty() || o.effect_ms >= 0, &backlog);
         if (!scene) return 1;
         if (o.choice && !scene->waiting_for_choice()) {
@@ -762,7 +769,8 @@ int run(const Options& o) {
         if(o.panel=="movies")system_menu.activate("selmovie");
         if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
     }
-    if (!log_screen.load(data)) fprintf(stderr, "Log screen artwork unavailable: GRP/SYSTEM/BKLOG*.CRX\n");
+    if (!log_screen.load(data)) fprintf(stderr, "Log screen artwork unavailable\n");
+    backlog.visible_rows = log_screen.visible_rows();
     log_screen.set_latin_mode(dc4::is_latin());
     if (!save_screen.load(data, &err)) fprintf(stderr, "Save/Load screen artwork unavailable: %s\n", err.c_str());
     save_screen.set_language(dc4::get_language());
@@ -1134,7 +1142,7 @@ int run(const Options& o) {
     };
     auto action = [&](const std::string& tag) {
         if (!scene) return;
-        if (tag == ":voice") {
+        if (tag == ":voice" || tag == ":torisetu") {
             if (!scene->replay_voice()) notify("No voice on this line");
         } else if (tag == ":auto") {
             auto_mode = !scene->waiting_for_choice() && !auto_mode; skip_mode = false; status.clear();
@@ -1165,7 +1173,10 @@ int run(const Options& o) {
         else if (tag == ":ds" || tag==":aasave") { scene->set_sidebar_visible(false); open_slots(false); }
         else if (tag == ":dl" || tag==":aaload") { scene->set_sidebar_visible(false); open_slots(true); }
         else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":menu") { scene->set_sidebar_visible(false); open_system(dc4ui::SystemMenuPage::Config); }
-        else if(tag==":aatitle") { scene->set_sidebar_visible(false); prompt_title(); }
+        else if (tag == ":aatitle") {
+            if (scene->save_format_version() != 0x9D72) scene->set_sidebar_visible(false);
+            prompt_title();
+        }
         else if(tag==":aaskip"){skip_mode=!skip_mode;auto_mode=false;}
         update_title();
     };
@@ -1412,6 +1423,7 @@ int run(const Options& o) {
                             if (thumb_drag) thumb_drag = false;
                             else if (log_screen.back_hit(mx, my)) toggle_backlog();
                             else if (log_screen.checkbox_hit(mx, my)) thumbnails_on = !thumbnails_on;
+                            else if (const int direction = log_screen.scroll_button(mx, my)) backlog.move(direction);
                             else {
                                 const int jump = log_screen.jump_hit(mx, my, backlog.scroll, backlog.rows.size());
                                 if (jump >= 0) prompt(dc4ui::ConfirmKind::SceneJump,[&,jump]{jump_to_row(jump);});
@@ -1425,11 +1437,16 @@ int run(const Options& o) {
                     continue;
                 }
                 if (event.button.button == SDL_BUTTON_RIGHT && event.type == SDL_MOUSEBUTTONDOWN) {
-                    if (scene) { scene->set_message_visible(!scene->message_visible()); auto_mode = skip_mode = false; update_title(); }
+                    if (scene) {
+                        if (scene->save_format_version() == 0x9D72)
+                            scene->set_sidebar_visible(!scene->sidebar_visible());
+                        else scene->set_message_visible(!scene->message_visible());
+                        auto_mode = skip_mode = false; update_title();
+                    }
                 }
                 if (event.button.button != SDL_BUTTON_LEFT) continue;
                 const std::string* tag = scene ?
-                    (scene->message_visible() ? scene->hit_test(mx, my) : nullptr) : ui.hit_test(mx, my);
+                    (scene->message_visible() || scene->sidebar_visible() ? scene->hit_test(mx, my) : nullptr) : ui.hit_test(mx, my);
                 bool over_widget = tag != nullptr;
                 if (scene && scene->message_visible())
                     for (const auto& button : scene->buttons())
@@ -1496,8 +1513,8 @@ int run(const Options& o) {
                 mouse_down = false;
                 if (key == SDLK_ESCAPE) close_slots();
                 else if (key >= SDLK_1 && key <= SDLK_9)
-                    save_action(save_screen.activate({dc4ui::SaveActionType::Slot,dc4ui::SaveScreen::slot_index(save_screen.page(), int(key - SDLK_1))}));
-                else if (key == SDLK_0) save_action(save_screen.activate({dc4ui::SaveActionType::Slot,dc4ui::SaveScreen::slot_index(save_screen.page(), 9)}));
+                    save_action(save_screen.activate(save_screen.visible_slot_action(int(key - SDLK_1))));
+                else if (key == SDLK_0) save_action(save_screen.activate(save_screen.visible_slot_action(9)));
                 else if (key == SDLK_LEFT || key == SDLK_PAGEUP || key == SDLK_RIGHT || key == SDLK_PAGEDOWN) {
                     save_screen.change_page(key == SDLK_LEFT || key == SDLK_PAGEUP ? -1 : 1);
                     status.clear(); update_title();
@@ -1508,8 +1525,8 @@ int run(const Options& o) {
                 continue;
             }
             if (backlog.open) {
-                if (key == SDLK_UP || key == SDLK_PAGEUP) backlog.move(key == SDLK_UP ? -1 : -4);
-                else if (key == SDLK_DOWN || key == SDLK_PAGEDOWN) backlog.move(key == SDLK_DOWN ? 1 : 4);
+                if (key == SDLK_UP || key == SDLK_PAGEUP) backlog.move(key == SDLK_UP ? -1 : -backlog.visible_rows);
+                else if (key == SDLK_DOWN || key == SDLK_PAGEDOWN) backlog.move(key == SDLK_DOWN ? 1 : backlog.visible_rows);
                 else if (key == SDLK_ESCAPE || key == SDLK_b || key == SDLK_SPACE || key == SDLK_RETURN) toggle_backlog();
                 continue;
             }

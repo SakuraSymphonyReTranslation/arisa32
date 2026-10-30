@@ -27,6 +27,7 @@ public final class ExportChecks {
             Map<String, byte[]> source = new LinkedHashMap<>();
             for (String name : new String[]{"DC2PC03.dat", "DC2PC03.dat.arisa", "DC403.dat", "DC403.DAT.ARISA",
                     "DC4PHDL03.dat", "DC4PHDL03.dat.arisa", "DC403.dat.icon", "DC403.png", "DC403.txt",
+                    "DC2DM00.dat", "DC2DM01.dat", "DC2DM01.png",
                     "system.dat", "system-profile.dat", "read-lines.txt", "slot1.dc4sav", "quicksave.dc4sav",
                     "autosave.dc4sav", "slot1.dc4sav.png", "slot1.dc4sav.txt"}) {
                 byte[] bytes = ("fixture:" + name).getBytes(java.nio.charset.StandardCharsets.UTF_8);

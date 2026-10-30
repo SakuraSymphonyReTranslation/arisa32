@@ -13,10 +13,11 @@ These check both companion modes across DC2PC/DC4/Plus Harmony filenames,
 mixed-case extensions, retained save/profile/preview bytes, source preservation,
 round trips into fresh directories, progress and failed/empty exports.
 
-Profile checks need a Java 11+ JDK and no Android runtime:
+Profile checks need a Java 11+ JDK and the Android SDK's `android.jar` on the
+compile classpath; they do not start an Android runtime:
 
 ```powershell
-javac -encoding UTF-8 -d build/java-check `
+javac -encoding UTF-8 -cp "$env:LOCALAPPDATA/Android/Sdk/platforms/android-36/android.jar" -d build/java-check `
   android/app/src/main/java/org/dc4engine/GameLibrary.java `
   (Get-ChildItem android/app/src/main/java/org/dc4engine/profile/*.java).FullName `
   tests/android/ProfileChecks.java
@@ -71,14 +72,21 @@ directory. It does not read or change installed game data. Local evidence,
 including the tested library SHA-256 and `result.log`, is retained under
 `build/dc4-replay-validation/jni-probe-*`.
 
-The six cases cover both DC4 MES versions (`AAB6` and `ABB6`) with replay,
-ordinary-story and unidentified-game fixtures. They verify that all four replay
+The nine cases cover both DC4 MES versions (`AAB6` and `ABB6`) with replay,
+ordinary-story and unidentified-game fixtures, plus DC2DM (`9D72`) with replay
+flags 1 and 2 and ordinary-story flag 0. They verify that all four replay
 Save/Load toolbar taps return no message and leave dialogue unchanged, native
 Save/Load and their screens reject replay, and backgrounding preserves existing
-checkpoint bytes. Ordinary stories and other modern games still dispatch the
-four normal actions and complete a save/load round trip. Synthetic fixtures omit
-artwork and audio, so this complements the real-asset desktop menu tests rather
-than establishing visual Android UI behavior.
+checkpoint bytes. DC2DM replay also blocks the native sidebar through its menu
+button, direct setter and Back entry points, as well as quick-save/quick-load
+confirmations. Ordinary stories and other modern games still dispatch the four
+normal actions and complete a save/load round trip. The fixtures use generated
+scripts and minimal synthetic artwork, with no proprietary assets or audio;
+they do not establish visual Android UI or Activity lifecycle behavior.
+
+The runner also checks a generated English dialogue whose MES spaces use byte
+`0x5F`. Android's `windows-31j` decoder maps the resulting `0x7F` to U+001A;
+the engine must normalize those spaces before calling Java.
 
 For a negative regression check, `--libraries <directory>` runs against a
 previously extracted set of arm64 shared libraries. The library before the
@@ -137,3 +145,15 @@ backpressure with an active audio clock.
 The probe's audio peak and frame counts describe decoded/prebuffered sound, not
 the instant a speaker emits it. Exact silent-prefix timing is asserted by the
 portable PCM queue test; device runs establish complete decoder playback.
+
+The generator also creates `slow-poll-h264.mp4`: 360 frames of 1080p60 H.264.
+Run it without `--audio`, with `--duration=15000` and the environment variable
+`ARISA32_MOVIE_PROBE_INTERVAL_MS=200`. This simulates a slow presentation loop.
+Require all 360 frames, `finished=1`, and an empty error. A completion flag alone
+does not detect the former duration-based cutoff with undecoded frames pending.
+
+For a pause near the final decoder drain, run the same fixture with `--audio`
+and `--duration=20000`, and set `ARISA32_MOVIE_PROBE_PAUSE_AT_MS=5900` plus
+`ARISA32_MOVIE_PROBE_PAUSE_MS=6000`. Require `long_pause_ms=6000`, `pause_ok=1`,
+all 360 frames, and an empty error. Time spent paused must not expire the
+five-second decoder drain timeout.

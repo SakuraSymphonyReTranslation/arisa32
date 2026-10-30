@@ -173,10 +173,12 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.u32(uint32_t(item.stamp));
             out.str(item.text);
         }
+        if (dc2dm_ending_reference_valid_) out.number(dc2dm_ending_reference_elapsed_ms_);
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(5); header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
+        header.u32(dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
         if (capture_error) capture_error->clear();
@@ -354,6 +356,8 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
 }
 
 bool SceneRunner::save_load_allowed() const {
+    if (dc2dm_ui_ || mes_.dialect == dc4::MesDialect::ClassicDM)
+        return variable(9, 7) == 0;
     if (dc2pc_ui_ || dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
         return variable(9, 7) != 1;
     // DC4 and DC4PH win_size.mes disable persistence for any nonzero replay
@@ -716,7 +720,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 5)
+        if (version < 1 || version > 6)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -833,6 +837,10 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             restored_comu_visible = comu_visible;
             restored_comu = std::move(restored);
         }
+        const double ending_reference_elapsed = version >= 6 ? in.number() : 0;
+        if (version >= 6 && (candidate.mes_.dialect != dc4::MesDialect::ClassicDM ||
+            ending_reference_elapsed < 0 || ending_reference_elapsed > 500000))
+            throw std::runtime_error("invalid saved ending timer");
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
         if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
         comu_visible_ = restored_comu_visible;
@@ -848,6 +856,8 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (!animation_enabled_) finish_animations();
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
         reset_restore_transients();
+        dc2dm_ending_reference_valid_ = version >= 6;
+        dc2dm_ending_reference_elapsed_ms_ = ending_reference_elapsed;
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {
@@ -864,6 +874,8 @@ void SceneRunner::reset_restore_transients() {
     dc2pc_clock_ms_ = dc2pc_wait_reference_ms_ = 0; dc2pc_wait_reference_valid_ = false;
     credits_active_ = false; credits_elapsed_ms_ = credits_duration_ms_ = 0;
     credits_archive_.clear(); credits_entries_.clear(); credits_pages_.clear();
+    dc2dm_ending_ = {};
+    dc2dm_ending_reference_valid_ = false; dc2dm_ending_reference_elapsed_ms_ = 0;
     effect_pck_.clear();
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;
@@ -876,6 +888,9 @@ void SceneRunner::reset_restore_transients() {
         // story save. Reload the authored story toolbar even if sheet37 exists.
         load_ui_script(data_ + "/MES/start.mes");
         show_message_window("SYSTEM/MESWIN.CRX");
+        taskbar_visible_ = true;
+    } else if (mes_.dialect == dc4::MesDialect::ClassicDM) {
+        load_ui_script(data_ + "/MES/start.mes");
         taskbar_visible_ = true;
     }
     reset_dialogue_history();

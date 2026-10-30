@@ -6,11 +6,13 @@ import java.util.*;
 public final class GameProfileRegistry {
     private static final Dc4Profile DC4_PROFILE = new Dc4Profile();
     private static final Dc2PlusCommunicationProfile DC2PC_PROFILE = new Dc2PlusCommunicationProfile();
+    private static final Dc2DearestMarriageProfile DC2DM_PROFILE = new Dc2DearestMarriageProfile();
     private static final Dc4PlusHarmonyProfile DC4PH_PROFILE = new Dc4PlusHarmonyProfile();
     private static final GenericCircusProfile GENERIC_PROFILE = new GenericCircusProfile();
 
     private static final List<GameProfile> PROFILES = Collections.unmodifiableList(Arrays.asList(
         DC2PC_PROFILE,
+        DC2DM_PROFILE,
         DC4PH_PROFILE,
         DC4_PROFILE,
         GENERIC_PROFILE
@@ -53,6 +55,7 @@ public final class GameProfileRegistry {
         set.addAll(DC4PH_PROFILE.getStandardScanPaths());
         set.addAll(DC4_PROFILE.getStandardScanPaths());
         set.addAll(DC2PC_PROFILE.getStandardScanPaths());
+        set.addAll(DC2DM_PROFILE.getStandardScanPaths());
         set.addAll(GENERIC_PROFILE.getStandardScanPaths());
         return new ArrayList<>(set);
     }

@@ -55,6 +55,7 @@ struct MoviePlayer::Impl {
     SwrContext* resampler = nullptr;
     struct VideoFrame { AVFrame* frame; double pts; };
     std::deque<VideoFrame> pending;
+    AVFrame* due_video = nullptr;
     std::deque<AVPacket*> deferred_video;
     size_t deferred_bytes = 0;
     std::vector<uint8_t> pixels;
@@ -72,10 +73,13 @@ struct MoviePlayer::Impl {
     float peak = 0;
     bool done = true, paused = false, audio_clock = false, eof = false;
     bool video_flushed = false, audio_flushed = false;
+    bool video_drained = false, audio_drained = false, resampler_drained = false;
+    int64_t video_drain_progress = 0, audio_drain_progress = 0;
     bool packet_pending = false, demux_blocked = false;
     bool hardware = false, try_hardware = true;
     ~Impl() {
         if (audio) audio->end_movie_audio();
+        av_frame_free(&due_video);
         for (auto& f : pending) av_frame_free(&f.frame);
         for (auto& p : deferred_video) av_packet_free(&p);
         sws_freeContext(scaler);
@@ -175,8 +179,14 @@ struct MoviePlayer::Impl {
     bool receive(AVCodecContext* decoder, bool is_video) {
         for (;;) {
             const int result = avcodec_receive_frame(decoder, scratch);
-            if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
+            if (result == AVERROR_EOF) {
+                (is_video ? video_drained : audio_drained) = true;
+                return true;
+            }
+            if (result == AVERROR(EAGAIN)) return true;
             if (result < 0) return fail("cannot decode movie frame: " + ff_error(result));
+            if (is_video && video_flushed) video_drain_progress = av_gettime_relative();
+            if (!is_video && audio_flushed) audio_drain_progress = av_gettime_relative();
             bool okay = true;
             if (is_video) {
                 if (scratch->width < 16 || scratch->height < 16 || scratch->width > kMaxWidth ||
@@ -211,6 +221,7 @@ struct MoviePlayer::Impl {
         // Demux only a short lead. Never load a whole video or soundtrack.
         demux_blocked = false;
         for (int packets = 0; packets < 128; ++packets) {
+            collect_due(target);
             if (!feed_audio(target)) return false;
             if (pending.size() < video_queue && !deferred_video.empty()) {
                 AVPacket* retained = deferred_video.front(); deferred_video.pop_front();
@@ -259,11 +270,23 @@ struct MoviePlayer::Impl {
         }
         if (eof && deferred_video.empty() && !video_flushed) {
             video_flushed = true;
+            video_drain_progress = av_gettime_relative();
             if (!send(video, nullptr, true)) return false;
         }
+        // MediaCodec can return EAGAIN after accepting its end-of-stream packet.
+        if (video_flushed && !video_drained && !receive(video, true)) return false;
         if (eof && sound && !audio_flushed) {
             audio_flushed = true;
+            audio_drain_progress = av_gettime_relative();
             if (!send(sound, nullptr, false)) return false;
+        }
+        if (audio_flushed && !audio_drained && !receive(sound, false)) return false;
+        const int64_t now = av_gettime_relative();
+        if ((video_flushed && !video_drained && now - video_drain_progress > 5 * AV_TIME_BASE) ||
+            (audio_flushed && !audio_drained && now - audio_drain_progress > 5 * AV_TIME_BASE))
+            return fail("movie decoder stalled while draining its final frames");
+        if (audio_drained && !resampler_drained) {
+            resampler_drained = true;
             if (resampler) {
                 const int capacity = swr_get_out_samples(resampler, 0);
                 if (capacity > 0 && capacity <= 524288) {
@@ -277,14 +300,18 @@ struct MoviePlayer::Impl {
         }
         return feed_audio(target);
     }
-    bool display(double target) {
-        AVFrame* selected = nullptr;
+    void collect_due(double target) {
         while (!pending.empty() && (pending.front().pts <= target + .001 || !frames)) {
             auto next = pending.front(); pending.pop_front();
-            av_frame_free(&selected);
-            selected = next.frame;
+            av_frame_free(&due_video);
+            due_video = next.frame;
             ++frames;
         }
+    }
+    bool display(double target) {
+        collect_due(target);
+        AVFrame* selected = due_video;
+        due_video = nullptr;
         // Convert only the newest due frame; late frames never waste RGBA work.
         if (selected) {
             scaler = sws_getCachedContext(scaler, width, height, AVPixelFormat(selected->format),
@@ -310,6 +337,7 @@ struct MoviePlayer::Impl {
 #endif
         for (auto& retained : pending) av_frame_free(&retained.frame);
         pending.clear();
+        av_frame_free(&due_video);
         for (auto& retained : deferred_video) av_packet_free(&retained);
         deferred_video.clear(); deferred_bytes = 0;
         av_packet_unref(packet);
@@ -324,6 +352,8 @@ struct MoviePlayer::Impl {
         audio_decoded_end = clock;
         audio_pending.reset(clock);
         eof = video_flushed = audio_flushed = done = false;
+        video_drained = audio_drained = resampler_drained = false;
+        video_drain_progress = audio_drain_progress = 0;
         failure.clear();
         return pump(clock) && display(clock);
     }
@@ -451,16 +481,25 @@ void MoviePlayer::update(uint32_t elapsed_ms) {
         }
     }
     impl_->clock = std::min(target, impl_->clock + .5);
-    if (!impl_->display(impl_->clock) || !impl_->pump(impl_->clock) || !impl_->display(impl_->clock)) {
+    impl_->collect_due(impl_->clock);
+    if (!impl_->pump(impl_->clock) || !impl_->display(impl_->clock)) {
         if (!impl_->recover_software()) impl_->done = true;
     }
-    if (impl_->eof && impl_->deferred_video.empty() && !impl_->packet_pending && impl_->pending.empty() &&
+    if (impl_->eof && impl_->video_drained && (!impl_->sound || impl_->audio_drained) &&
+        impl_->deferred_video.empty() && !impl_->packet_pending && impl_->pending.empty() &&
         impl_->audio_pending.empty() && impl_->clock + 1.0 / kRate >= std::max(impl_->video_end, impl_->audio_end) &&
         (!impl_->audio_clock || !impl_->audio->movie_audio_queued())) impl_->done = true;
-    if (impl_->duration > 0 && impl_->clock > impl_->duration + 2) impl_->done = true;
     if (impl_->done && impl_->audio) impl_->audio->end_movie_audio();
 }
-void MoviePlayer::set_paused(bool paused) { impl_->paused = paused; if (impl_->audio) impl_->audio->pause_movie_audio(paused); }
+void MoviePlayer::set_paused(bool paused) {
+    if (impl_->paused && !paused) {
+        const int64_t now = av_gettime_relative();
+        if (impl_->video_flushed && !impl_->video_drained) impl_->video_drain_progress = now;
+        if (impl_->audio_flushed && !impl_->audio_drained) impl_->audio_drain_progress = now;
+    }
+    impl_->paused = paused;
+    if (impl_->audio) impl_->audio->pause_movie_audio(paused);
+}
 void MoviePlayer::draw_rgba(std::vector<uint8_t>* rgba, int width, int height) const {
     if (!rgba || width <= 0 || height <= 0 || width > 8192 || height > 8192) return;
     if (width == impl_->output_width && height == impl_->output_height && !impl_->pixels.empty()) {

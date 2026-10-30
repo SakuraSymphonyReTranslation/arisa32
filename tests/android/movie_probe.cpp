@@ -5,6 +5,7 @@ extern "C" {
 #include <libavcodec/jni.h>
 }
 #include <chrono>
+#include <cstdlib>
 #include <algorithm>
 #include <sstream>
 #include <thread>
@@ -41,8 +42,27 @@ extern "C" JNIEXPORT jstring JNICALL Java_MovieProbe_probe(JNIEnv* env, jclass, 
     }
     int64_t max_update_us = 0, total_update_us = 0;
     int updates = 0;
+    int interval_ms = 16;
+    if (const char* value = std::getenv("ARISA32_MOVIE_PROBE_INTERVAL_MS"))
+        interval_ms = std::clamp(std::atoi(value), 1, 1000);
+    int pause_at_ms = 0, long_pause_ms = 0;
+    if (const char* value = std::getenv("ARISA32_MOVIE_PROBE_PAUSE_AT_MS"))
+        pause_at_ms = std::clamp(std::atoi(value), 0, 600000);
+    if (const char* value = std::getenv("ARISA32_MOVIE_PROBE_PAUSE_MS"))
+        long_pause_ms = std::clamp(std::atoi(value), 0, 30000);
+    bool long_pause_done = false, long_pause_ok = true;
     auto previous = started;
     while (okay && movie.active() && std::chrono::steady_clock::now() - started < std::chrono::milliseconds(milliseconds)) {
+        if (long_pause_ms && !long_pause_done && movie.time() * 1000 >= pause_at_ms) {
+            const double paused_time = movie.time();
+            movie.set_paused(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(long_pause_ms));
+            movie.update(static_cast<uint32_t>(long_pause_ms));
+            long_pause_ok = movie.time() == paused_time;
+            movie.set_paused(false);
+            long_pause_done = true;
+            previous = std::chrono::steady_clock::now();
+        }
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - previous).count();
         previous = now;
@@ -51,13 +71,16 @@ extern "C" JNIEXPORT jstring JNICALL Java_MovieProbe_probe(JNIEnv* env, jclass, 
         const auto cost = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count();
         max_update_us = std::max(max_update_us, static_cast<int64_t>(cost));
         total_update_us += cost; ++updates;
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
     const auto pause_time = movie.time();
     movie.set_paused(true); movie.update(100);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    const bool pause_ok = movie.time() == pause_time;
+    const bool pause_ok = movie.time() == pause_time && long_pause_ok && (!long_pause_ms || long_pause_done);
     movie.set_paused(false);
+    bool nonblack = false;
+    for (size_t i = 0; i + 3 < last.size(); i += 4)
+        nonblack = nonblack || last[i] != 0 || last[i + 1] != 0 || last[i + 2] != 0;
     std::ostringstream out;
     out << "file=" << path << " opened=" << okay << " dimensions=" << movie.width() << 'x' << movie.height()
         << " open_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(started-opened).count()
@@ -65,7 +88,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_MovieProbe_probe(JNIEnv* env, jclass, 
         << " audio_peak=" << movie.audio_peak() << " time=" << movie.time() << " duration=" << movie.duration()
         << " bitmap=" << w << 'x' << h << " copy_ok=" << copy_ok << " stride_ok=" << stride_ok
         << " audio_device=" << audio.device_ready() << " finished=" << movie.finished()
-        << " changed=" << (!first.empty() && first != last) << " pause_ok=" << pause_ok
+        << " changed=" << (!first.empty() && first != last) << " nonblack=" << nonblack << " pause_ok=" << pause_ok
+        << " interval_ms=" << interval_ms
+        << " long_pause_ms=" << (long_pause_done ? long_pause_ms : 0)
         << " mean_update_us=" << (updates ? total_update_us/updates : 0) << " max_update_us=" << max_update_us
         << " error=" << (error.empty() ? movie.error() : error);
     return env->NewStringUTF(out.str().c_str());

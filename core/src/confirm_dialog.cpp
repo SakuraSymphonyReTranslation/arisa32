@@ -110,7 +110,11 @@ bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
     if(error)error->clear();
     const std::string dir = data_dir + "/GRP/SYSTEM";
     dc2pc_ = dc4::asset_exists(dir + "/common_load_chip00.crx");
-    const std::string name = dc2pc_ ? "common_load_chip00.crx" : "ADVMENUCHIP.CRX";
+    dc4::MesFile main;
+    dc2dm_ = main.load_file(data_dir + "/MES/main.mes") &&
+        dc4::mes_opcode_profile(main.dialect, main.version).id == dc4::MesProfileId::ClassicDM;
+    const std::string name = dc2pc_ ? "common_load_chip00.crx" :
+        dc2dm_ ? "ADVMENU_CHIP.CRX" : "ADVMENUCHIP.CRX";
     const std::string resolved = dc4::find_file_ci(dir, name);
     const std::string path = dc4::resolve_asset(dir + "/" + (resolved.empty() ? name : resolved));
     std::ifstream in(path, std::ios::binary);
@@ -129,12 +133,14 @@ bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
     chip_.name = name;
     chip_.w = info.width;
     chip_.h = info.height;
-    loaded_ = chip_.valid() && chip_.w >= (dc2pc_ ? 456 : kBoxW) && chip_.h >= (dc2pc_ ? 272 : kBoxH);
+    loaded_ = chip_.valid() && chip_.w >= (dc2pc_ ? 456 : dc2dm_ ? 748 : kBoxW) &&
+        chip_.h >= (dc2pc_ ? 272 : dc2dm_ ? 224 : kBoxH);
     return loaded_;
 }
 
 void ConfirmDialog::set_chip(const dc4scene::Image& chip) {
     dc2pc_=false;
+    dc2dm_=false;
     chip_ = chip;
     loaded_ = chip_.valid() && chip_.w >= kBoxW && chip_.h >= kBoxH;
 }
@@ -186,6 +192,7 @@ void ConfirmDialog::close() {
 }
 
 bool ConfirmDialog::hit_yes(int x, int y) const {
+    if(dc2dm_)return x>=435 && x<620 && y>=375 && y<455;
     if(dc2pc_)return x>=515 && x<640 && y>=378 && y<416;
     const int bx = kBoxX + kYesRelX;
     const int by = kBoxY + kYesRelY;
@@ -194,6 +201,7 @@ bool ConfirmDialog::hit_yes(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_no(int x, int y) const {
+    if(dc2dm_)return x>=670 && x<855 && y>=375 && y<455;
     if(dc2pc_)return x>=640 && x<765 && y>=378 && y<416;
     const int bx = kBoxX + kNoRelX;
     const int by = kBoxY + kNoRelY;
@@ -202,7 +210,7 @@ bool ConfirmDialog::hit_no(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_checkbox(int x, int y) const {
-    if(dc2pc_)return false;
+    if(dc2pc_ || dc2dm_)return false;
     const int bx = kBoxX + kChkRelX;
     const int by = kBoxY + kChkRelY;
     return x >= bx && x < bx + kChkW && y >= by && y < by + kChkH;
@@ -244,6 +252,45 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
                          const dc4scene::FontRenderer& font,
                          std::vector<uint8_t>* frame) const {
     if (!active_ || !frame || frame->size() != size_t(kW) * kH * 4) return;
+    if(dc2dm_) {
+        // start.mes defines this 440x224 dialog in the 1024x576 canvas.
+        auto native_blit=[&](int sx,int sy,int w,int h,int x,int y) {
+            dc4scene::Image scaled;
+            scaled.w=w*5/4;scaled.h=h*5/4;
+            scaled.rgba.resize(size_t(scaled.w)*scaled.h*4);
+            for(int py=0;py<scaled.h;++py)for(int px=0;px<scaled.w;++px) {
+                const int ix=sx+px*4/5,iy=sy+py*4/5;
+                if(ix>=0 && ix<chip_.w && iy>=0 && iy<chip_.h)
+                    std::copy_n(chip_.rgba.data()+(size_t(iy)*chip_.w+ix)*4,4,
+                                scaled.rgba.data()+(size_t(py)*scaled.w+px)*4);
+            }
+            blit_subimage(scaled,0,0,scaled.w,scaled.h,x*5/4,y*5/4,frame);
+        };
+        native_blit(0,0,440,224,292,176);
+        const bool yes=hit_yes(mouse_x,mouse_y),no=hit_no(mouse_x,mouse_y);
+        const bool yes_down=yes && (down || pressed_yes_);
+        const bool no_down=no && (down || pressed_no_);
+        native_blit(442,yes ? (yes_down ? 128 : 64) : 0,155,yes_down ? 68 : 64,348,300);
+        native_blit(598,no ? (no_down ? 128 : 64) : 0,no ? 150 : 130,no_down ? 68 : 64,536,300);
+        if(language_==dc4::Language::Japanese && chip_.h>=637 && kind_!=ConfirmKind::Count) {
+            int sx=373,sy=365;
+            switch(kind_) {
+            case ConfirmKind::Save: case ConfirmKind::Overwrite: case ConfirmKind::QuickSave: sy=297;break;
+            case ConfirmKind::Load: case ConfirmKind::QuickLoad: sy=229;break;
+            case ConfirmKind::ResetSettings: sy=433;break;
+            case ConfirmKind::Title: sx=1;sy=433;break;
+            case ConfirmKind::Quit: sx=1;sy=229;break;
+            default: break;
+            }
+            native_blit(sx,sy,366,62,329,221);
+            return;
+        }
+        const auto& prompt=message_.empty()?title_:message_;
+        int size=30;
+        while(size>12 && font.text_width(prompt,float(size))>450)--size;
+        draw_text(font,prompt,640-font.text_width(prompt,float(size))/2,292,size,0x8C164B,frame);
+        return;
+    }
     if(dc2pc_) {
         auto native_blit=[&](int sx,int sy,int w,int h,int x,int y) {
             dc4scene::Image scaled;scaled.w=int(std::lround(w*1.2));scaled.h=int(std::lround(h*1.2));

@@ -147,8 +147,11 @@ std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bo
 }
 
 bool LogScreen::load(const std::string& data_dir) {
-    if (!read_crx(data_dir, "BKLOGBACK.CRX", &back_)) return false;
-    if (!read_crx(data_dir, "BKLOGCHIP.CRX", &chip_)) return false;
+    back_={};chip_={};
+    dc4::MesFile main;
+    dc2dm_=main.load_file(data_dir+"/MES/main.mes") && main.dialect==dc4::MesDialect::ClassicDM;
+    if (!read_crx(data_dir, dc2dm_ ? "LOG_BACK.CRX" : "BKLOGBACK.CRX", &back_)) return false;
+    if (!read_crx(data_dir, dc2dm_ ? "LOG_CHIP.CRX" : "BKLOGCHIP.CRX", &chip_)) {back_={};return false;}
     face_names_.clear();
     for (const auto& entry : kFaceNames)
         face_names_.push_back(dc4scene::sjis_to_utf16(entry.sjis));
@@ -241,7 +244,8 @@ void LogScreen::blit_image(const std::vector<uint8_t>& rgba, int w, int h,
 void LogScreen::draw(const std::vector<LogRow>& rows, int scroll, bool thumbnails,
                      int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
                      std::vector<uint8_t>* frame) const {
-    if (!loaded()) return;
+    if (!loaded() || !frame || frame->size()!=size_t(dc4scene::kScreenW)*dc4scene::kScreenH*4) return;
+    if(dc2dm_) {draw_dc2dm(rows,scroll,mouse_x,mouse_y,font,frame);return;}
     // Opaque full-screen background: title, rules, track and arrows are baked in.
     blit(back_, 0, 0, back_.w, back_.h, 0, 0, frame);
 
@@ -321,10 +325,12 @@ void LogScreen::draw(const std::vector<LogRow>& rows, int scroll, bool thumbnail
 }
 
 bool LogScreen::back_hit(int x, int y) const {
+    if(dc2dm_)return x>=1140 && x<1245 && y>=615 && y<700;
     return x >= 1100 && x < 1216 && y >= 672 && y < 712;
 }
 
 bool LogScreen::checkbox_hit(int x, int y) const {
+    if(dc2dm_)return false;
     return x >= 327 && x < 666 && y >= 38 && y < 76;
 }
 
@@ -340,10 +346,26 @@ static int row_at(int x, int y, int scroll, size_t row_count, int dy0, int dy1) 
 }
 
 int LogScreen::jump_hit(int x, int y, int scroll, size_t row_count) const {
+    if(dc2dm_) {
+        if(x<30 || x>=230)return -1;
+        for(int slot=0;slot<visible_rows();++slot) {
+            const int top=25+slot*row_pitch(),index=scroll+slot;
+            if(index>=0 && index<int(row_count) && y>=top+140 && y<top+195)return index;
+        }
+        return -1;
+    }
     return row_at(x, y, scroll, row_count, 28, 62);
 }
 
 int LogScreen::voice_hit(int x, int y, int scroll, size_t row_count) const {
+    if(dc2dm_) {
+        if(x<200 || x>=240)return -1;
+        for(int slot=0;slot<visible_rows();++slot) {
+            const int top=25+slot*row_pitch(),index=scroll+slot;
+            if(index>=0 && index<int(row_count) && y>=top && y<top+45)return index;
+        }
+        return -1;
+    }
     return row_at(x, y, scroll, row_count, 68, 101);
 }
 
@@ -354,15 +376,68 @@ int LogScreen::thumb_y(size_t row_count, int scroll) {
 }
 
 bool LogScreen::thumb_hit(int x, int y, int scroll, size_t row_count) const {
+    if(dc2dm_)return row_count>size_t(visible_rows()) && x>=1212 && x<1265 && y>=110 && y<595;
     if (row_count <= kVisibleRows || x < 1222 || x >= 1266) return false;
     const int ty = thumb_y(row_count, scroll);
     return y >= ty - 4 && y < ty + 34;
 }
 
 int LogScreen::thumb_scroll(int y, size_t row_count) const {
+    if(dc2dm_)return std::clamp((y-110)*last_scroll(row_count)/485,0,last_scroll(row_count));
     if (row_count <= kVisibleRows) return 0;
     const int offset = (y - kTopY) * int(row_count) / 582;
     return std::clamp(offset, 0, max_scroll(row_count));
+}
+
+int LogScreen::scroll_button(int x, int y) const {
+    if(!dc2dm_ || x<1135 || x>=1230)return 0;
+    if(y>=30 && y<80)return -1;
+    if(y>=80 && y<130)return 1;
+    return 0;
+}
+
+void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
+                          int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
+                          std::vector<uint8_t>* frame) const {
+    auto native_blit=[&](const dc4scene::Image& image,int sx,int sy,int w,int h,int x,int y) {
+        dc4scene::Image scaled;scaled.w=w*5/4;scaled.h=h*5/4;
+        scaled.rgba.assign(size_t(scaled.w)*scaled.h*4,0);
+        for(int py=0;py<scaled.h;++py)for(int px=0;px<scaled.w;++px) {
+            const int ix=sx+px*4/5,iy=sy+py*4/5;
+            if(ix>=0 && ix<image.w && iy>=0 && iy<image.h)
+                std::copy_n(image.rgba.data()+(size_t(iy)*image.w+ix)*4,4,
+                            scaled.rgba.data()+(size_t(py)*scaled.w+px)*4);
+        }
+        blit(scaled,0,0,scaled.w,scaled.h,x*5/4,y*5/4,frame);
+    };
+    native_blit(back_,0,0,back_.w,back_.h,0,0);
+    if(rows.empty())draw_text(font,latin_mode_ ? u"No dialogue history yet." : u"履歴はありません。",270,85,frame,22);
+    for(int slot=0;slot<visible_rows();++slot) {
+        const int index=scroll+slot,top=20+slot*164;
+        if(index<0 || index>=int(rows.size()))continue;
+        const auto& row=rows[size_t(index)];
+        native_blit(chip_,229,0,676,124,200,top);
+        // The native portrait order differs from DC4. Keep names and the
+        // captured scene preview until a DC2DM speaker mapping is verified.
+        if(!row.name.empty())draw_text(font,row.name,38,top*5/4+30,frame,22);
+        blit_image(row.thumb,LogRow::kThumbW,LogRow::kThumbH,40,top*5/4+45,frame);
+        const bool jump=jump_hit(mouse_x,mouse_y,scroll,rows.size())==index;
+        native_blit(chip_,0,jump?252:204,158,44,24,top+112);
+        if(!row.voice.empty())native_blit(chip_,83,121,24,24,166,top+4);
+        int baseline=top*5/4+36;
+        for(const auto& line:text_lines(row.text,latin_mode_)) {
+            if(baseline>top*5/4+145)break;
+            draw_text(font,line,270,baseline,frame,latin_mode_?18:22);
+            baseline+=latin_mode_?25:34;
+        }
+    }
+    native_blit(chip_,0,back_hit(mouse_x,mouse_y)?68:0,84,68,912,492);
+    native_blit(chip_,156,scroll_button(mouse_x,mouse_y)==-1?40:0,72,36,908,24);
+    native_blit(chip_,84,scroll_button(mouse_x,mouse_y)==1?40:0,72,36,908,64);
+    if(rows.size()>size_t(visible_rows())) {
+        const int top=88+388*std::clamp(scroll,0,last_scroll(rows.size()))/last_scroll(rows.size());
+        native_blit(chip_,908,48,37,24,976,top);
+    }
 }
 
 }  // namespace dc4ui

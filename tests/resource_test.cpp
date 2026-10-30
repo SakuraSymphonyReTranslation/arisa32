@@ -114,11 +114,30 @@ void movie_paths(const fs::path& root) {
     put(data / "MOVIE/OP1.MPG", "overwritten-container");
     CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "jp", "op1.mpg")) == "overwritten-container");
 }
+void dc2dm_movie_paths(const fs::path& root) {
+    const auto game = root / "DC2DM", data = game / "AdvData", overlay = game / "eng_Data";
+    put(data / "MOVIE/DC2DM_OP01.MPG", "converted-one");
+    put(data / "MOVIE/DC2DM_OP01.mp5", "native-one");
+    put(overlay / "Movie/DC2DM_OP01.wmv", "alternate-one");
+    put(data / "MOVIE/DC2DM_OP02.mp5", "native-two");
+    put(data / "MOVIE/DC2DM_OP03.mpg", "converted-three");
+    put(overlay / "Movie/DC2DM_OP03.mpg", "translated-three");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "MOVIE/dc2dm_op01.mp5")) == "converted-one");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "en", "DC2DM_OP01.wmv")) == "converted-one");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "jp", "dc2dm_op01")) == "converted-one");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "jp", "dc2dm_op02.mpg")) == "native-two");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), {}, "jp", "dc2dm_op02.mp5")) == "native-two");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "dc2dm_op03")) == "translated-three");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "jp", "dc2dm_op03")) == "converted-three");
+    put(data / "MOVIE/DC2DM_Opening04.mpg", "renamed-four");
+    put(overlay / "Movie/DC2DM_OP04.mp5", "native-four");
+    CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "dc2dm_op04.mp5")) == "renamed-four");
+}
 }
 int main() {
     const auto root = fs::temp_directory_path() / ("dc4-resource-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    try { overlays(root); utf8(); movie_paths(root); }
+    try { overlays(root); utf8(); movie_paths(root); dc2dm_movie_paths(root); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     dc4::configure_resources({});
     std::error_code ignored; fs::remove_all(root, ignored);

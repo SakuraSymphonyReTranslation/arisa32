@@ -25,6 +25,14 @@ $fixtures = @(
             '-c:a', 'mp2', '-b:a', '192k', '-ac', '2', '-t', '8', '-f', 'mpeg')
     },
     @{
+        Name = 'slow-poll-h264.mp4'
+        Arguments = @('-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=60:duration=6',
+            '-f', 'lavfi', '-i', 'sine=frequency=550:sample_rate=44100:duration=6',
+            '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-preset', 'ultrafast',
+            '-crf', '35', '-bf', '2', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ac', '2',
+            '-t', '6', '-movflags', '+faststart', '-f', 'mp4')
+    },
+    @{
         Name = 'synchronized-control.mpg'
         Arguments = @('-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=3',
             '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=3',
@@ -73,6 +81,9 @@ foreach ($fixture in $fixtures) {
     }
     if ($fixture.Name -eq 'synchronized-control.mpg' -and ([Math]::Abs($summary.AudioDelay) -gt .05 -or $summary.VideoDuration -lt 2.95)) {
         throw 'Control fixture must have synchronized audio/video and three seconds of video.'
+    }
+    if ($fixture.Name -eq 'slow-poll-h264.mp4' -and ($videoPackets.Count -ne 360 -or $summary.VideoDuration -lt 5.95)) {
+        throw 'Slow-poll fixture must contain 360 H.264 frames over six seconds.'
     }
     $results += @{ Path = $path; Command = @($Ffmpeg) + $command; Metadata = $metadata; PacketSummary = $summary }
     Write-Output ("{0}: video={1:N3}s audio={2:N3}s audio_delay={3:N3}s tail_bytes={4}" -f $fixture.Name, $summary.VideoDuration, $summary.AudioDuration, $summary.AudioDelay, $summary.VideoBytesAfterAudio)

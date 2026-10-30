@@ -91,10 +91,70 @@ public final class ProfileChecks {
         check(GameProfileRegistry.getProfileById("dc4").isNativeSaveFile("DC403.png"), "native stem thumbnail archive");
         check(GameProfileRegistry.getProfileById("dc4").extractSlotNumber("DC4103.dat") == -1, "native slot beyond 100 rejected");
     }
+    private static void dearestMarriage(Path root) throws Exception {
+        Path data = root.resolve("renamed-dm/AdVdAtA");
+        Path mes = Files.createDirectories(data.resolve("mEs"));
+        ByteBuffer bytes = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+        bytes.putInt(2).putShort((short) 0).putInt(3).putShort((short) 1).putInt(3);
+        bytes.put(new byte[]{0x72, (byte) 0x9D, 0, 0});
+        Path main = mes.resolve("MaIn.MeS");
+        Files.write(main, bytes.array());
+        GameProfile dm = GameProfileRegistry.resolveProfile(data.toFile(), "unknown");
+        check(dm.getId().equals("dc2dm"), "DC2DM six-byte labels identify renamed data");
+        check(GameProfileRegistry.resolveProfile(data.getParent().toFile(), null) == dm, "DC2DM game root with mixed-case AdvData");
+        check(GameLibrary.detectTitle(data.toFile()).equals(dm.getDisplayName()), "DC2DM library title uses MES fingerprint");
+        check(GameProfileRegistry.getProfileById("DC2DM") == dm, "DC2DM profile lookup");
+        check(GameProfileRegistry.resolveProfile(null, "DC2DM").getId().equals("dc2dm"), "DC2DM short title fallback");
+        check(dm.matches(null, dm.getDisplayName()), "DC2DM full title fallback");
+        for (String title : new String[]{"DC2PC", "D.C. II ~Da Capo II~", "Da Capo II Fall in Love", "Dearest Marriage"})
+            check(!dm.matches(null, title), "DC2DM excludes unrelated or incomplete title: " + title);
+        check(dm.saveTarget(root.toFile(), 0).getName().equals("slot1.dc4sav"), "DC2DM retains portable snapshot writes");
+        check(dm.saveTarget(root.toFile(), -1).getName().equals("quicksave.dc4sav"), "DC2DM retains portable quicksave");
+        check(dm.getSaveFilePrefix().isEmpty(), "DC2DM does not claim unverified native save format");
+        Path existing = Files.createDirectories(data.resolve("sAvEdAtA"));
+        check(GameSaveDirectory.resolve(data.getParent().toFile(), data.toFile(), data.toFile()).toPath().equals(existing),
+                "DC2DM reuses existing save directory casing");
+        Files.write(existing.resolve("DC2DM01.dat"), new byte[]{1, 2, 3});
+        Files.write(existing.resolve("DC2DM00.dat"), new byte[]{4, 5, 6});
+        check(dm.resolveSlotSaveFile(existing.toFile(), 0).getName().equals("slot1.dc4sav"),
+                "unsupported DC2DM PC records do not occupy portable save slots");
+        check(dm.resolveQuickSaveFile(existing.toFile()).getName().equals("quicksave.dc4sav"),
+                "unsupported DC2DM PC records do not occupy portable quicksave");
+        Path snapshot = existing.resolve("SLOT1.DC4SAV");
+        Files.write(snapshot, new byte[]{7, 8, 9});
+        check(dm.resolveSlotSaveFile(existing.toFile(), 0).toPath().equals(snapshot),
+                "DC2DM portable save lookup preserves existing casing");
+        check(dm.saveTarget(existing.toFile(), 0).toPath().equals(snapshot),
+                "DC2DM overwrites the existing portable slot without a case-only duplicate");
+        Path quickSnapshot = existing.resolve("QUICKSAVE.DC4SAV");
+        Files.write(quickSnapshot, new byte[]{10, 11, 12});
+        check(dm.saveTarget(existing.toFile(), -1).toPath().equals(quickSnapshot),
+                "DC2DM overwrites the existing portable quicksave without a case-only duplicate");
+        directoryReads.clear();
+        File[] saves = dm.resolveSaveFiles(new CountedFile(existing.toString()), 100);
+        check(saves.length == 101 && saves[0].toPath().equals(quickSnapshot)
+                        && saves[1].toPath().equals(snapshot),
+                "DC2DM batched picker finds portable saves with existing casing");
+        check(saves[2].getName().equals("slot2.dc4sav") && saves[100].getName().equals("slot100.dc4sav"),
+                "DC2DM batched picker retains empty and legacy portable slot targets");
+        check(directoryReads.getOrDefault(existing.toString(), 0) == 1,
+                "DC2DM picker reads the save directory once");
+        check(dm.resolveSaveFiles(null, 100)[0] == null, "DC2DM missing save directory leaves empty picker");
+        check(dm.isNativeSaveFile("DC2DM01.dat"), "DC2DM PC records remain included in save archives");
+        bytes.put(16, (byte) 0x73); Files.write(main, bytes.array());
+        check(!dm.matches(data.toFile(), "DC2DM"), "neighboring MES version overrides matching DC2DM path");
+        bytes.put(16, (byte) 0x72).put(18, (byte) 1); Files.write(main, bytes.array());
+        check(!dm.matches(data.toFile(), "DC2DM"), "DC2DM verifies all three version bytes");
+        Files.write(main, new byte[]{-1, -1, -1, -1});
+        check(!dm.matches(data.toFile(), "DC2DM"), "DC2DM rejects overflowing label table");
+        Files.write(main, new byte[]{0, 0, 0, 0, 0x72, (byte) 0x9D});
+        check(!dm.matches(data.toFile(), "DC2DM"), "DC2DM rejects truncated version");
+    }
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("arisa32-profile-check-");
         try {
             scenarioMetadata(root);
+            dearestMarriage(root);
             Path data = root.resolve("renamed-game/AdvData");
             mes(data, 0x9969, 2);
             GameProfile dc2pc = GameProfileRegistry.resolveProfile(data.toFile(), "unknown");
@@ -215,8 +275,9 @@ public final class ProfileChecks {
             check(!dc2pc.matches(data.toFile(), "DC2PC"), "neighboring classic MES version cannot select DC2PC");
             Files.write(data.resolve("mes/MAIN.MES"), new byte[]{-1,-1,-1,127});
             check(!dc2pc.matches(data.toFile(), null), "truncated label table rejected");
-            check(GameProfileRegistry.getAllProfiles().size() == 4, "all four profiles registered");
+            check(GameProfileRegistry.getAllProfiles().size() == 5, "all five profiles registered");
             check(GameProfileRegistry.getAllStandardScanPaths().contains("DC2PC/AdvData"), "DC2PC scan path");
+            check(GameProfileRegistry.getAllStandardScanPaths().contains("Games/DC2DM/AdvData"), "DC2DM scan path");
             System.out.println("PASS: " + assertions + " profile checks");
         } finally {
             try (var paths = Files.walk(root)) {
