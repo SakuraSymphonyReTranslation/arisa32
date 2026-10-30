@@ -1,5 +1,49 @@
 # Android library and save-archive checks
 
+## Release descriptions and update dialog
+
+Run the Java 17 text checks from the repository root:
+
+```powershell
+javac -encoding UTF-8 -d build/release-notes-check android/app/src/main/java/org/dc4engine/ReleaseNotes.java tests/android/ReleaseNotesChecks.java
+java -cp build/release-notes-check org.dc4engine.ReleaseNotesChecks docs/releases
+```
+
+The checks cover app-language selection while the default locale is Japanese,
+safe tag URLs, Markdown cleanup, code/filenames, both language selectors, empty
+notes, and every published document's final line beyond the old 500-character limit.
+
+For the device UI checks, build an isolated QA application from `android/`:
+
+```powershell
+.\gradlew.bat -I ../tests/android/update-qa.init.gradle :app:assembleDebug :app:assembleDebugAndroidTest
+$appMeta = Get-Content app/build/outputs/apk/debug/output-metadata.json | ConvertFrom-Json
+$testMeta = Get-Content app/build/outputs/apk/androidTest/debug/output-metadata.json | ConvertFrom-Json
+if ($appMeta.applicationId -ne 'org.dc4engine.updateqa' -or $testMeta.applicationId -ne 'org.dc4engine.updateqa.test') { throw 'Unexpected QA package IDs' }
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+Keep the test device unlocked. The harness opens the real Activity in its own
+application package and intercepts the storage-permission prompt and external
+download/release intents. It tests the actual v0.6.2 Indonesian and English notes
+at widths of 540dp and 380dp, with font scales of 100% and 200%. Checks include
+touch scrolling, the final line, visible actions, Back, and keyboard activation.
+Screenshots are saved under
+`/sdcard/Android/data/org.dc4engine.updateqa/files/update-dialog-checks/`.
+
+After publishing the documents, verify the same HTTP reader used by the Activity:
+
+```powershell
+adb shell am instrument -w -e networkOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+This compares both downloaded translations with the fixtures and checks the
+missing-translation HTTP error. A notes failure must not block the update actions.
+Uninstall only `org.dc4engine.updateqa.test` and `org.dc4engine.updateqa` after QA.
+A normal build without the init script keeps the production package ID.
+
 Standalone export checks (Java 11+ and Android SDK; no device required):
 
 ```powershell

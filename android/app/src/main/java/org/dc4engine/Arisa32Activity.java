@@ -3425,38 +3425,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void checkForUpdates(boolean manual) {
         if (!manual && updateCheckedThisSession) return;
+        final String notesLanguage = ReleaseNotes.language(uiLanguage);
         if (manual) {
             notifyUser(tr("Checking for updates...", "Memeriksa pembaruan...", "更新を確認中..."));
         }
-        Executors.newSingleThreadExecutor().execute(() -> {
+        new Thread(() -> {
             try {
-                URL url = new URL("https://api.github.com/repos/SakuraSymphonyReTranslation/arisa32/releases/latest");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", "Arisa32-App/" + BuildConfig.VERSION_NAME);
-                conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(8000);
-                int code = conn.getResponseCode();
-                if (code != 200) {
-                    if (manual) {
-                        runOnUiThread(() -> notifyUser(tr("Failed to check for updates (HTTP " + code + ")",
-                                "Gagal memeriksa pembaruan (HTTP " + code + ")",
-                                "更新の確認に失敗しました (HTTP " + code + ")")));
-                    }
-                    return;
-                }
-                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-
-                JSONObject release = new JSONObject(sb.toString());
+                JSONObject release = new JSONObject(readUpdateText(
+                        "https://api.github.com/repos/SakuraSymphonyReTranslation/arisa32/releases/latest",
+                        "application/vnd.github.v3+json"));
                 String tagName = release.optString("tag_name", "");
-                String releaseName = release.optString("name", tagName);
                 String htmlUrl = release.optString("html_url", "https://github.com/SakuraSymphonyReTranslation/arisa32/releases");
-                String body = release.optString("body", "");
 
                 String apkDownloadUrl = null;
                 JSONArray assets = release.optJSONArray("assets");
@@ -3483,11 +3462,30 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 final String finalDownloadUrl = (apkDownloadUrl != null && !apkDownloadUrl.isEmpty()) ? apkDownloadUrl : htmlUrl;
 
                 boolean isNewer = isVersionNewer(tagName, BuildConfig.VERSION_NAME);
-                updateCheckedThisSession = true;
+                ReleaseNotes.Content fetchedNotes = null;
+                String notesUrl = ReleaseNotes.url(tagName, notesLanguage);
+                if (isNewer && notesUrl != null) {
+                    try {
+                        fetchedNotes = ReleaseNotes.parse(readUpdateText(notesUrl, "text/plain"), "Arisa32 " + tagName);
+                    } catch (IOException e) {
+                        Log.w(TAG, "Release notes unavailable for " + tagName + " (" + notesLanguage + ")", e);
+                    }
+                }
+                final ReleaseNotes.Content notes = fetchedNotes;
 
                 runOnUiThread(() -> {
                     if (destroyed || isFinishing()) return;
+                    if (!notesLanguage.equals(ReleaseNotes.language(uiLanguage))) {
+                        checkForUpdates(manual);
+                        return;
+                    }
+                    updateCheckedThisSession = true;
                     if (isNewer) {
+                        String releaseName = notes == null ? "Arisa32 " + tagName : notes.title;
+                        String body = notes == null ? tr(
+                                "Release notes could not be loaded. Tap View Release to read them online.",
+                                "Catatan rilis belum dapat dimuat. Ketuk Lihat Rilis untuk membacanya secara online.",
+                                "リリースノートを読み込めませんでした。「リリースを見る」からオンラインで確認できます。") : notes.body;
                         Toast.makeText(Arisa32Activity.this,
                                 tr("New update available: " + tagName,
                                    "Pembaruan baru tersedia: " + tagName,
@@ -3509,11 +3507,32 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                             "更新確認エラー: " + e.getMessage())));
                 }
             }
-        });
+        }, "Arisa32-Updates").start();
     }
 
-    private void showUpdateDialog(String tag, String name, String body, String downloadUrl, String releaseUrl) {
+    private static String readUpdateText(String address, String accept) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(address).openConnection();
+        try {
+            conn.setRequestProperty("User-Agent", "Arisa32-App/" + BuildConfig.VERSION_NAME);
+            conn.setRequestProperty("Accept", accept);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            int code = conn.getResponseCode();
+            if (code != HttpURLConnection.HTTP_OK) throw new IOException("HTTP " + code);
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder text = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) text.append(line).append('\n');
+                return text.toString();
+            }
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    private AlertDialog showUpdateDialog(String tag, String name, String body, String downloadUrl, String releaseUrl) {
         LinearLayout content = ArisaUi.column(this);
+        content.setPadding(dp(20), dp(4), dp(20), dp(12));
         content.addView(ArisaUi.badge(this, tag));
         ArisaUi.gap(content, 6);
         TextView titleView = text(name, 18, ArisaUi.TEXT);
@@ -3521,18 +3540,20 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         content.addView(titleView);
         ArisaUi.gap(content, 8);
 
-        if (body != null && !body.trim().isEmpty()) {
-            String changelog = body.trim();
-            if (changelog.length() > 500) {
-                changelog = changelog.substring(0, 500) + "...";
-            }
-            TextView bodyView = text(changelog, 13, ArisaUi.MUTED);
-            content.addView(bodyView);
-            ArisaUi.gap(content, 12);
-        }
+        String changelog = body == null || body.trim().isEmpty()
+                ? tr("No release notes were provided for this version.",
+                     "Tidak ada catatan rilis untuk versi ini.", "このバージョンのリリースノートはありません。")
+                : body.trim();
+        TextView bodyView = text(changelog, 14, ArisaUi.MUTED);
+        content.addView(bodyView);
+        ArisaUi.LimitedScroll scroll = new ArisaUi.LimitedScroll(this);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(true);
+        scroll.setScrollbarFadingEnabled(false);
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
 
-        dialog().setTitle(tr("New Version Available", "Versi Baru Tersedia", "新しいバージョンが利用可能です"))
-                .setView(content)
+        return dialog().setTitle(tr("New Version Available", "Versi Baru Tersedia", "新しいバージョンが利用可能です"))
+                .setView(scroll)
                 .setPositiveButton(tr("Download APK", "Unduh APK", "APKをダウンロード"), (d, w) -> {
                     try {
                         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl));
@@ -3583,6 +3604,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                    .setContentText(name)
                    .setContentIntent(pi)
                    .setAutoCancel(true);
+            if (body != null && !body.isEmpty()) {
+                builder.setStyle(new Notification.BigTextStyle().bigText(body));
+            }
             nm.notify(1001, builder.build());
         } catch (Throwable t) {
             Log.w(TAG, "Could not show system notification: " + t.getMessage());

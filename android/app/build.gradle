@@ -13,6 +13,7 @@ android {
         targetSdk 36       // Android 16 (Baklava)
         versionCode 9
         versionName '0.6.2'
+        testInstrumentationRunner 'org.dc4engine.UpdateDialogChecks'
         externalNativeBuild {
             cmake {
                 // Scene save/lifecycle snapshots use C++17 exceptions.
@@ -44,6 +45,8 @@ android {
         prefab false
         buildConfig true
     }
+
+    sourceSets.androidTest.assets.srcDir '../../docs/releases'
 
     packagingOptions {
         jniLibs {

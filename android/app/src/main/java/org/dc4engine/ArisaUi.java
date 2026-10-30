@@ -160,8 +160,9 @@ final class ArisaUi {
     static final class LimitedScroll extends ScrollView {
         LimitedScroll(Context c){super(c);setClipToPadding(false);}
         @Override protected void onMeasure(int widthSpec,int heightSpec){
-            int available=getResources().getDisplayMetrics().heightPixels-dp(getContext(),160);
-            int limit=Math.max(dp(getContext(),100),Math.min(dp(getContext(),420),available));
+            float fontScale=Math.max(1f,getResources().getConfiguration().fontScale);
+            int available=getResources().getDisplayMetrics().heightPixels-dp(getContext(),180*fontScale);
+            int limit=Math.max(dp(getContext(),48),Math.min(dp(getContext(),420),available));
             if(MeasureSpec.getMode(heightSpec)!=MeasureSpec.UNSPECIFIED)limit=Math.min(limit,MeasureSpec.getSize(heightSpec));
             super.onMeasure(widthSpec,MeasureSpec.makeMeasureSpec(limit,MeasureSpec.AT_MOST));
         }

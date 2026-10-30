@@ -1,0 +1,7 @@
+allprojects {
+    plugins.withId('com.android.application') {
+        androidComponents.finalizeDsl { extension ->
+            extension.defaultConfig.applicationId = 'org.dc4engine.updateqa'
+        }
+    }
+}
