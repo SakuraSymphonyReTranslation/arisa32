@@ -381,6 +381,12 @@ bool SceneAudio::dispatch(const MesCommand& c) {
             extension && c.words[0] ? ticks_ms(c.words[0]) : 500);
         if (extension) return true;
     }
+    if (c.dc2dm && c.kind == CmdKind::Param2 && c.raw_op == 0x06) {
+        // The runner consumes this wait when advancing past the voiced line.
+        state_.last_voice_name.clear();
+        last_voice_.clear();
+        return true;
+    }
     bool is_voice_cmd = false;
     if (c.kind == CmdKind::Str) {
         if (c.opcode() == dc4::Opcode::VOICE || c.opcode() == dc4::Opcode::VOICE_ALT || c.opcode() == dc4::Opcode::VOICE_EXTRA ||
@@ -396,6 +402,8 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         }
     }
     if (is_voice_cmd) {
+        // DC2DM 0x37 only preloads; our play_voice decodes synchronously.
+        if (c.dc2dm && c.raw_op == 0x37) return true;
         play_voice(c.str);
         return true;
     }

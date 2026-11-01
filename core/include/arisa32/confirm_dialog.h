@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <functional>
 
 namespace dc4ui {
 
@@ -16,7 +17,7 @@ enum class ConfirmResult {
 
 enum class ConfirmKind {
     Save, Overwrite, Load, QuickSave, QuickLoad, NewGame, SceneReplay,
-    SceneJump, Movie, ResetSettings, Title, Quit, Count
+    SceneJump, Movie, ResetSettings, Title, Quit, ReplayExit, Count
 };
 
 class ConfirmDialog {
@@ -33,6 +34,9 @@ public:
               const std::u16string& no_label = u"");
     // False means this action's "don't confirm" option was accepted earlier.
     bool open(ConfirmKind kind);
+    // The reader returns 0=ask, 1=skip, or -1 for the dialog's local policy.
+    void set_preferences(std::function<int(ConfirmKind)> read,
+                         std::function<void(ConfirmKind)> skip);
     ConfirmResult answer(bool yes);
     void close();
     bool active() const { return active_; }
@@ -93,6 +97,8 @@ private:
     dc4::Language language_ = dc4::Language::Japanese;
     ConfirmKind kind_ = ConfirmKind::Count;
     std::array<bool, size_t(ConfirmKind::Count)> skipped_{};
+    std::function<int(ConfirmKind)> read_preference_;
+    std::function<void(ConfirmKind)> skip_preference_;
 };
 
 } // namespace dc4ui

@@ -1,5 +1,7 @@
 #include "arisa32/audio.h"
+#include "arisa32/scene.h"
 #include "arisa32/scene_audio.h"
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +21,104 @@ static std::vector<int16_t> render(dc4::AudioEngine& audio, size_t frames) {
 }
 static void put32(std::vector<uint8_t>& bytes, size_t at, uint32_t v) {
     for (int i = 0; i < 4; ++i) bytes[at + i] = uint8_t(v >> (8 * i));
+}
+
+static void dc2dm_voice_prefetch() {
+    using namespace dc4;
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("arisa32-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    check(std::filesystem::create_directory(directory), "create voice fixture directory");
+    for (int voice = 0; voice < 2; ++voice) {
+        std::vector<uint8_t> bytes(36);
+        bytes[0] = 'X'; bytes[1] = 'P'; bytes[2] = 'C'; bytes[3] = 'M';
+        put32(bytes, 4, 8);
+        bytes[12] = 1; bytes[14] = 1;
+        put32(bytes, 16, 44100); put32(bytes, 20, 44100);
+        bytes[24] = 1; bytes[26] = 8;
+        for (int i = 0; i < 8; ++i) bytes[28 + i] = uint8_t(129 + voice * 16 + i);
+        std::ofstream file(directory / (voice ? "next.pcm" : "current.pcm"), std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        check(bool(file), "write voice fixture");
+    }
+    AudioEngine audio;
+    SceneAudio scene(directory.string());
+    scene.set_engine(&audio, nullptr);
+    auto command = [](uint8_t opcode, const char* name) {
+        MesCommand raw;
+        raw.dc2dm = true; raw.kind = CmdKind::Str; raw.op = opcode; raw.str = name;
+        return mes_engine_command(raw);
+    };
+    const auto prefetch = command(0x37, "next");
+    check(scene.dispatch(prefetch) && !scene.voice_playing() && scene.last_voice_name().empty(),
+          "DC2DM prefetch alone does not start or retain a voice");
+    check(scene.dispatch(command(0x35, "current")) && scene.voice_playing(),
+          "DC2DM immediate voice starts playback");
+    check(render(audio, 2)[2] == 512, "current voice plays its first two samples");
+    for (int frame = 2; frame < 8; ++frame) {
+        const double position = audio.channel_position(8);
+        check(scene.dispatch(prefetch) && audio.channel_position(8) == position &&
+              scene.last_voice_name() == "current", "prefetch preserves playback position and replay voice");
+        check(render(audio, 1)[0] == (frame + 1) * 256, "repeated prefetch leaves current samples uninterrupted");
+    }
+    check(!scene.voice_playing() && render(audio, 2)[0] == 0, "immediate voice completes without looping");
+    check(scene.dispatch(command(0x36, "next")) && scene.last_voice_name() == "next",
+          "DC2DM deferred native voice becomes the replay voice when played");
+    check(render(audio, 8)[0] == 17 * 256 && !scene.voice_playing(),
+          "prefetched voice plays once only at its playback command");
+    check(scene.dispatch(prefetch) && !scene.voice_playing(), "later prefetch does not restart completed playback");
+    check(scene.replay_voice() && render(audio, 8)[0] == 17 * 256 && !scene.voice_playing(),
+          "explicit replay still plays the retained voice once");
+    MesCommand next_line;
+    next_line.dc2dm = true; next_line.kind = CmdKind::Param2; next_line.op = 0x06;
+    next_line = mes_engine_command(next_line);
+    check(scene.dispatch(command(0x36, "current")), "start voice before advancing the dialogue");
+    render(audio, 2);
+    check(scene.dispatch(next_line) && scene.last_voice_name().empty() && !scene.replay_voice() &&
+          audio.channel_position(8) == 2, "advancing clears the line replay association without restarting audio");
+    check(scene.dispatch(prefetch) && scene.last_voice_name().empty(), "narration does not inherit a prefetched voice");
+    SceneAudio headless(directory.string());
+    check(headless.dispatch(prefetch) && headless.last_voice_name().empty(), "headless prefetch retains no voice");
+    check(headless.dispatch(command(0x36, "current")) && headless.dispatch(prefetch) &&
+          headless.last_voice_name() == "current", "headless prefetch preserves explicit playback association");
+    check(headless.dispatch(next_line) && headless.last_voice_name().empty(), "headless advance clears the voiced line");
+    std::vector<uint8_t> script{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0};
+    const auto voice_command = [&](uint8_t op, const std::string& name) {
+        script.push_back(op);
+        script.insert(script.end(), name.begin(), name.end());
+        script.push_back(0);
+    };
+    const auto dialogue = [&](const std::string& line) {
+        script.push_back(0x4F);
+        for (unsigned char ch : line) script.push_back(uint8_t(ch - 0x20));
+        script.insert(script.end(), {0,0x06,0,0});
+    };
+    voice_command(0x37, "next"); dialogue("FIRST");
+    voice_command(0x36, "current"); voice_command(0x37, "next"); dialogue("CURRENT");
+    voice_command(0x37, "next"); dialogue("NARRATION");
+    voice_command(0x36, "next"); voice_command(0x37, "current"); dialogue("NEXT");
+    script.push_back(0);
+    const auto path = directory / "voice-sequence.mes";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(script.data()), std::streamsize(script.size()));
+        check(bool(file), "write voice sequence fixture");
+    }
+    AudioEngine sequence_audio;
+    dc4scene::SceneRunner runner(directory.string());
+    runner.set_audio(&sequence_audio, nullptr);
+    check(runner.load_script(path.string()), "load DC2DM voice sequence");
+    check(runner.advance_to_next_text() && runner.current_line() == "FIRST" &&
+          runner.last_voice().empty() && !runner.voice_playing(), "runner ignores narration prefetch");
+    check(runner.advance_to_next_text() && runner.current_line() == "CURRENT" &&
+          runner.last_voice() == "current" && runner.voice_playing(), "runner retains played voice through prefetch");
+    render(sequence_audio, 2);
+    check(runner.advance_to_next_text() && runner.current_line() == "NARRATION" &&
+          runner.last_voice().empty() && sequence_audio.channel_position(8) == 2,
+          "runner advances to narration without restarting or associating another voice");
+    check(runner.advance_to_next_text() && runner.current_line() == "NEXT" &&
+          runner.last_voice() == "next" && render(sequence_audio, 8)[0] == 17 * 256 && !runner.voice_playing(),
+          "runner plays deferred voice once at its own dialogue");
+    std::filesystem::remove_all(directory);
 }
 
 static void deferred_channel_adoption() {
@@ -69,6 +169,7 @@ static void deferred_channel_adoption() {
 
 int main(int argc, char** argv) {
     using namespace dc4;
+    dc2dm_voice_prefetch();
     deferred_channel_adoption();
     AudioEngine audio;
     check(audio.play_pcm(0, {100, 200, 300, 400, 500}, 44100, 1, {true, 1, 4}), "loop PCM load");

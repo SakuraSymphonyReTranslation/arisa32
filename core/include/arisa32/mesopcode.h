@@ -94,6 +94,7 @@ enum class Opcode : uint8_t {
     ADD = 0x85,
     COMPARE = 0x86,
     CAPTION = 0x87,
+    CHIP_ORIGIN = 0x88,
     SPRITE_TRANSFORM = 0x8B,
     SPRITE_EFFECT = 0x8C,
     SPRITE_SLIDE = 0x8E,

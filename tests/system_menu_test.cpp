@@ -1,5 +1,6 @@
 #include "arisa32/system_menu.h"
 #include "arisa32/mesvm.h"
+#include "arisa32/save_screen.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -323,6 +324,75 @@ void movie_modal_assets(const std::string& data){
     m.pointer_down(x,y);CHECK(m.pointer_up(x,y).type==Type::None);CHECK(m.page()==Page::Extras);
     std::cout<<"Verified Movie popup return hit target, native hover artwork and Music state restoration.\n";
 }
+void confirmations(const std::string& data, const std::filesystem::path& scratch) {
+    using Kind = dc4ui::ConfirmKind;
+    Menu menu; std::string error;
+    CHECK(menu.load(data,&error));
+    if (!menu.loaded()) { std::cerr<<error<<'\n'; return; }
+    menu.open(Page::Config); menu.set_config_page(4);
+    dc4ui::ConfirmDialog quick;
+    dc4ui::SaveScreen saves;
+    CHECK(saves.load(data,&error));
+    menu.bind_confirmations(quick);
+    menu.bind_confirmations(saves.confirm_dialog());
+    const auto path = (scratch/"confirmations.profile").string();
+    std::filesystem::create_directories(scratch);
+    int writes = 0;
+    menu.set_confirmation_changed_callback([&] { ++writes; CHECK(menu.save_profile(path,&error)); });
+    const std::pair<Kind,int> kinds[] = {
+        {Kind::Quit,0},{Kind::SceneJump,1},{Kind::Title,4},{Kind::ReplayExit,6},
+        {Kind::Save,7},{Kind::Overwrite,7},{Kind::QuickSave,7},
+        {Kind::Load,8},{Kind::QuickLoad,8},{Kind::ResetSettings,10},{Kind::SceneReplay,13}
+    };
+    CHECK(click(menu,"yesnoalloff").type==Type::SettingsChanged);
+    for (const auto& entry:kinds) CHECK(!quick.open(entry.first));
+    CHECK(click(menu,"yesnoallon").type==Type::SettingsChanged);
+    for (const auto& entry:kinds) { CHECK(quick.open(entry.first)); quick.answer(false); }
+    const std::pair<const char*,Kind> switches[] = {
+        {"yesno01",Kind::Quit},{"yesno03",Kind::Title},{"yesno04",Kind::QuickSave},
+        {"yesno05",Kind::QuickLoad},{"yesno06",Kind::SceneJump},
+        {"yesno07",Kind::SceneReplay},{"yesno08",Kind::ReplayExit},{"yesno09",Kind::ResetSettings}
+    };
+    for (const auto& entry:switches) {
+        CHECK(click(menu,entry.first).type==Type::SettingsChanged);
+        CHECK(!quick.open(entry.second));
+        CHECK(click(menu,entry.first).type==Type::SettingsChanged);
+        CHECK(quick.open(entry.second)); quick.answer(false);
+    }
+    CHECK(quick.open(Kind::QuickSave)); quick.set_dont_confirm(true); quick.answer(false);
+    CHECK(menu.variable(93,7)==0 && writes==0);
+    CHECK(quick.open(Kind::QuickSave));
+    quick.pointer_down(580,440); quick.pointer_up(580,440);
+    CHECK(quick.dont_confirm());
+    quick.pointer_down(520,380); CHECK(quick.pointer_up(520,380)==dc4ui::ConfirmResult::Yes);
+    CHECK(menu.variable(93,7)==1 && writes==1);
+    CHECK(!quick.open(Kind::QuickSave));
+    CHECK(!saves.confirm_dialog().open(Kind::Overwrite));
+    CHECK(saves.confirm_dialog().open(Kind::Load)); saves.answer_confirmation(false);
+    CHECK(saves.activate({dc4ui::SaveActionType::Slot,0}).type==dc4ui::SaveActionType::Slot);
+    CHECK(click(menu,"yesno04").type==Type::SettingsChanged);
+    CHECK(saves.activate({dc4ui::SaveActionType::Slot,0}).type==dc4ui::SaveActionType::None);
+    CHECK(saves.confirming()); saves.answer_confirmation(false);
+    Menu restarted; CHECK(restarted.load(data,&error)); CHECK(restarted.load_profile(path,&error));
+    dc4ui::ConfirmDialog restored; restarted.bind_confirmations(restored);
+    CHECK(!restored.open(Kind::QuickSave));
+    CHECK(restored.open(Kind::Load)); restored.answer(false);
+    menu.set_variable(93,0,0); menu.open(Page::Title);
+    CHECK(menu.activate("end").type==Type::None && menu.confirming());
+    menu.pointer_down(580,440); menu.pointer_up(580,440);
+    menu.pointer_down(520,380); CHECK(menu.pointer_up(520,380).type==Type::Quit);
+    CHECK(writes==2 && menu.variable(93,0)==1);
+    CHECK(!quick.open(Kind::Quit));
+    menu.open(Page::Config); menu.set_config_page(4); click(menu,"yesnoallon");
+    CHECK(quick.open(Kind::Quit)); quick.answer(false);
+    menu.activate("yesnoalloff");
+    CHECK(menu.activate("defaultparts").type==Type::SettingsChanged);
+    CHECK(quick.open(Kind::QuickSave)); quick.answer(false);
+    Menu unrelated;
+    unrelated.set_variable(93,7,1); unrelated.bind_confirmations(restored);
+    CHECK(restored.open(Kind::QuickSave)); restored.answer(false);
+    std::cout<<"Confirmation switches, shared checkbox policy, cancel, persistence and reset passed: "<<data<<'\n';
+}
 void assets(const std::string& data){
     Menu m;std::string error;
     CHECK(m.load(data,&error));if(!m.loaded()){std::cerr<<error<<'\n';return;}
@@ -382,9 +452,12 @@ int main(int argc,char** argv){
     const char* installed=argc>1?argv[1]:std::getenv("DC4_TEST_DATA");
     if(installed){
         const std::string mode=argc>2?argv[2]:"";
-        if(mode!="--movie-modal")replay_policy_assets(installed,scratch/"installed");
-        if(mode!="--replay-policy")movie_modal_assets(installed);
-        if(mode!="--replay-policy" && mode!="--movie-modal"){assets(installed);scene_selections(installed);}
+        if(mode=="--confirmations") confirmations(installed,scratch/"confirmations");
+        else {
+            if(mode!="--movie-modal")replay_policy_assets(installed,scratch/"installed");
+            if(mode!="--replay-policy")movie_modal_assets(installed);
+            if(mode!="--replay-policy" && mode!="--movie-modal"){assets(installed);scene_selections(installed);}
+        }
     }else std::cout<<"Installed menu asset checks skipped (set DC4_TEST_DATA).\n";
     if(scratch.parent_path()==parent && scratch.filename().string().rfind("arisa32-replay-",0)==0)
         std::filesystem::remove_all(scratch);

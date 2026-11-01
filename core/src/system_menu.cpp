@@ -170,7 +170,7 @@ struct Rect {
     int x = 0, y = 0, w = 0, h = 0;
     bool has(int px, int py) const { return px >= x && px < x + w && py >= y && py < y + h; }
 };
-struct Chip { std::string image; Rect src, dst; int state = 99, control = -1; };
+struct Chip { std::string image; Rect src, dst; int state = 99, control = -1; bool window_opacity = false; };
 struct Widget {
     Rect hit;
     std::string tag;
@@ -187,7 +187,36 @@ struct Caption {
     std::string text;
     int max_width = 0;
     std::u16string unicode;
+    int line_spacing = 0;
+    bool dc2dm_preview = false, translated = false, animated = false;
+    size_t preview_count = 0, preview_revealed = 0;
+    uint64_t preview_elapsed_ms = 0;
 };
+bool dc2dm_preview_translation(std::u16string* text) {
+    size_t latin = 0, japanese = 0;
+    bool underscores = false;
+    for (char16_t ch : *text) {
+        if ((ch >= u'A' && ch <= u'Z') || (ch >= u'a' && ch <= u'z') ||
+            (ch >= 0xFF21 && ch <= 0xFF3A) || (ch >= 0xFF41 && ch <= 0xFF5A)) ++latin;
+        if ((ch >= 0x3040 && ch <= 0x30FA) || (ch >= 0x3400 && ch <= 0x9FFF) ||
+            (ch >= 0xFF66 && ch <= 0xFF9F)) ++japanese;
+        if (ch == u'_' || ch == 0xFF3F) underscores = true;
+    }
+    if (!latin || (japanese && (!underscores || latin <= japanese))) return false;
+    for (auto& ch : *text) {
+        if (ch >= 0xFF01 && ch <= 0xFF5E) ch -= 0xFEE0;
+        switch (ch) {
+        case u'_': case u'\u30fb': ch = u' '; break;
+        case u'\u3001': ch = u','; break;
+        case u'\u3002': ch = u'.'; break;
+        case u'\u2010': case u'\u2015': case u'\u2212': case u'\u30fc': ch = u'-'; break;
+        case u'\u2018': case u'\u2019': ch = u'\''; break;
+        case u'\u201c': case u'\u201d': ch = u'"'; break;
+        default: break;
+        }
+    }
+    return true;
+}
 struct MenuProfile {
     dc4::MesProfileId id;
     int canvas_width, canvas_height;
@@ -258,7 +287,25 @@ struct SystemMenu::Impl {
     std::vector<Caption> captions;
     std::vector<Chip> music_underlay;
     std::vector<Widget> music_underlay_widgets;
-    bool dc4_movie_back = false;
+    bool dc4_profile = false;
+    std::function<void()> confirmation_changed;
+    int confirmation_index(ConfirmKind kind) const {
+        if (!dc4_profile) return -1;
+        switch (kind) {
+        case ConfirmKind::Quit: return 0;
+        case ConfirmKind::SceneJump: return 1;
+        case ConfirmKind::Title: return 4;
+        case ConfirmKind::ReplayExit: return 6;
+        case ConfirmKind::Save:
+        case ConfirmKind::Overwrite:
+        case ConfirmKind::QuickSave: return 7;
+        case ConfirmKind::Load:
+        case ConfirmKind::QuickLoad: return 8;
+        case ConfirmKind::ResetSettings: return 10;
+        case ConfirmKind::SceneReplay: return 13;
+        default: return -1;
+        }
+    }
     std::array<Chip, 3> list_back;
     std::vector<Rect> list_rects;
     std::map<int, std::array<Chip, 3>> list_titles;
@@ -286,6 +333,7 @@ struct SystemMenu::Impl {
             {245,-1},{246,-1},{253,-1},{254,-1}
         };
         for (auto v : defaults) vars[{99, v.first}] = v.second;
+        if (dc4_profile) for (int i = 0; i < 20; ++i) vars[{93,i}] = 0;
         vars[{100,49}] = 80;
         for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
         for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
@@ -398,6 +446,43 @@ struct SystemMenu::Impl {
         }
     }
     void clear_layout() { widgets.clear(); chips.clear(); captions.clear(); list_rects.clear(); list_titles.clear(); legacy_items.clear(); legacy_rows.clear(); catalogue_drawn=false; }
+    void update_preview(Caption& caption, uint32_t elapsed_ms) const {
+        if (!caption.animated || !caption.preview_count) return;
+        const size_t count = caption.preview_count;
+        const int inverse = 11-std::clamp(get(99,26),0,11);
+        const uint64_t interval = inverse <= 3 ? 30 : (inverse-3)*17;
+        const size_t batch = inverse == 0 ? 1 : inverse <= 3 ? 4-inverse : 1;
+        // Native type 12 reuses its raw glyph counter for the 100ms hold ticks,
+        // including the final reveal batch's overshoot and direct slider edits.
+        const size_t hold_limit = count+(20-std::clamp(get(99,29),0,20))*5+2;
+        const auto hold_ticks = [&](size_t revealed) {
+            return revealed < hold_limit ? hold_limit-revealed : size_t(1);
+        };
+        const size_t last_count = inverse == 0 ? count : (count+batch-1)/batch*batch;
+        const uint64_t reveal_time = inverse == 0 ? (count > 1 ? 30 : 0) :
+            ((count+batch-1)/batch-1)*interval;
+        const uint64_t cycle_time = reveal_time+hold_ticks(last_count)*100;
+        caption.preview_elapsed_ms += elapsed_ms;
+        while (true) {
+            if (caption.preview_revealed < count) {
+                const size_t needed = inverse == 0 ? 1 : (count-caption.preview_revealed+batch-1)/batch;
+                const size_t ticks = size_t(std::min<uint64_t>(needed,caption.preview_elapsed_ms/interval));
+                if (!ticks) return;
+                caption.preview_elapsed_ms -= ticks*interval;
+                caption.preview_revealed = inverse == 0 ? count : caption.preview_revealed+ticks*batch;
+                if (ticks < needed) return;
+            } else {
+                const size_t needed = hold_ticks(caption.preview_revealed);
+                const size_t ticks = size_t(std::min<uint64_t>(needed,caption.preview_elapsed_ms/100));
+                if (!ticks) return;
+                caption.preview_elapsed_ms -= ticks*100;
+                caption.preview_revealed += ticks;
+                if (ticks < needed) return;
+                caption.preview_revealed = batch;
+                caption.preview_elapsed_ms %= cycle_time;
+            }
+        }
+    }
     int hit(int x,int y) const {
         for (int i = int(widgets.size()) - 1; i >= 0; --i)
             if (widgets[size_t(i)].enabled && widgets[size_t(i)].hit.has(x, y))
@@ -637,11 +722,13 @@ struct SystemMenu::Impl {
             context.pending = Command{};
             return;
         }
-        Chip chip{sheets[w[2]],
+        const bool window_opacity = dc2dm && context.source->dc2dm && page == Page::Config && (w[2] & 0x80);
+        const int sheet = window_opacity ? w[2] & 0x3F : w[2];
+        Chip chip{sheets[sheet],
                   {sw(context.pending.words[2]), sw(context.pending.words[3]), w[0], w[1]},
                   {sw(context.pending.words[0]), sw(context.pending.words[1]), w[0], w[1]},
                   chip_state,
-                  context.control};
+                   context.control, window_opacity};
         if (context.source->dc2pc && context.pending.opcode() == Opcode::CHIP_POSITION) {
             chip.src.w -= chip.src.x;
             chip.src.h -= chip.src.y;
@@ -714,6 +801,24 @@ struct SystemMenu::Impl {
             if(context.source->dc2pc && opcode==Opcode::CONTROL_CAPTION && context.list_id>=0) {
                 legacy_items[context.list_id].captions.push_back(
                     {sw(w[0]),sw(w[1]),16,-1,-1,text.str});
+                return;
+            }
+            if (dc2dm && context.source->dc2dm && page == Page::Config && opcode == Opcode::CAPTION) {
+                // raw67's third word is newline spacing; the glyph cell is 22px.
+                Caption caption{sw(w[0]),sw(w[1]),22,-1,99,text.str};
+                caption.line_spacing = w[2];
+                caption.dc2dm_preview = true;
+                caption.unicode = dc4scene::sjis_to_utf16(text.str);
+                caption.translated = dc2dm_preview_translation(&caption.unicode);
+                caption.preview_count = std::count_if(caption.unicode.begin(),caption.unicode.end(),
+                    [](char16_t ch) { return ch != u'\n' && ch != u'\r'; });
+                const int inverse = 11-std::clamp(get(99,26),0,11);
+                caption.preview_revealed = inverse >= 1 && inverse <= 3 ? 4-inverse : 1;
+                if (context.pc < context.source->code.size()) {
+                    const auto& effect = context.source->code[context.pc];
+                    caption.animated = effect.raw_op == 0x5B && effect.words[0] == 0x110C;
+                }
+                captions.push_back(std::move(caption));
                 return;
             }
             captions.push_back({sw(w[0]), sw(w[1]), opcode == Opcode::CAPTION ? int(w[2]) : 20,
@@ -1188,13 +1293,13 @@ struct SystemMenu::Impl {
     }
 };
 
-SystemMenu::SystemMenu() : p_(std::make_unique<Impl>()) {}
+SystemMenu::SystemMenu() : p_(std::make_unique<Impl>()) { bind_confirmations(p_->confirm); }
 SystemMenu::~SystemMenu() = default;
 SystemMenu::SystemMenu(SystemMenu&&) noexcept = default;
 SystemMenu& SystemMenu::operator=(SystemMenu&&) noexcept = default;
 bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->data = data_dir; p_->scripts.clear(); p_->images.clear(); p_->last_error.clear(); p_->ready = false;
-    p_->dc4_movie_back = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
+    p_->dc4_profile = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
     p_->confirm.load(data_dir);
     p_->dc2pc = false;
     p_->dc2dm = false;
@@ -1243,7 +1348,7 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     if (!p_->names()) { p_->last_error = "Invalid or missing version 7 GRP/NAMES.DAT"; if (error) *error = p_->last_error; return false; }
     // Identify the requested games from their scenario catalogue, not a
     // directory name (all Android games live beneath org.dc4engine).
-    p_->dc4_movie_back = std::any_of(p_->scene_names.begin(), p_->scene_names.end(), [](const std::string& name) {
+    p_->dc4_profile = std::any_of(p_->scene_names.begin(), p_->scene_names.end(), [](const std::string& name) {
         const auto scene = key(name);
         return scene == "dc4_kyo20190204a1" || scene == "dc4_sen20181213b" || scene == "dc4_asu20190506c";
     });
@@ -1462,6 +1567,23 @@ Action SystemMenu::activate(const std::string& tag) {
     return activate_confirmed(tag);
 }
 bool SystemMenu::confirming()const{return p_->confirm.active();}
+void SystemMenu::bind_confirmations(ConfirmDialog& dialog) {
+    auto* state = p_.get();
+    dialog.set_preferences([state](ConfirmKind kind) {
+        const int index = state->confirmation_index(kind);
+        return index < 0 ? -1 : (state->get(93,index) != 0 ? 1 : 0);
+    }, [state](ConfirmKind kind) {
+        const int index = state->confirmation_index(kind);
+        if (index < 0) return;
+        state->put(93,index,1);
+        // CONFIG groups the two native reset prompts under one switch.
+        if (kind == ConfirmKind::ResetSettings) state->put(93,9,1);
+        if (state->confirmation_changed) state->confirmation_changed();
+    });
+}
+void SystemMenu::set_confirmation_changed_callback(std::function<void()> callback) {
+    p_->confirmation_changed = std::move(callback);
+}
 Action SystemMenu::answer_confirmation(bool yes){
     if(!confirming())return {};
     p_->confirm.answer(yes);auto tag=std::move(p_->pending_tag);p_->pending_tag.clear();
@@ -1810,6 +1932,11 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
     return out;
 }
 
+void SystemMenu::update(uint32_t elapsed_ms) {
+    if (p_->dc2dm && p_->page == Page::Config)
+        for (auto& caption : p_->captions) p_->update_preview(caption,elapsed_ms);
+}
+
 void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
     if(!frame)return;
     frame->assign(FrameBytes,0);for(size_t i=3;i<frame->size();i+=4)(*frame)[i]=255;
@@ -1866,7 +1993,8 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
                 chip.dst.x=widget.slider_left + val*(widget.slider_right-widget.slider_left)/count - chip.dst.w/2;
             } else if(chip.state!=state)return;
         }
-        if(auto* img=p_->image(chip.image))blit(*img,chip.src,p_->destination(chip.dst),frame);
+        const int alpha = chip.window_opacity ? (16-std::clamp(p_->get(99,11),0,14))*255/16 : 255;
+        if(auto* img=p_->image(chip.image))blit(*img,chip.src,p_->destination(chip.dst),frame,alpha);
     };
     if(p_->movie_menu)for(const auto& chip:p_->music_underlay)render_chip(chip,true);
     for(const auto& chip:p_->chips)render_chip(chip,false);
@@ -1885,6 +2013,33 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     for(const auto& c:p_->captions) {
         if(c.control>=0 && c.state>=0 && state_for(c.control)!=c.state)continue;
+        if (c.dc2dm_preview) {
+            dc4scene::Image preview;
+            preview.w = p_->profile->canvas_width;
+            const auto lines = std::count(c.unicode.begin(),c.unicode.end(),u'\n');
+            preview.h = int(std::min<int64_t>(p_->profile->canvas_height,
+                (int64_t(lines)*c.line_spacing+33)/4*4));
+            preview.rgba.assign(size_t(preview.w)*preview.h*4,0);
+            size_t visible = c.animated ? std::min(c.preview_count,c.preview_revealed) : c.preview_count;
+            std::u16string line;
+            int baseline = 22;
+            const auto draw_line = [&] {
+                font.rasterize_line(line,c.x,baseline,&preview.rgba,preview.w,preview.h,
+                                    22,0xFFFFFF,false,0,true,-1,c.translated ? 22*15.0f/19 : 0);
+            };
+            for (char16_t ch : c.unicode) {
+                if (ch == u'\r') continue;
+                if (ch == u'\n') {
+                    draw_line(); line.clear(); baseline += c.line_spacing;
+                } else {
+                    if (!visible) break;
+                    line.push_back(ch); --visible;
+                }
+            }
+            draw_line();
+            blit(preview,{0,0,preview.w,preview.h},p_->destination({0,c.y-4,preview.w,preview.h}),frame);
+            continue;
+        }
         if (!c.unicode.empty()) {
             const auto point=p_->destination({c.x,c.y+c.size,0,0});
             const float size=float(c.size)*H/p_->profile->canvas_height;
@@ -1937,7 +2092,7 @@ SystemConfig SystemMenu::config() const {
     }
     if(p_->dc2dm) {
         c.music_volume=std::clamp(v(7)*100/29,0,100);c.se_volume=std::clamp(v(8)*100/29,0,100);
-        c.voice_volume=std::clamp(v(9)*100/29,0,100);c.window_opacity=std::clamp(v(11)*100/14,0,100);
+        c.voice_volume=std::clamp(v(9)*100/29,0,100);c.window_opacity=(16-std::clamp(v(11),0,14))*100/16;
         for(size_t i=0;i<c.character_muted.size();++i)c.character_muted[i]=p_->get(95,int(i))==0;
     }
     return c;

@@ -10,6 +10,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.content.res.ColorStateList;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -38,6 +39,10 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -49,6 +54,7 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.KeyEvent;
 import android.view.TextureView;
 import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
@@ -143,6 +149,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private FrameLayout gameLayout;
     private TextView bubble;
     private TextView backSidemenu;
+    private FloatingNavigation navigation;
     private FrameLayout movieContainer;
     private TextureView movieTextureView;
     private Surface movieSurface;
@@ -519,6 +526,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private Paint badgePaint, badgeBgPaint;
     private Paint fpsPaint, fpsBgPaint;
     private volatile boolean showFps = true;
+    private volatile int textureFilter = FrameFilter.DEFAULT;
     private volatile boolean autoCheckUpdate = true;
     private float currentFps = 60.0f;
     private static boolean updateCheckedThisSession = false;
@@ -598,6 +606,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         uiLanguage = preferences.getString("uiLanguage", "en");
         retainSession = preferences.getBoolean("retainSession", true);
         showFps = preferences.getBoolean("showFps", true);
+        textureFilter = FrameFilter.normalize(preferences.getInt(FrameFilter.PREFERENCE, FrameFilter.DEFAULT));
         autoCheckUpdate = preferences.getBoolean("autoCheckUpdate", true);
         if (!storageAccessGranted()) {
             ensureStorageAccess();
@@ -1004,7 +1013,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         firstFramePending = launchOverlay != null;
         final View pendingOverlay = launchOverlay;
         renderThread = new Thread(() -> {
-            Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+            FrameFilter frameFilter = new FrameFilter();
             Bitmap movieBitmap = null;
             boolean hardwareCanvas = Build.VERSION.SDK_INT >= 26;
             long fpsLastTime = SystemClock.uptimeMillis();
@@ -1061,7 +1070,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                                     vp.centerX() + w / 2, vp.centerY() + h / 2);
                         }
                         boolean isMovie = displayBitmap == movieBitmap && movieBitmap != null;
-                        canvas.drawBitmap(displayBitmap, null, destination, paint);
+                        frameFilter.draw(canvas, displayBitmap, destination, textureFilter);
                         RectF activeFrame = getActiveFrameInVp(isMovie, destination, vp);
                         drawOverlays(canvas, vp, activeFrame);
                     }
@@ -1340,6 +1349,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             profileGame = selected;
         }
         return cachedProfile;
+    }
+
+    private boolean hasNativeSidebar() {
+        String id = currentProfile().getId();
+        return "dc2pc".equals(id) || "dc2dm".equals(id);
     }
 
     private File resolveSlotSaveFile(File dir, int slotIndex) {
@@ -1919,18 +1933,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         LinearLayout body = ArisaUi.column(this);
         section(body, tr("PREFERENCES", "PREFERENSI", "環境設定"));
         addSessionSetting(body);
-        setting(body, tr("FPS Meter", "FPS Meter", "FPS メーター"),
-                showFps
-                        ? tr("On · displayed in top-right corner", "Aktif · tampil di pojok kanan atas", "オン · 右上に表示")
-                        : tr("Off · hidden", "Nonaktif · disembunyikan", "オフ · 非表示"),
-                () -> {
-                    showFps = !showFps;
-                    preferences.edit().putBoolean("showFps", showFps).apply();
-                    notifyUser(showFps ? tr("FPS meter enabled.", "FPS meter diaktifkan.", "FPS メーターを有効にしました。")
-                                       : tr("FPS meter disabled.", "FPS meter dinonaktifkan.", "FPS メーターを無効にしました。"));
-                });
+        addTextureFilterSetting(body);
         setting(body, tr("App language", "Bahasa aplikasi", "アプリ言語"), uiLanguage.equals("jp") ? "日本語" : uiLanguage.equals("id") ? "Bahasa Indonesia" : "English", this::chooseUiLanguage);
         section(body, tr("APPEARANCE", "TAMPILAN", "外観"));
+        addNavigationSetting(body);
         setting(body, tr("FPS Meter", "FPS Meter", "FPS メーター"),
                 showFps
                         ? tr("On · display framerate in top-right corner", "Aktif · tampilkan frame rate di pojok kanan atas", "オン · 右上に表示")
@@ -2005,6 +2011,86 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                             }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
                 });
     }
+    private String textureFilterTitle() {
+        return tr("Texture smoothing", "Penghalusan gambar", "画像のスムージング");
+    }
+    private String textureFilterName(int mode) {
+        if (mode == FrameFilter.OFF) return tr("Off", "Nonaktif", "オフ");
+        if (mode == FrameFilter.FXAA) return "FXAA";
+        return "Bilinear";
+    }
+    private void addTextureFilterSetting(LinearLayout body) {
+        setting(body, textureFilterTitle(), textureFilterName(textureFilter) + " · "
+                + tr("All games", "Semua game", "すべてのゲーム"), this::showTextureFilterSettings);
+    }
+    private void showTextureFilterSettings() {
+        LinearLayout body = ArisaUi.column(this);
+        body.setPadding(dp(20), dp(16), dp(20), dp(16));
+        TextView title = text(textureFilterTitle(), 20, TEXT);
+        title.setTypeface(Typeface.create("sans-serif-bold", Typeface.BOLD));
+        title.setPadding(0, 0, 0, dp(12));
+        body.addView(title);
+        body.addView(text(tr("Applies immediately to graphics and text in all games.",
+                "Langsung berlaku untuk gambar dan teks di semua game.",
+                "すべてのゲームの画像と文字にすぐ適用されます。"), 14, TEXT));
+        ArisaUi.gap(body, 10);
+        android.widget.RadioGroup choices = new android.widget.RadioGroup(this);
+        String[] descriptions = {
+                tr("Nearest pixels, no smoothing", "Piksel terdekat, tanpa penghalusan", "最近傍補間・スムージングなし"),
+                tr("Default · smooths image scaling", "Default · haluskan perubahan ukuran gambar", "標準・拡大縮小時に補間"),
+                tr("Light edge smoothing · Android 13+", "Penghalusan tepi ringan · Android 13+", "軽量な輪郭補正・Android 13以降")
+        };
+        int count = FrameFilter.supportsFxaa() ? 3 : 2;
+        for (int mode = 0; mode < count; mode++) {
+            android.widget.RadioButton option = new android.widget.RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setTag(mode);
+            option.setText(textureFilterName(mode) + "\n" + descriptions[mode]);
+            option.setTextColor(TEXT);
+            option.setTextSize(14);
+            option.setButtonTintList(ColorStateList.valueOf(ArisaUi.CYAN));
+            GradientDrawable focused = new GradientDrawable();
+            focused.setColor(Color.TRANSPARENT);
+            focused.setCornerRadius(dp(6));
+            focused.setStroke(dp(2), ArisaUi.CYAN);
+            StateListDrawable states = new StateListDrawable();
+            states.addState(new int[]{android.R.attr.state_focused}, focused);
+            states.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+            option.setBackground(new RippleDrawable(ColorStateList.valueOf(0x2238bdf8), states, null));
+            option.setPadding(dp(8), dp(12), dp(8), dp(12));
+            option.setMinHeight(dp(64));
+            choices.addView(option, new android.widget.RadioGroup.LayoutParams(-1, -2));
+            int checkedMode = textureFilter == FrameFilter.FXAA && !FrameFilter.supportsFxaa()
+                    ? FrameFilter.BILINEAR : textureFilter;
+            option.setChecked(mode == checkedMode);
+        }
+        choices.setOnCheckedChangeListener((group, checkedId) -> {
+            View choice = group.findViewById(checkedId);
+            if (choice == null) return;
+            textureFilter = (Integer) choice.getTag();
+            preferences.edit().putInt(FrameFilter.PREFERENCE, textureFilter).apply();
+        });
+        body.addView(choices);
+        ArisaUi.gap(body, 8);
+        body.addView(text(tr("FXAA uses bilinear when unavailable. Video played by Android keeps its own scaling.",
+                "Jika FXAA tidak tersedia, bilinear digunakan. Video yang diputar Android memakai penghalusannya sendiri.",
+                "FXAAを使えない場合はバイリニア補間を使用します。Androidで再生する動画の補間は変更されません。"), 12, MUTED));
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+        settingsDialog = new AlertDialog.Builder(this, R.style.ArisaDialog).setView(scroll)
+                .setNegativeButton(tr("Close", "Tutup", "閉じる"), null).show();
+        Window window = settingsDialog.getWindow();
+        window.setBackgroundDrawable(ArisaUi.surface(this, 0xff131b26, 12));
+        window.setLayout(Math.min(dp(540), getResources().getDisplayMetrics().widthPixels - dp(40)),
+                getResources().getDisplayMetrics().heightPixels - dp(32));
+        window.setDimAmount(.55f);
+        settingsDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setMinHeight(dp(48));
+        settingsDialog.setOnKeyListener((dialog, keyCode, event) -> {
+            if (keyCode != KeyEvent.KEYCODE_ESCAPE) return false;
+            if (event.getAction() == KeyEvent.ACTION_UP) dialog.dismiss();
+            return true;
+        });
+    }
 
     private String contentName(String code) {
         return code.equals("en") ? "English" : code.equals("id") ? "Bahasa Indonesia" : tr("Original (Japanese)", "Asli (Jepang)", "オリジナル（日本語）");
@@ -2015,7 +2101,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     d.dismiss();
                     uiLanguage = new String[]{"en", "id", "jp"}[which];
                     preferences.edit().putString("uiLanguage", uiLanguage).apply();
-                    if (inLibrary) showLibrary(); else if (bubble != null) bubble.setContentDescription(settingsTitle());
+                    if (inLibrary) showLibrary(); else if (bubble != null) {
+                        bubble.setContentDescription(settingsTitle());
+                        if (navigation != null) navigation.setDescription(navigationDescription());
+                    }
                 }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
     private void chooseAddMethod() {
@@ -2559,6 +2648,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         createGameSurface();
     }
     private void leaveGame(boolean show) {
+        if (navigation != null) { navigation.dispose(); navigation = null; }
         stopRendering();
         restorePausedSession = false;
         preferences.edit().remove("pausedGame").remove("pausedLanguage").apply();
@@ -2583,21 +2673,29 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         p.topMargin = p.bottomMargin = dp(20); overlay.addView(scroll, p);
         gameLayout.addView(overlay, new FrameLayout.LayoutParams(-1, -1)); launchOverlay = overlay;
     }
+    private Drawable navigationBackground() {
+        GradientDrawable focused = ArisaUi.shape(this, 0xe514243b, 18);
+        focused.setStroke(dp(2), ArisaUi.CYAN);
+        StateListDrawable content = new StateListDrawable();
+        content.addState(new int[]{android.R.attr.state_focused}, focused);
+        content.addState(new int[0], ArisaUi.surface(this, 0xe514243b, 18));
+        return new RippleDrawable(ColorStateList.valueOf(0x1838bdf8), content,
+                ArisaUi.shape(this, Color.WHITE, 18));
+    }
     private void addSettingsBubble() {
         bubble = text("⋮", 25, ArisaUi.CYAN); bubble.setGravity(Gravity.CENTER); bubble.setPadding(0, 0, 0, 0);
-        bubble.setBackground(ArisaUi.ripple(this, 0xe514243b, 18)); bubble.setElevation(dp(6)); bubble.setFocusable(true);
+        bubble.setBackground(navigationBackground()); bubble.setElevation(dp(6)); bubble.setFocusable(true);
         bubble.setContentDescription(settingsTitle());
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(48), dp(48)); gameLayout.addView(bubble, params);
-        bubble.setX(dp(12)); bubble.setY(dp(12));
         backSidemenu = null;
-        if (currentProfile().getId().equals("dc2pc")) {
+        if (hasNativeSidebar()) {
             backSidemenu = text("Back /\nSidemenu", 10, ArisaUi.CYAN);
             backSidemenu.setGravity(Gravity.CENTER);
             backSidemenu.setPadding(0, 0, 0, 0);
             backSidemenu.setMaxLines(2);
             if (Build.VERSION.SDK_INT >= 26)
                 backSidemenu.setAutoSizeTextTypeUniformWithConfiguration(8, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
-            backSidemenu.setBackground(ArisaUi.ripple(this, 0xe514243b, 18));
+            backSidemenu.setBackground(navigationBackground());
             backSidemenu.setElevation(dp(6)); backSidemenu.setFocusable(true);
             backSidemenu.setContentDescription("Back / Sidemenu");
             gameLayout.addView(backSidemenu, new FrameLayout.LayoutParams(dp(64), dp(48)));
@@ -2605,57 +2703,43 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 if (!ioBusy) menuCommands.add(this::backOrSidemenu);
             });
         }
-        final float[] drag = new float[4]; final boolean[] moved = {false};
-        bubble.setOnTouchListener((v, event) -> {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    drag[0] = event.getRawX(); drag[1] = event.getRawY(); drag[2] = v.getX(); drag[3] = v.getY(); moved[0] = false; return true;
-                case MotionEvent.ACTION_MOVE:
-                    float dx = event.getRawX() - drag[0], dy = event.getRawY() - drag[1];
-                    if (Math.abs(dx) + Math.abs(dy) > dp(8)) moved[0] = true;
-                    v.setX(drag[2] + dx); v.setY(drag[3] + dy); clampBubble(); return true;
-                case MotionEvent.ACTION_UP:
-                    if (!moved[0]) v.performClick();
-                    else preferences.edit().putFloat("bubbleX", v.getX() / Math.max(1, gameLayout.getWidth()))
-                            .putFloat("bubbleY", v.getY() / Math.max(1, gameLayout.getHeight())).apply();
-                    return true;
-                case MotionEvent.ACTION_CANCEL: return true;
-                default: return true;
-            }
-        });
+        if (navigation != null) navigation.dispose();
+        navigation = new FloatingNavigation(this, gameLayout, bubble, backSidemenu, this::clampBubble,
+                preferences,
+                () -> ioBusy || launchOverlay != null || settingsDialog != null && settingsDialog.isShowing(),
+                navigationDescription());
+        navigation.setAutoHide(preferences.getBoolean(FloatingNavigation.PREFERENCE, false));
+        navigation.setActive(resumed && hasWindowFocus());
         bubble.setOnClickListener(v -> { if (!ioBusy) showExtras(); });
         gameLayout.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> clampBubble());
-        gameLayout.post(() -> {
-            bubble.setX(preferences.getFloat("bubbleX", .015f) * gameLayout.getWidth());
-            bubble.setY(preferences.getFloat("bubbleY", .025f) * gameLayout.getHeight()); clampBubble();
-        });
+        gameLayout.post(this::clampBubble);
     }
     private void clampBubble() {
-        if (bubble == null || gameLayout == null) return;
-        int safeLeft = 0, safeRight = 0, safeTop = 0, safeBottom = 0;
+        if (bubble == null || gameLayout == null || navigation == null || gameLayout.getWidth() == 0) return;
+        int safeLeft = gameLayout.getPaddingLeft(), safeRight = gameLayout.getPaddingRight();
+        int safeTop = gameLayout.getPaddingTop(), safeBottom = gameLayout.getPaddingBottom();
         if (Build.VERSION.SDK_INT >= 28 && gameLayout.getRootWindowInsets() != null) {
             android.view.DisplayCutout cutout = gameLayout.getRootWindowInsets().getDisplayCutout();
             if (cutout != null) {
-                safeLeft = cutout.getSafeInsetLeft(); safeRight = cutout.getSafeInsetRight();
-                safeTop = cutout.getSafeInsetTop(); safeBottom = cutout.getSafeInsetBottom();
+                safeLeft = Math.max(safeLeft, cutout.getSafeInsetLeft());
+                safeRight = Math.max(safeRight, cutout.getSafeInsetRight());
+                safeTop = Math.max(safeTop, cutout.getSafeInsetTop());
+                safeBottom = Math.max(safeBottom, cutout.getSafeInsetBottom());
             }
         }
-        float navWidth = backSidemenu == null ? bubble.getWidth() : Math.max(bubble.getWidth(), backSidemenu.getWidth());
+        float navWidth = dp(backSidemenu == null ? 48 : 64);
         float minX = safeLeft + dp(4);
         float maxX = gameLayout.getWidth() - safeRight - navWidth - dp(4);
-        if (backSidemenu != null) {
+        if (backSidemenu != null && "dc2pc".equals(currentProfile().getId())) {
             // DC2PC is fitted as 4:3; keep navigation in its left black margin.
             float margin = (gameLayout.getWidth() - gameLayout.getHeight()*4f/3f)/2f;
             if (margin >= safeLeft+navWidth+dp(8)) maxX = margin-navWidth-dp(4);
         }
-        bubble.setX(Math.max(minX, Math.min(bubble.getX(), maxX)));
         // The game's message-window buttons occupy the lower half of the viewport.
-        bubble.setY(Math.max(safeTop+dp(4), Math.min(bubble.getY(), Math.min(gameLayout.getHeight() - safeBottom - bubble.getHeight() - dp(4), gameLayout.getHeight() * .4f))));
-        if (backSidemenu != null) {
-            backSidemenu.setX(bubble.getX());
-            backSidemenu.setY(Math.min(bubble.getY()+bubble.getHeight()+dp(8),
-                    gameLayout.getHeight()-safeBottom-backSidemenu.getHeight()-dp(4)));
-        }
+        float maxY = Math.min(gameLayout.getHeight()-safeBottom-dp(backSidemenu == null ? 52 : 108),
+                gameLayout.getHeight()*.4f);
+        navigation.positionControls(minX, safeTop+dp(4), maxX, maxY);
+        navigation.positionEdge(safeLeft, safeTop, safeBottom);
     }
     private void backOrSidemenu() {
         autoMode = skipMode = false;
@@ -2670,12 +2754,37 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             runOnUiThread(() -> showExtras(visible));
         });
     }
+    private String navigationDescription() {
+        return tr("Show game controls", "Tampilkan tombol game", "ゲーム操作を表示");
+    }
+    private void addNavigationSetting(LinearLayout body) {
+        boolean enabled = preferences.getBoolean(FloatingNavigation.PREFERENCE, false);
+        String title = tr("Auto-hide game controls", "Sembunyikan otomatis tombol game", "ゲーム操作の自動非表示");
+        setting(body, title, (enabled
+                        ? tr("On · hide after 4 seconds. ", "Aktif · sembunyikan setelah 4 detik. ", "オン · 4秒後に非表示。")
+                        : tr("Off. ", "Nonaktif. ", "オフ。"))
+                        + tr("Swipe ⋮ or Back / Sidemenu left to hide. Drag the left-edge handle up or down to move it. Tap or swipe it right to show controls.",
+                        "Geser ⋮ atau Back / Sidemenu ke kiri untuk menyembunyikan. Tarik penanda tepi kiri ke atas atau bawah untuk memindahkannya. Ketuk atau geser ke kanan untuk menampilkan tombol.",
+                        "⋮ または Back / Sidemenu を左にスワイプして隠します。左端の目印は上下にドラッグして移動できます。タップ、または右にスワイプすると表示します。"),
+                () -> {
+                    settingsDialog = dialog().setTitle(tr("Auto-hide controls", "Sembunyikan otomatis", "操作の自動非表示"))
+                            .setSingleChoiceItems(new String[]{tr("On", "Aktif", "オン"), tr("Off", "Nonaktif", "オフ")},
+                                    enabled ? 0 : 1, (d, which) -> {
+                                        boolean value = which == 0;
+                                        preferences.edit().putBoolean(FloatingNavigation.PREFERENCE, value).apply();
+                                        if (navigation != null) navigation.setAutoHide(value);
+                                        d.dismiss();
+                                        if (inLibrary) showAppSettings(); else showExtras();
+                                    })
+                            .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+                });
+    }
     private void showExtras(boolean sidebarVisible) {
         LinearLayout body = ArisaUi.column(this);
         section(body, tr("NOW PLAYING", "SEDANG DIMAINKAN", "プレイ中"));
         setting(body, tr("Game settings", "Pengaturan game", "ゲーム設定"), tr("Audio, text speed and playback", "Audio, kecepatan teks dan pemutaran", "音声・文字速度・再生設定"),
                 () -> menuCommands.add(() -> { closeMenus(); dc4SetSidebarVisible(false); notifyUser(dc4OpenMenu("config")); }));
-        if (currentProfile().getId().equals("dc2pc")) {
+        if (hasNativeSidebar()) {
             setting(body, sidebarVisible
                     ? tr("Hide sidebar", "Sembunyikan sidebar", "サイドバーを隠す")
                     : tr("Show sidebar", "Tampilkan sidebar", "サイドバーを表示"),
@@ -2688,7 +2797,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         setting(body, tr("Manage game", "Kelola game", "ゲーム管理"), selected.title + " · " + contentName(selected.language), () -> showGameSettings(selected));
         addSessionSetting(body);
+        addTextureFilterSetting(body);
         setting(body, tr("App language", "Bahasa aplikasi", "アプリの言語"), null, this::chooseUiLanguage);
+        addNavigationSetting(body);
         section(body, tr("NAVIGATION", "NAVIGASI", "移動"));
         setting(body, tr("Title screen", "Layar judul", "タイトル画面"), null, this::confirmTitle);
         setting(body, tr("Return to library", "Kembali ke koleksi", "ライブラリに戻る"), null, this::confirmLibrary);
@@ -3326,12 +3437,18 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (navigation != null) navigation.setActive(hasWindowFocus());
         if (moviePlaying) {
             if (movieMediaPlayer != null) {
                 try { movieMediaPlayer.start(); } catch (Throwable ignored) {}
             }
         }
         startRendering();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (navigation != null) navigation.setActive(resumed && hasFocus);
     }
 
     @Override public void onBackPressed() {
@@ -3341,12 +3458,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             return;
         }
         if (inLibrary) super.onBackPressed();
-        else if (currentProfile().getId().equals("dc2pc")) menuCommands.add(this::backOrSidemenu);
+        else if (hasNativeSidebar()) menuCommands.add(this::backOrSidemenu);
         else menuCommands.add(() -> {if(!dc4CancelConfirmation())runOnUiThread(this::showExtras);});
     }
 
     @Override protected void onPause() {
         resumed = false;
+        if (navigation != null) navigation.setActive(false);
         autoMode = false;
         skipMode = false;
         backlogOpen = false;
@@ -3378,6 +3496,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     @Override protected void onDestroy() {
+        if (navigation != null) navigation.dispose();
         stopRendering();
         stopMovie();
         if (initialized) dc4Quit();

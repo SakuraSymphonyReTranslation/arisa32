@@ -81,8 +81,9 @@ void dc2dm(){
         .write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
     ConfirmDialog d;std::string error;
     CHECK(d.load(root.string(),&error));CHECK(error.empty());
-    CHECK(d.hit_yes(435,375) && !d.hit_yes(620,375));
-    CHECK(d.hit_no(670,375) && !d.hit_no(855,375));
+    CHECK(d.hit_yes(435,355) && !d.hit_yes(620,355));
+    CHECK(d.hit_no(670,355) && !d.hit_no(855,355));
+    CHECK(!d.hit_yes(435,354) && !d.hit_yes(435,435));
     CHECK(!d.hit_checkbox(600,445));
     CHECK(d.open(ConfirmKind::Save));
     d.pointer_down(500,400);d.cancel_pointer();CHECK(d.pointer_up(500,400)==ConfirmResult::None);
@@ -91,11 +92,34 @@ void dc2dm(){
     auto matches=[&](int x,int y,int sx,int sy){const size_t at=(size_t(y)*1280+x)*4;
         return frame[at]==sx%251 && frame[at+1]==sy%251 && frame[at+2]==(sx+sy)%251;};
     d.draw(-1,-1,false,no_font,&frame);
-    CHECK(matches(438,377,444,1));
-    CHECK(matches(420,280,380,300));
-    d.draw(500,400,true,no_font,&frame);CHECK(matches(438,377,444,129));
+    CHECK(matches(438,357,444,1));
+    CHECK(matches(420,260,380,300));
+    d.draw(500,400,true,no_font,&frame);CHECK(matches(438,357,444,129));
     d.pointer_down(700,400);CHECK(d.pointer_up(700,400)==ConfirmResult::No);
     CHECK(d.open(ConfirmKind::Save));d.pointer_down(500,400);CHECK(d.pointer_up(500,400)==ConfirmResult::Yes);
+    struct Prompt { ConfirmKind kind; int x, y; };
+    const Prompt prompts[] = {
+        {ConfirmKind::Save,373,297}, {ConfirmKind::Overwrite,373,297},
+        {ConfirmKind::QuickSave,373,297}, {ConfirmKind::Load,373,229},
+        {ConfirmKind::QuickLoad,373,229}, {ConfirmKind::NewGame,373,365},
+        {ConfirmKind::SceneReplay,373,365}, {ConfirmKind::SceneJump,373,365},
+        {ConfirmKind::Movie,373,365}, {ConfirmKind::ResetSettings,373,433},
+        {ConfirmKind::Title,1,433}, {ConfirmKind::Quit,1,229},
+        {ConfirmKind::ReplayExit,1,569}
+    };
+    // Localized captions come from the installed atlas, even without a font.
+    for(auto language:{dc4::Language::Japanese,dc4::Language::English,dc4::Language::Indonesian}) {
+        d.set_language(language);
+        for(const auto& prompt:prompts) {
+            CHECK(d.open(prompt.kind));
+            std::fill(frame.begin(),frame.end(),0);
+            d.draw(-1,-1,false,no_font,&frame);
+            CHECK(matches(420,260,prompt.x+7,prompt.y+3));
+            CHECK(frame[(199*1280+365)*4+3]==0);
+            CHECK(frame[(200*1280+365)*4+3]==255);
+            d.close();
+        }
+    }
     std::error_code ec;
     if(fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)fs::remove_all(root,ec);
 }

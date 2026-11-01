@@ -24,6 +24,7 @@ struct LogRow {
     std::u16string name;    // speaker ("" = narration)
     std::u16string text;    // full dialogue, including authored line breaks
     std::string voice;      // voice entry name for replay ("" when silent)
+    std::string script;     // scene captured with this entry, used by DC2DM portrait variants
     int line = 0;           // dialogue index, for the scene-jump button
     std::vector<uint8_t> snapshot; // Exact VM/scene state at this line, bounded by the host.
     static constexpr int kThumbW = 128, kThumbH = 72;
@@ -41,7 +42,7 @@ public:
 
     void draw(const std::vector<LogRow>& rows, int scroll, bool thumbnails,
               int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
-              std::vector<uint8_t>* frame) const;
+              std::vector<uint8_t>* frame);
 
     bool back_hit(int x, int y) const;
     bool checkbox_hit(int x, int y) const;
@@ -52,9 +53,9 @@ public:
     int thumb_scroll(int y, size_t row_count) const;
     bool thumb_hit(int x, int y, int scroll, size_t row_count) const;
     static int thumb_y(size_t row_count, int scroll);
-    int scroll_button(int x, int y) const;
-    int visible_rows() const { return dc2dm_ ? 3 : kVisibleRows; }
-    int row_pitch() const { return dc2dm_ ? 205 : kRowPitch; }
+    int scroll_button(int x, int y, int scroll, size_t row_count) const;
+    int visible_rows() const { return kVisibleRows; }
+    int row_pitch() const { return dc2dm_ ? 166 : kRowPitch; }
     int last_scroll(size_t row_count) const {
         return std::max(0, int(row_count) - visible_rows());
     }
@@ -71,25 +72,28 @@ public:
     void set_latin_mode(bool latin) { latin_mode_ = latin; }
     bool latin_mode() const { return latin_mode_; }
     // Japanese preserves authored lines/indentation; translations reflow words.
-    static std::vector<std::u16string> text_lines(const std::u16string& text, bool latin);
+    static std::vector<std::u16string> text_lines(const std::u16string& text, bool latin, bool dc2dm = false);
 
 private:
     void draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
                     int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
-                    std::vector<uint8_t>* frame) const;
+                    std::vector<uint8_t>* frame);
     void blit(const dc4scene::Image& img, int sx, int sy, int sw, int sh,
               int dx, int dy, std::vector<uint8_t>* frame) const;
     void blit_image(const std::vector<uint8_t>& rgba, int w, int h,
                     int dx, int dy, std::vector<uint8_t>* frame) const;
     void draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
                    int x, int baseline, std::vector<uint8_t>* frame, int size = 22) const;
-    int face_id(const std::u16string& name) const;
+    int face_id(const std::u16string& name, const std::string& script = {}) const;
 
     dc4scene::Image back_, chip_;
     std::vector<std::u16string> face_names_;
     std::vector<std::pair<std::u16string, int>> alias_names_;
     bool latin_mode_ = false;
     bool dc2dm_ = false;
+    uint32_t dc2dm_text_rgb_ = 0xC8A0DC;
+    uint32_t dc2dm_selected_rgb_ = 0xFFFFFF;
+    int dc2dm_selected_reverse_ = 0;
 };
 
 }  // namespace dc4ui

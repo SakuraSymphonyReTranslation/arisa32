@@ -2,8 +2,11 @@
 
 Setiap rilis memiliki satu dokumen Bahasa Indonesia dan satu dokumen English. Pemilih bahasa membuka dokumen lain di tab yang sama; hanya satu bahasa tampil pada setiap halaman. GitHub tidak menjalankan JavaScript untuk mengganti isi README atau deskripsi rilis secara dinamis.
 
+Ketentuan pengguna: setiap deskripsi rilis harus tersedia lengkap dalam Bahasa Indonesia dan English, dengan pemilih bahasa pada deskripsi GitHub. Pertahankan ketentuan ini untuk rilis berikutnya.
+
 | Versi | Bahasa Indonesia | English |
 | --- | --- | --- |
+| v0.6.3 | [Catatan rilis](v0.6.3/id.md) | [Release notes](v0.6.3/en.md) |
 | v0.6.2 | [Catatan rilis](v0.6.2/id.md) | [Release notes](v0.6.2/en.md) |
 | v0.6.1 | [Catatan rilis](v0.6.1/id.md) | [Release notes](v0.6.1/en.md) |
 | v0.6.0 | [Catatan rilis](v0.6.0/id.md) | [Release notes](v0.6.0/en.md) |

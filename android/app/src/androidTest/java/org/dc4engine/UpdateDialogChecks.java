@@ -31,10 +31,16 @@ public final class UpdateDialogChecks extends Instrumentation {
     private int checks;
     private String scenario;
     private boolean networkOnly;
+    private boolean sidebarOnly;
+    private boolean graphicsOnly;
+    private boolean navigationOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         networkOnly = arguments != null && "true".equals(arguments.getString("networkOnly"));
+        sidebarOnly = arguments != null && "true".equals(arguments.getString("sidebarOnly"));
+        graphicsOnly = arguments != null && "true".equals(arguments.getString("graphicsOnly"));
+        navigationOnly = arguments != null && "true".equals(arguments.getString("navigationOnly"));
         start();
     }
 
@@ -50,6 +56,9 @@ public final class UpdateDialogChecks extends Instrumentation {
                 return;
             }
             getTargetContext().getSharedPreferences("launcher", 0).edit().putBoolean("autoCheckUpdate", false).commit();
+            if (graphicsOnly || navigationOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
+                    .remove(FrameFilter.PREFERENCE).putBoolean("retainSession", false)
+                    .remove("pausedGame").remove("pausedLanguage").commit();
             IntentFilter storagePrompt = new IntentFilter(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
             storagePrompt.addDataScheme("package");
             addMonitor(storagePrompt, new ActivityResult(Activity.RESULT_CANCELED, null), true);
@@ -57,6 +66,25 @@ public final class UpdateDialogChecks extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (Arisa32Activity) startActivitySync(launch);
             waitForIdleSync();
+            if (navigationOnly) {
+                int count = new FloatingNavigationChecks(this, activity).run();
+                result.putString("stream", "Floating navigation checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (graphicsOnly) {
+                int count = new FrameFilterChecks(this, activity).run();
+                result.putString("stream", "Frame filter checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (sidebarOnly) {
+                int count = new SidebarNavigationChecks(this, activity).run();
+                runUi(() -> activity.finish());
+                result.putString("stream", "Sidebar navigation checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             for (String language : new String[]{"en", "id"}) {
                 runCase(language, 1f, 540);
                 runCase(language, 2f, 380);
@@ -70,7 +98,8 @@ public final class UpdateDialogChecks extends Instrumentation {
             result.putString("stream", "Update dialog checks passed: " + checks + "\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable error) {
-            result.putString("stream", "Update dialog checks FAILED (" + scenario + "): " + error + "\n");
+            result.putString("stream", (navigationOnly ? "Floating navigation" : graphicsOnly ? "Frame filter" : sidebarOnly ? "Sidebar navigation" : "Update dialog")
+                    + " checks FAILED (" + scenario + "): " + error + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
     }
@@ -80,10 +109,10 @@ public final class UpdateDialogChecks extends Instrumentation {
         read.setAccessible(true);
         for (String language : new String[]{"id", "en"}) {
             scenario = "published-" + language;
-            String source = (String) read.invoke(null, ReleaseNotes.url("v0.6.2", language), "text/plain");
+            String source = (String) read.invoke(null, ReleaseNotes.url("v0.6.3", language), "text/plain");
             ReleaseNotes.Content notes = ReleaseNotes.parse(source, "Fallback");
             String fixture;
-            try (var input = getContext().getAssets().open("v0.6.2/" + language + ".md")) {
+            try (var input = getContext().getAssets().open("v0.6.3/" + language + ".md")) {
                 fixture = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             }
             ReleaseNotes.Content expected = ReleaseNotes.parse(fixture, "Fallback");
@@ -102,7 +131,7 @@ public final class UpdateDialogChecks extends Instrumentation {
     private void runCase(String language, float fontScale, int widthDp) throws Exception {
         scenario = language + "-font" + fontScale + "-width" + widthDp;
         String markdown;
-        try (var input = getContext().getAssets().open("v0.6.2/" + language + ".md")) {
+        try (var input = getContext().getAssets().open("v0.6.3/" + language + ".md")) {
             markdown = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
         ReleaseNotes.Content notes = ReleaseNotes.parse(markdown, "Fallback");
@@ -215,10 +244,10 @@ public final class UpdateDialogChecks extends Instrumentation {
             Field field = Arisa32Activity.class.getDeclaredField("uiLanguage");
             field.setAccessible(true);
             field.set(activity, language);
-            ReleaseNotes.Content notes = ReleaseNotes.parse(markdown, "Arisa32 v0.6.2");
+            ReleaseNotes.Content notes = ReleaseNotes.parse(markdown, "Arisa32 v0.6.3");
             Method method = Arisa32Activity.class.getDeclaredMethod("showUpdateDialog", String.class, String.class, String.class, String.class, String.class);
             method.setAccessible(true);
-            dialog = (AlertDialog) method.invoke(activity, "v0.6.2", notes.title, notes.body,
+            dialog = (AlertDialog) method.invoke(activity, "v0.6.3", notes.title, notes.body,
                     "https://example.org/test.apk", "https://example.org/release");
             dialog.getWindow().getDecorView().post(() -> dialog.getWindow().setLayout(
                     ArisaUi.dp(activity, widthDp), ViewGroup.LayoutParams.WRAP_CONTENT));

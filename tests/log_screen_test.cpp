@@ -51,6 +51,10 @@ struct Script {
         bytes.push_back(op); bytes.insert(bytes.end(),s.begin(),s.end()); bytes.push_back(0);
     }
     void slot(uint8_t op, uint8_t id, const std::string& s) { bytes.push_back(op); string(id,s); }
+    void words(uint8_t op, std::initializer_list<uint16_t> values) {
+        bytes.push_back(op);
+        for (auto value : values) { bytes.push_back(uint8_t(value)); bytes.push_back(uint8_t(value>>8)); }
+    }
     void text(const std::string& s) {
         bytes.push_back(0x6B); for (unsigned char c : s) bytes.push_back(uint8_t(c-0x20)); bytes.push_back(0);
     }
@@ -119,6 +123,7 @@ void capture(const fs::path& root) {
     const auto pc=scene.script_position();
     const auto row=dc4ui::capture_log_row(scene,7);
     CHECK(row.line==7 && row.text==u"SECOND\nLINE" && !row.snapshot.empty());
+    CHECK(row.script=="scene.mes");
     CHECK(scene.script_position()==pc && scene.message_visible());
     CHECK(row.thumb.size()==128*72*4);
     CHECK(pixel(row.thumb,0,0,128)==(Color{240,50,30}));
@@ -131,44 +136,154 @@ void capture(const fs::path& root) {
     CHECK(pixel(scene.frame(),1270,710)==(Color{10,200,70}));
     CHECK(scene.capture_thumbnail(0,72).empty());
 }
-void dc2dm(const fs::path& root) {
+void dc2dm(const fs::path& root, const char* font_path) {
     write(root/"MES/main.mes",{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,0});
+    Script palette;
+    palette.bytes[10]=0x72; palette.bytes[11]=0x9D;
+    palette.words(0x6E,{15,200,160,220});
+    palette.words(0x6E,{7,230,231,232});
+    palette.words(0x6E,{15,999,12,34});
+    palette.bytes.push_back(0);
+    write(root/"MES/LOG.mes",palette.bytes);
     crx(root/"GRP/SYSTEM/LOG_BACK.CRX",1024,576,false);
     crx(root/"GRP/SYSTEM/LOG_CHIP.CRX",1024,596,true);
     dc4ui::LogScreen log;
     CHECK(log.load(root.string()));
-    CHECK(log.visible_rows()==3 && log.row_pitch()==205);
-    CHECK(log.last_scroll(3)==0 && log.last_scroll(7)==4);
-    CHECK(log.back_hit(1180,650) && !log.back_hit(1100,680));
+    CHECK(log.visible_rows()==4 && log.row_pitch()==166);
+    CHECK(log.last_scroll(4)==0 && log.last_scroll(7)==3);
+    CHECK(log.back_hit(1180,650) && !log.back_hit(1150,650));
     CHECK(!log.checkbox_hit(400,50));
-    CHECK(log.jump_hit(60,180,2,6)==2);
-    CHECK(log.jump_hit(60,385,2,6)==3);
-    CHECK(log.jump_hit(60,590,2,6)==4);
-    CHECK(log.jump_hit(60,590,2,4)==-1);
-    CHECK(log.voice_hit(210,50,2,6)==2);
-    CHECK(log.scroll_button(1160,40)==-1 && log.scroll_button(1160,90)==1);
-    CHECK(log.thumb_scroll(0,7)==0 && log.thumb_scroll(720,7)==4);
-    CHECK(!log.thumb_hit(1240,300,0,3) && log.thumb_hit(1240,300,0,7));
-    dc4ui::LogRow row;row.voice="voice";
+    CHECK(log.jump_hit(60,100,2,8)==2);
+    CHECK(log.jump_hit(60,385,2,8)==-1);
+    CHECK(log.jump_hit(60,100,0,0)==-1);
+    CHECK(log.voice_hit(500,50,2,8)==2);
+    CHECK(log.voice_hit(500,215,2,8)==3);
+    CHECK(log.voice_hit(500,380,2,8)==4);
+    CHECK(log.voice_hit(500,550,2,8)==5);
+    CHECK(log.voice_hit(500,550,2,5)==-1);
+    CHECK(log.voice_hit(1100,50,2,8)==-1);
+    CHECK(log.scroll_button(160,180,4,12)==-4);
+    CHECK(log.scroll_button(160,660,4,12)==4);
+    CHECK(log.scroll_button(1200,120,4,12)==-1);
+    CHECK(log.scroll_button(1200,565,4,12)==1);
+    CHECK(log.scroll_button(160,180,0,12)==0);
+    CHECK(log.scroll_button(160,660,8,12)==0);
+    CHECK(log.scroll_button(1200,565,0,4)==0);
+    CHECK(log.thumb_scroll(0,7)==0 && log.thumb_scroll(720,7)==3);
+    CHECK(!log.thumb_hit(1200,300,0,4) && log.thumb_hit(1200,300,0,7));
+    CHECK(log.thumb_scroll(140,12)==0 && log.thumb_scroll(515,12)==8);
+    CHECK(log.thumb_scroll(330,12)==5);
+    CHECK(log.thumb_scroll(349,10)==4);
+    CHECK(log.thumb_scroll(720,0)==0);
+    dc4ui::LogRow row; row.voice="voice"; row.name=u"Otome"; row.script="mar_0114_a1.mes";
     const dc4scene::FontRenderer no_font;
     std::vector<uint8_t> frame(1280*720*4,0);
+    const auto at = [&](int x, int y) { return pixel(frame,(x*5+3)/4,(y*5+3)/4); };
     log.draw({row},0,true,-1,-1,no_font,&frame);
-    CHECK(pixel(frame,1200,710)==(Color{10,200,70}));
-    CHECK(pixel(frame,300,50)==atlas(269,20));
-    CHECK(pixel(frame,30,165)==atlas(0,204));
-    log.draw({row},0,true,60,180,no_font,&frame);
-    CHECK(pixel(frame,30,165)==atlas(0,252));
+    CHECK(at(1023,575)==(Color{10,200,70}));
+    CHECK(at(370,40)==atlas(398,15));
+    CHECK(at(250,40)==atlas(178,143));
+    CHECK(at(210,39)==atlas(86,122));
+    CHECK(at(28,66)==atlas(0,204));
+    CHECK(at(936,504)==atlas(0,0));
+    log.draw({row},0,true,60,100,no_font,&frame);
+    CHECK(at(28,66)==atlas(0,252));
+    struct FaceCase { const char16_t* name; const char* scene; int id; };
+    const FaceCase cases[] = {
+        {u"音姫","mar",0}, {u"Otome","SUc61_any.MES",19}, {u"Otome","suc60_1110_f1_otm.mes",19},
+        {u"Otome","SUC60_1110_F1_OTM.mes",0}, {u"Otome","suc60_1110_f1_otm_extra.mes",0},
+        {u"Yume","mar",1}, {u"Koko","mar",2}, {u"Nanaka","mar",3}, {u"Anzu","mar",4},
+        {u"Minatsu","mar",5}, {u"Erika","mar",6}, {u"Wataru","mar",7}, {u"Akane","mar",8},
+        {u"Maya","mar",9}, {u"Mayuki","mar",10}, {u"Suginami","mar",11}, {u"Sakura","mar",12},
+        {u"Mizukoshi","mar",13}, {u"Maika","mar",13}, {u"Yuki","suc75",14},
+        {u"由姫","suc75",14}, {u"Yuto","mar",15}, {u"勇斗","mar",15},
+        {u"Hiver","mar",16}, {u"Yvel","mar",16}, {u"Yvers","mar",16},
+        {u"Yoshiyuki","mar",17}, {u"Rikka","mar",18}, {u"Yuuki","suc60",20},
+        {u"桜姫","suc65",21}, {u"Yuuki","MES\\SUC69_0120.MES",21},
+        {u"Yuuki","suc71",22}, {u"Yuuki","suc74_0201_a1",22},
+        {u"Yuuki","suc74_0325_b1",22}, {u"Yuuki","suc74_0401",23},
+        {u"Yuuki","suc75",23}, {u"Harimao","mar",24}, {u"はりまお","mar",24}
+    };
+    for (const auto& entry : cases) {
+        row.name=entry.name; row.script=entry.scene;
+        log.draw({row},0,false,-1,-1,no_font,&frame);
+        const int sx=entry.id==24 ? 864 : 168+entry.id%6*116;
+        const int sy=entry.id==24 ? 480 : 132+entry.id/6*116;
+        CHECK(at(250,40)==atlas(sx+10,sy+11));
+    }
+    row.name=u"Unknown";
+    log.draw({row},0,false,-1,-1,no_font,&frame);
+    CHECK(at(250,40)==atlas(278,15));
+    row.name=u"";
+    log.draw({row},0,false,-1,-1,no_font,&frame);
+    CHECK(at(250,40)==atlas(278,15));
+    CHECK(at(210,31)==atlas(86,122));
+    row.name=u"Otome"; row.script="mar";
+    auto later=row; later.script="suc75";
+    log.draw({row,later,row,later},0,false,-1,-1,no_font,&frame);
+    CHECK(at(250,40)==atlas(178,143));
+    CHECK(at(250,173)==atlas(294,491));
+    CHECK(at(250,306)==atlas(178,143));
+    CHECK(at(250,439)==atlas(294,491));
+    std::vector<dc4ui::LogRow> history(8,row);
+    log.draw(history,4,false,-1,-1,no_font,&frame);
+    CHECK(at(948,412)==atlas(908,72));
+    CHECK(at(120,136)==atlas(156,0));
+    CHECK(at(120,512)==(Color{10,200,70}));
+    log.draw(history,0,false,-1,-1,no_font,&frame);
+    CHECK(at(948,112)==atlas(908,72));
+    CHECK(at(120,136)==(Color{10,200,70}));
+    CHECK(at(120,512)==atlas(84,0));
+    const auto latin=dc4ui::LogScreen::text_lines(std::u16string(60,u'A'),true,true);
+    CHECK(latin.size()==2 && latin[0].size()==50 && latin[1].size()==10);
+    const auto japanese=dc4ui::LogScreen::text_lines(std::u16string(30,u'あ'),false,true);
+    CHECK(japanese.size()==2 && japanese[0].size()==24 && japanese[1].size()==6);
+    dc4scene::FontRenderer font;
+    CHECK(font.load(font_path,0,22,false));
+    row.text=u"MMMM";
+    history.assign(4,row);
+    const auto count_color = [&](int top, Color color) {
+        int count=0;
+        for (int y=top*5/4;y<(top+32)*5/4;++y)
+            for (int x=364*5/4;x<410*5/4;++x) count+=pixel(frame,x,y)==color;
+        return count;
+    };
+    log.draw(history,0,false,-1,-1,font,&frame);
+    CHECK(count_color(41,{200,160,220})>20);
+    CHECK(count_color(440,{230,231,232})>20);
+    log.draw(history,0,false,500,50,font,&frame);
+    CHECK(count_color(41,{230,231,232})>20);
+    CHECK(count_color(440,{200,160,220})>20);
+    const auto selected=frame;
+    log.draw(history,0,false,-1,-1,font,&frame);
+    CHECK(frame==selected);
+    log.draw(std::vector<dc4ui::LogRow>(8,row),4,false,-1,-1,font,&frame);
+    CHECK(count_color(41,{230,231,232})>20);
+    CHECK(count_color(440,{200,160,220})>20);
+    row.name=u"Unknown"; row.text.clear(); row.voice.clear();
+    auto blank=frame;
+    log.draw({row},0,false,-1,-1,no_font,&blank);
+    log.draw({row},0,false,-1,-1,font,&frame);
+    int left=1280, right=-1, top=720, bottom=-1;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        if (pixel(frame,x,y)==pixel(blank,x,y)) continue;
+        left=std::min(left,x); right=std::max(right,x);
+        top=std::min(top,y); bottom=std::max(bottom,y);
+    }
+    CHECK(left>=322 && left<=329 && right<391);
+    CHECK(top>=54 && bottom<=74 && bottom-top<=18);
     CHECK(!log.load((root/"missing").string()) && !log.loaded());
 }
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc<2) { std::cerr<<"Pass MSGOTHIC.TTC for backlog text checks.\n"; return 1; }
     const auto parent=fs::canonical(fs::temp_directory_path());
     const auto root=parent/("dc4-log-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         if (!fs::create_directory(root)) throw std::runtime_error("Cannot create isolated log fixture");
         crx(root/"GRP/SYSTEM/BKLOGBACK.CRX",1280,720,false);
         crx(root/"GRP/SYSTEM/BKLOGCHIP.CRX",1224,854,true);
-        text_layout(); row_art(root); capture(root); dc2dm(root);
+        text_layout(); row_art(root); capture(root); dc2dm(root,argv[1]);
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; ++failures; }
     std::error_code ec;
     if (fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)

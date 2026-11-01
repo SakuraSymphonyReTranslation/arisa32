@@ -129,6 +129,63 @@ void lifecycle(const fs::path& root) {
     for (int i = 0; i < 8; ++i) CHECK(!scene.sprite(i).visible);
     next(scene,"STAYS_CLEARED"); CHECK(!scene.sprite(1).visible && !scene.sprite(5).visible);
 }
+void message_faces(const fs::path& root) {
+    const std::array<uint8_t,3> face{210,70,40}, glasses{30,90,220}, black{0,0,0};
+    image(root/"GRP/BST/face.CRX", 0, 0, 80, 200, black);
+    image(root/"GRP/BST/glasses.CRX", 0, 0, 32, 16, black);
+    image(root/"GRP/FACE/face.CRX", 32, 64, 80, 200, face);
+    image(root/"GRP/FACE/glasses.CRX", 56, 80, 32, 16, glasses);
+    Script ui;
+    ui.words(0x6C, 0, 320, 0, 0);
+    ui.bytes.push_back(0); write_file(root/"MES/start.mes", ui.bytes);
+    Script script;
+    script.text("NO_FACE");
+    script.param(0x2B, 19, "FACE\\glasses"); script.text("ACCESSORY_ONLY");
+    script.param(0x2B, 18, "FACE\\face"); script.text("FACE");
+    script.string(0x4C, "."); script.param(0x2B, 18, "-");
+    script.param(0x2B, 19, ""); script.text("PRESERVED");
+    script.param(0x2B, 1, "BG\\black"); script.string(0x33, "BG\\black"); script.text("BACKGROUND");
+    script.words(0x6C, 20, 300, 7, 0); script.text("MOVED");
+    script.words(0x6C, 0, 0, 0, 1); script.text("MODE_IGNORED");
+    script.string(0x4C, "-"); script.text("CLEARED");
+    script.string(0x4C, "."); script.text("STILL_CLEARED");
+    script.param(0x2B, 18, "FACE\\face"); script.text("RELOADED");
+    script.words(0x6C, uint16_t(-20), 300, 0, 0); script.text("SIGNED_ORIGIN");
+    script.string(0x4C, ""); script.text("EMPTY_CLEARED");
+    script.bytes.push_back(0); write_file(root/"MES/message-face.mes", script.bytes);
+    dc4scene::SceneRunner scene(root.string());
+    CHECK(scene.load_sheets((root/"MES/start.mes").string()));
+    CHECK(scene.load_ui_script((root/"MES/start.mes").string()));
+    CHECK(scene.load_script((root/"MES/message-face.mes").string()));
+    next(scene,"NO_FACE");
+    next(scene,"ACCESSORY_ONLY"); CHECK(pixel(scene,80,510) == black);
+    next(scene,"FACE");
+    CHECK(pixel(scene,50,500) == face && pixel(scene,80,510) == glasses);
+    CHECK(pixel(scene,50,700) == face && pixel(scene,50,710) == black);
+    const auto visible = scene.frame();
+    scene.set_message_visible(false); scene.draw(-1); CHECK(pixel(scene,50,500) == black);
+    scene.set_message_visible(true); scene.draw(-1); CHECK(scene.frame() == visible);
+    std::vector<uint8_t> state; CHECK(scene.capture_state(&state));
+    dc4scene::SceneRunner restored(root.string());
+    CHECK(restored.load_ui_script((root/"MES/start.mes").string()));
+    CHECK(restored.restore_state(state)); restored.draw(-1); CHECK(restored.frame() == visible);
+    next(scene,"PRESERVED"); CHECK(scene.frame() == visible);
+    next(restored,"PRESERVED"); CHECK(restored.frame() == visible);
+    next(scene,"BACKGROUND"); CHECK(scene.frame() == visible);
+    next(scene,"MOVED"); CHECK(pixel(scene,50,500) == black && pixel(scene,80,470) == face);
+    next(scene,"MODE_IGNORED"); CHECK(pixel(scene,50,500) == black && pixel(scene,80,470) == face);
+    next(scene,"CLEARED"); CHECK(pixel(scene,80,470) == black);
+    next(scene,"STILL_CLEARED"); CHECK(pixel(scene,80,470) == black);
+    next(scene,"RELOADED"); CHECK(pixel(scene,80,470) == face && pixel(scene,110,490) == face);
+    next(scene,"SIGNED_ORIGIN"); CHECK(pixel(scene,20,470) == face);
+    next(scene,"EMPTY_CLEARED"); CHECK(pixel(scene,80,470) == black);
+    dc4scene::SceneRunner legacy(root.string());
+    CHECK(legacy.load_script((root/"MES/message-face.mes").string())); next(legacy,"NO_FACE");
+    CHECK(legacy.capture_state(&state));
+    CHECK(restored.restore_state(state));
+    next(restored,"ACCESSORY_ONLY"); next(restored,"FACE");
+    CHECK(pixel(restored,50,500) == face && pixel(restored,80,510) == glasses);
+}
 void real_scene(const fs::path& data, const fs::path& output) {
     dc4scene::SceneRunner scene(data.string()); scene.set_message_visible(false);
     CHECK(scene.load_script((data/"MES/mar_0201_a1.mes").string()));
@@ -166,7 +223,7 @@ void real_scene(const fs::path& data, const fs::path& output) {
 int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("arisa32-dc2dm-sprites-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
-        if (argc < 2 || std::string(argv[1]) != "--capture-only") lifecycle(root);
+        if (argc < 2 || std::string(argv[1]) != "--capture-only") { lifecycle(root); message_faces(root); }
         const char* data = std::getenv("DC2DM_DATA");
         if (data && *data) real_scene(data, argc > 2 ? fs::path(argv[2]) : fs::path{});
         else std::cout << "DC2DM_DATA unset; original-asset check skipped\n";

@@ -27,7 +27,7 @@ adb shell am instrument -w org.dc4engine.updateqa.test/org.dc4engine.UpdateDialo
 
 Keep the test device unlocked. The harness opens the real Activity in its own
 application package and intercepts the storage-permission prompt and external
-download/release intents. It tests the actual v0.6.2 Indonesian and English notes
+download/release intents. It tests the actual v0.6.3 Indonesian and English notes
 at widths of 540dp and 380dp, with font scales of 100% and 200%. Checks include
 touch scrolling, the final line, visible actions, Back, and keyboard activation.
 Screenshots are saved under
@@ -43,6 +43,59 @@ This compares both downloaded translations with the fixtures and checks the
 missing-translation HTTP error. A notes failure must not block the update actions.
 Uninstall only `org.dc4engine.updateqa.test` and `org.dc4engine.updateqa` after QA.
 A normal build without the init script keeps the production package ID.
+
+With the same isolated QA packages, run the DC2DM sidebar navigation checks:
+
+```powershell
+adb shell am force-stop org.dc4engine.updateqa
+adb shell am start -W -n org.dc4engine.updateqa/org.dc4engine.Arisa32Activity
+adb shell am instrument -w -e sidebarOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+This launches generated DC2DM fixtures through the real Activity, then taps
+Back / Sidemenu, presses system Back, and uses the Show/Hide sidebar settings.
+The DC2DM navigation buttons must remain inside the visible system-bar safe area.
+Navigation controls respect system-bar padding and show keyboard focus for all
+profiles. DC2PC retains its existing left black-margin placement.
+Ordinary story navigation must open and close the sidebar without advancing
+dialogue, including Tab focus and Enter activation. Replay flags 1 and 2 must keep it closed
+and reject both Save and Load screen requests. Fixtures remain in the QA
+app's private files; no installed game data is used. Screenshots are saved under
+`/sdcard/Android/data/org.dc4engine.updateqa/files/sidebar-navigation-checks/`.
+
+The global texture smoothing checks use the same isolated QA packages:
+
+```powershell
+adb shell am instrument -w -e graphicsOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+These verify nearest and bilinear pixels, software fallback, and real FXAA GPU
+output on Android 13 or later using a headless `HardwareRenderer`. They also
+exercise touch and keyboard selection, immediate changes, persistence after
+relaunch, and English/Indonesian/Japanese labels at 200% font size. Screenshots
+and GPU output are saved under
+`/sdcard/Android/data/org.dc4engine.updateqa/files/frame-filter-checks/`.
+See `docs/texture-smoothing-validation.md` for filter scope and compatibility.
+
+The floating controls have a focused device check with the same QA packages:
+
+```powershell
+adb shell am instrument -w -e navigationOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+It exercises the real Activity controls for DC4, DC4PH, DC2PC and DC2DM in
+synthetic game areas from 280 by 180dp to full screen. Checks cover initial
+safe-corner placement despite legacy saved coordinates, padding/size changes,
+vertical handle dragging, bounds, persistence across controller recreation,
+axis locking and cancelled/multitouch drags, four-second auto-hide, shared
+visibility of the dots and Back / Sidemenu, left-swipe hiding, handle tap/right
+swipe/keyboard restoration, temporary control dragging, paused timers,
+system-bar padding, and EN/ID/JP On/Off settings at 200% text. Pointer events
+are dispatched only into the QA layout; game-touch counters reject accidental
+forwarding. This fixture does not launch native game scenarios. Screenshots
+are saved in `navigation-checks/` beneath the QA package's external files.
+Stop only the QA package after testing. See
+`docs/dc4-confirmations-navigation.md` for native confirmation validation.
 
 Standalone export checks (Java 11+ and Android SDK; no device required):
 

@@ -79,6 +79,7 @@ const auto marriage = [] {
                    {0x64, Opcode::SUM},
                    {0x66, Opcode::COMPARE},
                    {0x67, Opcode::CAPTION},
+                   {0x68, Opcode::CHIP_ORIGIN},
                    {0x6B, Opcode::SPRITE_TRANSFORM}};
     for (const auto& alias : aliases)
         p.opcodes[alias.raw].operation = alias.operation;

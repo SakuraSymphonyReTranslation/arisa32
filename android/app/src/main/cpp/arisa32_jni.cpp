@@ -818,7 +818,11 @@ void tick_engine(Engine* e) {
     }
     if (e->menu_open && e->menu.page() == dc4ui::SystemMenuPage::Music)
         e->menu.set_music_position(int(100*e->audio.channel_fraction(0)));
-    if (e->menu_open || !e->in_game) return;
+    if (e->menu_open) {
+        e->menu.update(elapsed);
+        return;
+    }
+    if (!e->in_game) return;
     e->scene->update(elapsed);
     if (e->scene->script_ready()) advance_scene(e);
     if (e->scene->scene_ended() && e->scene->last_error().empty()) {
@@ -915,7 +919,10 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     bool menu_ok = e->menu.load(e->data_dir, &err);
     bool font_ok = false;
     if (!g_config.font.empty()) {
-        const int face_index = dc4::is_latin() && e->menu.scene_ui_script() == "start.mes" ? 2 : 1;
+        dc4::MesFile main_script;
+        const bool dc2dm = main_script.load_file(dc4::resolve_asset(e->data_dir + "/MES/main.mes")) &&
+                            main_script.dialect == dc4::MesDialect::ClassicDM;
+        const int face_index = dc2dm ? 0 : dc4::is_latin() && e->menu.scene_ui_script() == "start.mes" ? 2 : 1;
         font_ok = e->font.load(g_config.font, face_index, 22.0f);
         if (!font_ok) font_ok = e->font.load(g_config.font, 0, 22.0f);
         if (font_ok) LOGI("font: %s", g_config.font.c_str());
@@ -981,6 +988,9 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         }
     }
     if (menu_ok) e->confirm.load(e->data_dir);
+    e->menu.bind_confirmations(e->confirm);
+    e->menu.bind_confirmations(e->save_screen.confirm_dialog());
+    e->menu.set_confirmation_changed_callback([e] { save_profile(e); });
     if (!e->save_dir.empty() && (imported_pc_progress || !std::filesystem::exists(e->save_dir + "/system-profile.dat"))) {
         save_profile(e);
     }
@@ -1169,7 +1179,14 @@ Java_org_dc4engine_Dc4Activity_dc4RequestConfirm(JNIEnv* env,jobject,jstring req
     }else if(action=="quick-load"){
         if(!std::filesystem::is_regular_file(dc4::resolve_save(e->save_dir,e->scene->save_format_version(),0)))return env->NewStringUTF("No quick save");
         kind=dc4ui::ConfirmKind::QuickLoad;
-    }else if(action=="title")kind=dc4ui::ConfirmKind::Title;
+    }else if(action=="title"){
+        if(e->scene->save_format_version()==0x9D72 && !e->scene->save_load_allowed())
+            return env->NewStringUTF(request_confirm(e,dc4ui::ConfirmKind::ReplayExit,[e]{
+                finish_scenario_menu(e,dc4ui::SystemMenuPage::Scenes);
+                return std::string(":close");
+            }).c_str());
+        kind=dc4ui::ConfirmKind::Title;
+    }
     else if(action=="quit")kind=dc4ui::ConfirmKind::Quit;
     else return env->NewStringUTF("");
     return env->NewStringUTF(request_confirm(e,kind,[action]{return action+"-confirmed";}).c_str());
@@ -1722,7 +1739,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     const auto control_at = [&](int px,int py) {
         if (e->log.back_hit(px,py)) return 1;
         if (e->log.checkbox_hit(px,py)) return 2;
-        if (const int direction = e->log.scroll_button(px,py)) return direction < 0 ? 3 : 4;
+        if (const int direction = e->log.scroll_button(px,py,e->log_scroll,count)) return 10 + direction;
         const int jump = e->log.jump_hit(px,py,e->log_scroll,count);
         if (jump >= 0) return 1000+jump;
         const int voice = e->log.voice_hit(px,py,e->log_scroll,count);
@@ -1762,7 +1779,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     e->log_pressed = 0;
     if (!had_press || pressed == 0 || control_at(x,y) != pressed) return env->NewStringUTF("");
     if (e->log.back_hit(x, y)) return env->NewStringUTF("close");
-    if (const int direction = e->log.scroll_button(x,y)) {
+    if (const int direction = e->log.scroll_button(x,y,e->log_scroll,count)) {
         e->log_scroll = std::clamp(e->log_scroll + direction, 0, e->log.last_scroll(count));
         return env->NewStringUTF("");
     }
@@ -1778,6 +1795,8 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     }
     const int voice = e->log.voice_hit(x, y, e->log_scroll, count);
     if (voice >= 0) {
+        if (e->scene && e->scene->save_format_version()==0x9D72 &&
+            e->log_rows[size_t(voice)].voice.empty()) return env->NewStringUTF("");
         if (!play_row_voice(e, e->log_rows[size_t(voice)].voice))
             return env->NewStringUTF("No voice on this row");
         return env->NewStringUTF("voice");

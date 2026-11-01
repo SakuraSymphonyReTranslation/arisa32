@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.6.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.2)**. This release adds beta support for D.C. II Dearest Marriage, Sakuramusubi text fixes, and opening and ending playback fixes. Read the [release notes](docs/releases/v0.6.2/en.md) for details and remaining bugs. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.6.3](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.3)**. This release fixes D.C. II Dearest Marriage popups, text, portraits, backlog, and voices, fixes DC4/DC4PH confirmations, and adds image smoothing and controls that can be hidden. Read the [release notes](docs/releases/v0.6.3/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -40,7 +40,7 @@ Arisa32 recognizes 21 official CIRCUS adv32 titles from the Da Capo and Dal Segn
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
 
-According to user testing, D.C. II Dearest Marriage is playable through to the end. Support remains in beta: menu fonts are too large, some popup text colors are incorrect, character voices may repeat, and other bugs remain. See the [known DC2DM bugs](docs/releases/v0.6.2/en.md#known-dc2dm-bugs).
+According to user testing, D.C. II Dearest Marriage is playable through to the end. Version 0.6.3 fixes the CONFIG text preview, image-based popups, portraits, and repeated voice playback. Support remains in beta; not every route or translation patch has been verified. See the [DC2DM limitations](docs/releases/v0.6.3/en.md#limitations).
 
 ### Original Da Capo series
 

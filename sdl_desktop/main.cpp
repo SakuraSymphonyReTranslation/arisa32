@@ -71,7 +71,7 @@ void usage() {
            "  --line N            zero-based dialogue index in the scenario\n"
            "  --movie [FILE]      play movie directly (default: DC4_OP1.mpg, or op1/op2/op3)\n"
            "  --shot FILE.bmp     deterministic screenshot; no window or audio\n"
-           "  --effect-ms N      sample scripted camera animation after N ms\n"
+           "  --effect-ms N       sample scene animation or menu preview after N ms\n"
            "  --reveal N          reveal N Unicode characters in a screenshot\n"
            "  --wait-frame N      fixed wait animation frame (default: 0)\n"
            "  --hover X Y --down  screenshot pointer position/button state\n"
@@ -660,6 +660,9 @@ int run(const Options& o) {
             else fprintf(stderr,"Profile: %s\n",err.c_str());
         } catch(const std::exception& e) { fprintf(stderr,"Profile: %s\n",e.what()); }
     };
+    system_menu.bind_confirmations(global_confirm);
+    system_menu.bind_confirmations(save_screen.confirm_dialog());
+    system_menu.set_confirmation_changed_callback([&] { profile_dirty=true; flush_profile(); });
     auto sync_progress = [&]() {
         if (!scene) return;
         if (system_menu.sync_progress(*scene)) profile_dirty=true;
@@ -1030,7 +1033,18 @@ int run(const Options& o) {
         play_sys_voice(system_menu.page_voice_event());
         status.clear();update_title();
     };
-    auto prompt_title = [&]() {prompt(dc4ui::ConfirmKind::Title,[&]{open_system(dc4ui::SystemMenuPage::Title);});};
+    auto prompt_title = [&]() {
+        const bool replay=scene && scene->save_format_version()==0x9D72 && !scene->save_load_allowed();
+        prompt(replay?dc4ui::ConfirmKind::ReplayExit:dc4ui::ConfirmKind::Title,[&,replay]{
+            if(replay) {
+                audio.engine.stop_all();
+                scene->finish_replay();
+                open_system(dc4ui::SystemMenuPage::Scenes);
+                system_menu.resume_scenes();
+                title_music();
+            } else open_system(dc4ui::SystemMenuPage::Title);
+        });
+    };
     auto prompt_quick = [&](bool load) {
         if (scene && !scene->save_load_allowed()) return;
         if(load&&!fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0))){notify("No quick save");return;}
@@ -1196,6 +1210,9 @@ int run(const Options& o) {
             movie.update(tick-animation_tick);
             if(movie.finished())finish_movie();
         }
+        if (menu_open && o.shot.empty() && !movie.active() && !global_confirm.active() &&
+            (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS))
+            system_menu.update(tick-animation_tick);
         animation_tick=tick;
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
         if (SDL_RenderClear(ren) < 0) return false;
@@ -1271,6 +1288,7 @@ int run(const Options& o) {
             if (o.save_page) save_screen.set_page(o.save_page - 1);
             if (o.down) save_screen.pointer_down(mx, my);
         }
+        if (menu_open && o.effect_ms >= 0) system_menu.update(uint32_t(o.effect_ms));
         if (!draw()) { fprintf(stderr, "Render failed: %s\n", SDL_GetError()); return 1; }
         // The software target owns the pixels; Present only flushes SDL's queue.
         SDL_RenderPresent(ren);
@@ -1423,7 +1441,7 @@ int run(const Options& o) {
                             if (thumb_drag) thumb_drag = false;
                             else if (log_screen.back_hit(mx, my)) toggle_backlog();
                             else if (log_screen.checkbox_hit(mx, my)) thumbnails_on = !thumbnails_on;
-                            else if (const int direction = log_screen.scroll_button(mx, my)) backlog.move(direction);
+                            else if (const int direction = log_screen.scroll_button(mx, my, backlog.scroll, backlog.rows.size())) backlog.move(direction);
                             else {
                                 const int jump = log_screen.jump_hit(mx, my, backlog.scroll, backlog.rows.size());
                                 if (jump >= 0) prompt(dc4ui::ConfirmKind::SceneJump,[&,jump]{jump_to_row(jump);});

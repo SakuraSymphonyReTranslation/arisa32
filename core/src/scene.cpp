@@ -311,21 +311,23 @@ const FontRenderer::Glyph& FontRenderer::glyph(char16_t ch, int size, bool wide)
 void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseline,
                                   std::vector<uint8_t>* rgba, int buf_w,
                                   int buf_h, float pixel_size, uint32_t rgb, bool wide,
-                                  uint32_t outline_rgb) const {
+                                  uint32_t outline_rgb, bool fixed_grid, int tracking,
+                                  float raster_size) const {
     if (!font_) return;
     if (!rgba || buf_w <= 0 || buf_h <= 0 || rgba->size() < size_t(buf_w) * buf_h * 4) return;
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
+    const int glyph_size = int(raster_size > 0 ? raster_size : ps);
     std::vector<uint8_t> mask(size_t(buf_w) * buf_h, 0);
     int x = x0;
     for (char16_t ch : text) {
-        const Glyph& g = glyph(ch, ps, wide);
+        const Glyph& g = glyph(ch, glyph_size, wide);
         for (int ry = 0; ry < g.h; ++ry) for (int rx = 0; rx < g.w; ++rx) {
             int px = x + g.x + rx, py = baseline + g.y + ry;
             if (px < 0 || py < 0 || px >= buf_w || py >= buf_h) continue;
             auto& value = mask[size_t(py) * buf_w + px];
             value = std::max(value, g.coverage[size_t(ry) * g.w + rx]);
         }
-        x += glyph_advance(ch, float(ps), wide);
+        x += glyph_advance(ch, float(ps), wide, fixed_grid, tracking);
     }
     // Build the outline from the completed coverage mask.
     for (int y = 0; y < buf_h; ++y) for (int px = 0; px < buf_w; ++px) {
@@ -358,18 +360,18 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
     }
 }
 
-int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide) const {
+int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide, bool fixed_grid, int tracking) const {
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
-    if (font_ && ch < 0x100) {
+    if (!fixed_grid && font_ && ch < 0x100) {
         const Glyph& g = glyph(ch, ps, wide);
-        if (g.advance > 0) return g.advance;
+        if (g.advance > 0) return std::max(0, g.advance + tracking);
     }
-    return (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1);
+    return std::max(0, (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1) + tracking);
 }
 
-int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool wide) const {
+int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool wide, bool fixed_grid, int tracking) const {
     int w = 0;
-    for (char16_t ch : text) w += glyph_advance(ch, pixel_size, wide);
+    for (char16_t ch : text) w += glyph_advance(ch, pixel_size, wide, fixed_grid, tracking);
     return w;
 }
 
@@ -387,8 +389,8 @@ SceneRunner::SceneRunner(const std::string& data_dir)
 void SceneRunner::set_latin_mode(bool latin) {
     latin_mode_ = latin;
     if (dc2dm_ui_) {
-        layout_.font_size = latin ? 15 : 22;
-        layout_.text_baseline = latin ? 468 : 474;
+        layout_.font_size = 22;
+        layout_.text_baseline = 474;
         layout_.text_w = 600;
         layout_.line_spacing = latin ? 24 : 32;
         return;
@@ -592,6 +594,7 @@ void SceneRunner::finish_script_wait() {
 }
 
 bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
+    if (dispatch_dc2dm_message_face(c)) return true;
     using Handler = bool (SceneRunner::*)(const MesCommand&);
     static const auto handlers = [] {
         std::array<std::array<Handler, 256>, 6> table{};
@@ -621,7 +624,7 @@ bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
                        {Opcode::TRANSFER_ALT, Opcode::BUTTON_POSITION, Opcode::CHIP_POSITION,
                         Opcode::LEGACY_CHIP_POSITION_ALT, Opcode::LEGACY_CHIP_POSITION,
                         Opcode::CHIP, Opcode::LEGACY_CHIP, Opcode::MOVIE, Opcode::CONTROL,
-                        Opcode::JUMP, Opcode::TRANSFER});
+                        Opcode::JUMP, Opcode::TRANSFER, Opcode::CHIP_ORIGIN});
         register_group(CmdKind::Words4, &SceneRunner::dispatch_layer_command,
                        {Opcode::COMMIT_LAYERS});
         register_group(CmdKind::Words4, &SceneRunner::dispatch_sprite_command,
@@ -831,6 +834,29 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
 
 bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    if (c.dc2dm && c.kind == K::Words4 && c.opcode() == dc4::Opcode::CHIP_ORIGIN) {
+        switch (c.words[2]) {
+        case 0:
+            scene_chip_origin_x_ = int16_t(c.words[0]);
+            scene_chip_origin_y_ = int16_t(c.words[1]);
+            break;
+        case 1:
+            scene_chip_origin_x_ += int16_t(c.words[0]);
+            scene_chip_origin_y_ += int16_t(c.words[1]);
+            break;
+        case 2:
+            scene_chip_source_x_ = int16_t(c.words[0]);
+            scene_chip_source_y_ = int16_t(c.words[1]);
+            break;
+        case 3: {
+            const int value = vm_.read_variable(c.words[3] >> 8, c.words[3] & 0xFF);
+            scene_chip_source_x_ = int16_t(c.words[0]) * value;
+            scene_chip_source_y_ = int16_t(c.words[1]) * value;
+            break;
+        }
+        }
+        return true;
+    }
     if (c.dc2dm && c.kind == K::Param2) {
         if (c.opcode() == dc4::Opcode::CLEAR_LAYOUT) {
             buttons_.resize(std::min(buttons_.size(), dc2dm_toolbar_count_));
@@ -866,6 +892,12 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     if (is_chip_pos) {
         pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
                                      c.words[2], c.words[3], 0, 0, 0, true};
+        if (c.dc2dm) {
+            pending_scene_chip_.dst_x += scene_chip_origin_x_;
+            pending_scene_chip_.dst_y += scene_chip_origin_y_;
+            pending_scene_chip_.src_x = int16_t(c.words[2]) + scene_chip_source_x_;
+            pending_scene_chip_.src_y = int16_t(c.words[3]) + scene_chip_source_y_;
+        }
         pending_scene_blit_ = true;
         pending_chip_is_button_ = false;
         return true;
@@ -972,6 +1004,10 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
             if (c.opcode() == dc4::Opcode::LEGACY_BACKGROUND || c.opcode() == dc4::Opcode::BACKGROUND) {
                 load_layer(1, c.str);
                 scene_chips_.clear();
+                if (c.dc2dm) {
+                    scene_chip_origin_x_ = scene_chip_origin_y_ = 0;
+                    scene_chip_source_x_ = scene_chip_source_y_ = 0;
+                }
                 scene_dirty_ = true;
                 if (c.dc2pc) {
                     // DC2PC raw30 dismisses native body layers 1..4 even
@@ -985,6 +1021,7 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
                     }
                 } else if (!preserve_scene_) {
                     for (size_t i = 0; i < sprites_.size(); ++i) {
+                        if (c.dc2dm && (i == 8 || i == 9)) continue;
                         if (!pending_sprites_[i]) {
                             if (c.dc2dm) { release_dc2dm_sprite(i); continue; }
                             sprites_[i].visible = false;
@@ -1247,6 +1284,7 @@ bool SceneRunner::load_sheets(const std::string& mes_path) {
     int n = 0;
     while (stream.next(&c)) {
         c = dc4::mes_engine_command(c);
+        if (c.dc2dm && c.raw_op == 0x6C) dispatch_dc2dm_message_face(c);
         if (c.kind == dc4::CmdKind::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
             Image img;
             std::string lower = c.str;
@@ -1409,7 +1447,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         layout_.bg_w = 952; layout_.bg_h = 155;
         layout_.bg_src_x = 0; layout_.bg_src_y = 156;
         layout_.text_x = 312;
-        layout_.name_x = 288; layout_.name_baseline = 442;
+        layout_.name_x = 264; layout_.name_baseline = 442;
         layout_.name_font = 22;
         layout_.max_lines = 4;
         layout_.gear_x = 72; layout_.gear_y = 628;
@@ -1647,6 +1685,10 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     if (raw.empty()) return;
     const bool dc2dm = mes_.dialect == dc4::MesDialect::ClassicDM;
     if (dc2dm && slot == 0) return;
+    if (dc2dm && (slot == 18 || slot == 19)) {
+        if (raw != "-") load_bst(slot - 10, raw, slot);
+        return;
+    }
     bool is_dash = raw.size() >= 2 && raw[0] == '-' && raw[1] == '-';
     int idx = -1;
     if (dc2dm && slot >= 2 && slot <= 9) idx = slot - 2;
@@ -1707,6 +1749,7 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
         reset_camera();
         effect_pck_.clear();
         for (size_t i = 0; i < sprites_.size(); ++i) {
+            if (dc2dm && (i == 8 || i == 9)) continue;
             if (!pending_sprites_[i]) {
                 if (dc2dm) { release_dc2dm_sprite(i); continue; }
                 sprites_[i].visible = false;
@@ -1753,6 +1796,52 @@ void SceneRunner::release_dc2dm_sprite(size_t index) {
     if (index < 4) release_dc2dm_sprite(index + 4);
 }
 
+bool SceneRunner::dispatch_dc2dm_message_face(const dc4::MesCommand& c) {
+    if (!c.dc2dm) return false;
+    // Native slots 18/19 share a clipped message-window canvas. Records 8/9
+    // are unused by DC2DM's body/accessory layers and retain these in saves.
+    if (c.raw_op == 0x6C && c.kind == dc4::CmdKind::Words4) {
+        if (c.words[3] == 0) for (size_t i : {8u, 9u}) {
+            sprites_[i].cur_x = int16_t(c.words[0]);
+            sprites_[i].cur_y = int16_t(c.words[1]);
+        }
+        return true;
+    }
+    if (c.raw_op == 0x4C && c.kind == dc4::CmdKind::Str) {
+        if (c.str.empty() || c.str == "-") for (size_t i : {8u, 9u}) {
+            release_dc2dm_sprite(i);
+            sprites_[i].name.clear();
+        }
+        return true;
+    }
+    return false;
+}
+
+void SceneRunner::draw_dc2dm_message_face() {
+    if (!sprites_[8].visible || !sprites_[8].img.valid()) return;
+    Image canvas;
+    canvas.w = 248; canvas.h = 247;
+    canvas.rgba.assign(size_t(canvas.w) * canvas.h * 4, 0);
+    for (size_t i : {8u, 9u}) {
+        const auto& face = sprites_[i];
+        if (!face.visible || !face.img.valid()) continue;
+        const int left = int(face.frame_cx - face.img.w / 2.f);
+        const int top = int(face.frame_cy - face.img.h / 2.f);
+        for (int y = std::max(0, top); y < std::min(canvas.h, top + face.img.h); ++y)
+            for (int x = std::max(0, left); x < std::min(canvas.w, left + face.img.w); ++x) {
+                const auto* src = &face.img.rgba[(size_t(y - top) * face.img.w + x - left) * 4];
+                auto* dst = &canvas.rgba[(size_t(y) * canvas.w + x) * 4];
+                const int alpha = src[3] * 255 + dst[3] * (255 - src[3]);
+                if (!alpha) continue;
+                for (int c = 0; c < 3; ++c)
+                    dst[c] = uint8_t((src[c] * src[3] * 255 + dst[c] * dst[3] * (255 - src[3])) / alpha);
+                dst[3] = uint8_t((alpha + 127) / 255);
+            }
+    }
+    blit(&frame_, kScreenW, kScreenH, int(std::lround(sprites_[8].cur_x * 1.25f)),
+         int(std::lround(sprites_[8].cur_y * 1.25f)), canvas, 1.25f, 255);
+}
+
 void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     BstSprite& s = sprites_[size_t(idx)];
     if (slot >= 25 && slot <= 27) effect_sprite_ = idx;
@@ -1769,10 +1858,11 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     CrxInfo info;
     std::string err;
     const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2dm_face = mes_.dialect == dc4::MesDialect::ClassicDM && (idx == 8 || idx == 9);
     s.visible = false;
     s.img = Image{};
-    if (!bst_load(data_ + "/GRP/BST", name, &s.img.rgba, &info, &err, dc2pc) &&
-        !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc)) {
+    if (!bst_load(data_ + (dc2dm_face ? "/GRP/FACE" : "/GRP/BST"), name, &s.img.rgba, &info, &err, dc2pc) &&
+        (dc2dm_face || !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc))) {
         if (debug_) printf("  bst: %s\n", err.c_str());
         return;
     }
@@ -2594,6 +2684,7 @@ void SceneRunner::compose_scene() {
         for (size_t layer = 0; layer < sprites_.size(); ++layer) {
             // DC2DM draws each accessory immediately after its parent body.
             const size_t index = dc2dm && layer < 8 ? layer / 2 + (layer % 2) * 4 : layer;
+            if (dc2dm && (index == 8 || index == 9)) continue;
             const BstSprite& s = sprites_[index];
             if (!s.visible || !s.img.valid() || s.z != pass) continue;
             if (dc2dm) {
@@ -2687,6 +2778,7 @@ void SceneRunner::draw(int reveal_chars) {
     }
     if (!sidebar_visible_ && message_visible_ && (!dc2dm_ui_ || !current_line_.empty()) && !script_wait_pending_ && !effect_pck_.active && pending_movie_.empty()) {
         draw_message_window(reveal_chars);
+        if (dc2dm_ui_) draw_dc2dm_message_face();
         if (taskbar_visible_) {
             for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
             for (const UiButton& b : buttons_) {
@@ -3118,20 +3210,23 @@ void SceneRunner::draw_message_window(int reveal_chars) {
                 for (auto& ch : text) ch = dc2dm_translation_character(ch);
             if (latin_mode_) for (auto& ch : text)
                 if (ch >= 0xFF01 && ch <= 0xFF5E) ch -= 0xFEE0;
-            int size = dm_latin ? 15 : layout_.name_font;
-            const int name_height = dm_latin ? 15 : layout_.name_font;
-            const int name_baseline = dm_latin ? 438 : layout_.name_baseline;
+            int size = layout_.name_font;
+            const int name_height = layout_.name_font;
+            const int name_baseline = layout_.name_baseline;
+            const int name_x = dc2dm_ui_ ? layout_.name_x +
+                (5 * size - int(displayed_speaker().size()) * size / 2) / 2 : layout_.name_x;
             if (dc2pc_ui_) while (size > 6 && font_->text_width(text, float(size)) > 184) --size;
-            const int width = font_->text_width(text, float(size));
+            const int width = font_->text_width(text, float(size), false, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
             Image name;
             name.w = dc2pc_ui_ ? 192 : std::max(400, width + 4);
             name.h = name_height + 10;
             name.rgba.assign(size_t(name.w) * name.h * 4, 0);
             font_->rasterize_line(text, dc2pc_ui_ ? std::max(2, (name.w - width) / 2) : 0,
                                   name_height + 2, &name.rgba, name.w,
-                                  name.h, float(size));
+                                  name.h, float(size), 0xFFFFFF, false, 0, dc2dm_ui_,
+                                  dc2dm_ui_ ? -1 : 0, dm_latin ? size * 15.0f / 19.0f : 0);
             const float scale = dc2pc_ui_ ? 1.2f : dc2dm_ui_ ? 1.25f : 1.0f;
-            blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.name_x - (dc2pc_ui_ ? name.w / 2 : 0)) * scale)),
+            blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((name_x - (dc2pc_ui_ ? name.w / 2 : 0)) * scale)),
                  int(std::lround((name_baseline - name_height - 2) * scale)), name, scale,
                  255);
         }
@@ -3223,7 +3318,6 @@ DisplayText display_text(const std::string& sjis, int default_size = 22, bool dc
             if (std::u16string(u"mlsiryzw").find(tag) != std::u16string::npos) {
                 style.size = tag == u'l' ? 32 : tag == u's' ? 20 : tag == u'i' ? 18 :
                     tag == u'r' ? 12 : tag == u'y' ? 16 : tag == u'z' ? 10 : 22;
-                if (dc2dm_translation && style.size > 18) style.size = 15;
                 style.wide = tag == u'w'; i += 2; continue;
             }
         }
@@ -3261,14 +3355,14 @@ size_t SceneRunner::visible_text_length() const {
 
 void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     const bool dm_latin = dc2dm_ui_ && dc2dm_latin_text(sjis_to_utf16(sjis));
-    const auto parsed = display_text(sjis, dm_latin ? 15 : layout_.font_size, dm_latin);
+    const auto parsed = display_text(sjis, layout_.font_size, dm_latin);
     const int line_spacing = dm_latin ? 24 : layout_.line_spacing;
-    const int text_baseline = dm_latin ? 468 : layout_.text_baseline;
+    const int text_baseline = layout_.text_baseline;
     struct Line { size_t start = 0, end = 0; int width = 0; };
     std::vector<Line> lines;
     auto advance_at = [&](size_t i) {
         const auto& style = parsed.styles[i];
-        return font_->glyph_advance(parsed.text[i], float(style.size), style.wide);
+        return font_->glyph_advance(parsed.text[i], float(style.size), style.wide, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
     };
 
     auto is_cjk = [](char16_t ch) {
@@ -3351,7 +3445,8 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             size_t end = at + 1;
             while (end < shown_end && parsed.styles[end] == style) ++end;
             font_->rasterize_line(parsed.text.substr(at, end - at), 2 + x, baseline,
-                &text_img.rgba, text_img.w, text_img.h, float(style.size), style.rgb, style.wide);
+                &text_img.rgba, text_img.w, text_img.h, float(style.size), style.rgb, style.wide,
+                0, dc2dm_ui_, dc2dm_ui_ ? -1 : 0, dm_latin ? style.size * 15.0f / 19.0f : 0);
             for (; at < end; ++at) x += advance_at(at);
         }
         for (const auto& ruby : parsed.ruby) {

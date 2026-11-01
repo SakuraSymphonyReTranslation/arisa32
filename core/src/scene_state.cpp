@@ -783,6 +783,26 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 sprite.cur_x = cur_x; sprite.cur_y = cur_y;
             }
         }
+        if (candidate.mes_.dialect == dc4::MesDialect::ClassicDM &&
+            std::all_of(candidate.sprites_.begin() + 8, candidate.sprites_.begin() + 10,
+                [](const BstSprite& face) {
+                    return face.name.empty() && face.image.empty() && !face.visible &&
+                           face.cur_x == 0 && face.cur_y == 0;
+                })) {
+            // Saves written before FACE support left these records empty.
+            // Recover placement without replaying script flow, audio or variables.
+            dc4::MesFile layout;
+            if (layout.load_file(dc4::resolve_asset(data_ + "/MES/start.mes"), &error)) {
+                dc4::MesStream scan(layout);
+                dc4::MesCommand command;
+                while (scan.next(&command)) if (command.op == 0x6C)
+                    candidate.dispatch_dc2dm_message_face(dc4::mes_engine_command(command));
+            }
+            dc4::MesStream scan(candidate.mes_);
+            dc4::MesCommand command;
+            while (scan.next(&command) && command.pos < vm.pc) if (command.op == 0x6C)
+                candidate.dispatch_dc2dm_message_face(dc4::mes_engine_command(command));
+        }
         const auto audio = read_audio(in);
         uint16_t camera_duration = 5;
         std::vector<CameraMotion> camera_motion;
@@ -882,6 +902,8 @@ void SceneRunner::reset_restore_transients() {
     dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
     dc2pc_transition_elapsed_ms_ = dc2pc_transition_duration_ms_ = 0;
     scene_chips_.clear(); pending_scene_blit_ = false;
+    scene_chip_origin_x_ = scene_chip_origin_y_ = 0;
+    scene_chip_source_x_ = scene_chip_source_y_ = 0;
     sidebar_visible_ = false;
     if (mes_.version == 0x9969) {
         // Interview/other menu controls are ephemeral and never belong to a

@@ -61,6 +61,10 @@ public:
     SystemMenuAction activate(const std::string& original_tag);
     bool confirming() const;
     SystemMenuAction answer_confirmation(bool yes);
+    // Bound dialogs must not outlive this menu; all use its native bank 93.
+    void bind_confirmations(ConfirmDialog& dialog);
+    void set_confirmation_changed_callback(std::function<void()> callback);
+    void update(uint32_t elapsed_ms);
     void draw(int mouse_x, int mouse_y, bool down,
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;

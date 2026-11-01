@@ -161,7 +161,8 @@ void ConfirmDialog::open(const std::u16string& message,
 
 bool ConfirmDialog::open(ConfirmKind kind) {
     if(kind==ConfirmKind::Count)return false;
-    if(skipped_[size_t(kind)])return false;
+    const int preference = read_preference_ ? read_preference_(kind) : -1;
+    if(preference > 0 || (preference < 0 && skipped_[size_t(kind)]))return false;
     static const char16_t* prompts[][3] = {
         {u"セーブしますか？",u"Save your progress?",u"Simpan kemajuan permainan?"},
         {u"上書きしてよろしいですか？",u"Overwrite this save data?",u"Timpa data simpanan ini?"},
@@ -174,7 +175,8 @@ bool ConfirmDialog::open(ConfirmKind kind) {
         {u"ムービーを再生しますか？",u"Play this movie?",u"Putar video ini?"},
         {u"設定を初期化しますか？",u"Reset settings to their defaults?",u"Kembalikan pengaturan awal?"},
         {u"タイトルに戻りますか？",u"Return to title?",u"Kembali ke judul?"},
-        {u"終了しますか？",u"Exit the game?",u"Keluar dari permainan?"}
+        {u"終了しますか？",u"Exit the game?",u"Keluar dari permainan?"},
+        {u"鑑賞を終了しますか？",u"Finish viewing?",u"Selesai melihat?"}
     };
     const int lang=language_==dc4::Language::English?1:language_==dc4::Language::Indonesian?2:0;
     open(prompts[size_t(kind)][lang]);kind_=kind;return true;
@@ -182,8 +184,18 @@ bool ConfirmDialog::open(ConfirmKind kind) {
 
 ConfirmResult ConfirmDialog::answer(bool yes) {
     if(!active_)return ConfirmResult::None;
-    if(yes&&kind_!=ConfirmKind::Count&&dont_confirm_)skipped_[size_t(kind_)]=true;
+    if(yes&&kind_!=ConfirmKind::Count&&dont_confirm_) {
+        if(read_preference_ && read_preference_(kind_) >= 0 && skip_preference_)
+            skip_preference_(kind_);
+        else skipped_[size_t(kind_)]=true;
+    }
     close();return yes?ConfirmResult::Yes:ConfirmResult::No;
+}
+
+void ConfirmDialog::set_preferences(std::function<int(ConfirmKind)> read,
+                                    std::function<void(ConfirmKind)> skip) {
+    read_preference_ = std::move(read);
+    skip_preference_ = std::move(skip);
 }
 
 void ConfirmDialog::close() {
@@ -192,7 +204,7 @@ void ConfirmDialog::close() {
 }
 
 bool ConfirmDialog::hit_yes(int x, int y) const {
-    if(dc2dm_)return x>=435 && x<620 && y>=375 && y<455;
+    if(dc2dm_)return x>=435 && x<620 && y>=355 && y<435;
     if(dc2pc_)return x>=515 && x<640 && y>=378 && y<416;
     const int bx = kBoxX + kYesRelX;
     const int by = kBoxY + kYesRelY;
@@ -201,7 +213,7 @@ bool ConfirmDialog::hit_yes(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_no(int x, int y) const {
-    if(dc2dm_)return x>=670 && x<855 && y>=375 && y<455;
+    if(dc2dm_)return x>=670 && x<855 && y>=355 && y<435;
     if(dc2pc_)return x>=640 && x<765 && y>=378 && y<416;
     const int bx = kBoxX + kNoRelX;
     const int by = kBoxY + kNoRelY;
@@ -266,13 +278,13 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
             }
             blit_subimage(scaled,0,0,scaled.w,scaled.h,x*5/4,y*5/4,frame);
         };
-        native_blit(0,0,440,224,292,176);
+        native_blit(0,0,440,224,292,160);
         const bool yes=hit_yes(mouse_x,mouse_y),no=hit_no(mouse_x,mouse_y);
         const bool yes_down=yes && (down || pressed_yes_);
         const bool no_down=no && (down || pressed_no_);
-        native_blit(442,yes ? (yes_down ? 128 : 64) : 0,155,yes_down ? 68 : 64,348,300);
-        native_blit(598,no ? (no_down ? 128 : 64) : 0,no ? 150 : 130,no_down ? 68 : 64,536,300);
-        if(language_==dc4::Language::Japanese && chip_.h>=637 && kind_!=ConfirmKind::Count) {
+        native_blit(442,yes ? (yes_down ? 128 : 64) : 0,155,yes_down ? 68 : 64,348,284);
+        native_blit(598,no ? (no_down ? 128 : 64) : 0,no ? 150 : 130,no_down ? 68 : 64,536,284);
+        if(chip_.h>=631 && kind_!=ConfirmKind::Count) {
             int sx=373,sy=365;
             switch(kind_) {
             case ConfirmKind::Save: case ConfirmKind::Overwrite: case ConfirmKind::QuickSave: sy=297;break;
@@ -280,15 +292,17 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
             case ConfirmKind::ResetSettings: sy=433;break;
             case ConfirmKind::Title: sx=1;sy=433;break;
             case ConfirmKind::Quit: sx=1;sy=229;break;
+            case ConfirmKind::ReplayExit: sx=1;sy=569;break;
             default: break;
             }
-            native_blit(sx,sy,366,62,329,221);
+            // The resource resolver selects the installed translation's atlas.
+            native_blit(sx,sy,366,62,329,205);
             return;
         }
         const auto& prompt=message_.empty()?title_:message_;
         int size=30;
         while(size>12 && font.text_width(prompt,float(size))>450)--size;
-        draw_text(font,prompt,640-font.text_width(prompt,float(size))/2,292,size,0x8C164B,frame);
+        draw_text(font,prompt,640-font.text_width(prompt,float(size))/2,272,size,0x8C164B,frame);
         return;
     }
     if(dc2pc_) {

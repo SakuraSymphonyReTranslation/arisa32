@@ -55,9 +55,13 @@ public:
     void rasterize_line(const std::u16string& text, int x0, int baseline,
                         std::vector<uint8_t>* rgba, int buf_w, int buf_h,
                         float pixel_size = 0, uint32_t rgb = 0xFFFFFF,
-                        bool wide = false, uint32_t outline_rgb = 0) const;
-    int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false) const;
-    int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false) const;
+                        bool wide = false, uint32_t outline_rgb = 0,
+                        bool fixed_grid = false, int tracking = 0,
+                        float raster_size = 0) const;
+    int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false,
+                      bool fixed_grid = false, int tracking = 0) const;
+    int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false,
+                   bool fixed_grid = false, int tracking = 0) const;
 
 private:
     struct Glyph {
@@ -319,6 +323,8 @@ private:
     bool load_grp_crx(const std::string& rel, Image* out, std::string* err) const;
     void load_slot(int slot, const std::string& raw);
     void load_bst(int idx, const std::string& name, int slot);
+    bool dispatch_dc2dm_message_face(const dc4::MesCommand& command);
+    void draw_dc2dm_message_face();
     void release_dc2dm_sprite(size_t index);
     bool load_bst_expression(int idx, const std::string& name);
     void load_preload(int slot, const std::string& name);
@@ -433,6 +439,8 @@ private:
     std::map<int, Image> sheets_;          // 0x3D slot + 37, and 0x3C slot raw
     std::vector<UiChip> static_chips_;     // 0x7A blits (the bar capsule)
     std::vector<UiChip> scene_chips_;      // 0x7A blits executed by the scene
+    int scene_chip_origin_x_ = 0, scene_chip_origin_y_ = 0;
+    int scene_chip_source_x_ = 0, scene_chip_source_y_ = 0;
     UiChip pending_scene_chip_;
     bool pending_scene_blit_ = false;
     bool pending_chip_is_button_ = false;

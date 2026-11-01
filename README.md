@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-**Rilis terbaru: [v0.6.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.2)**. Rilis ini menambahkan dukungan beta D.C. II Dearest Marriage, perbaikan teks Sakuramusubi, serta perbaikan pemutaran opening dan ending. Baca [catatan rilis](docs/releases/v0.6.2/id.md) untuk rincian dan bug yang masih ada. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
+**Rilis terbaru: [v0.6.3](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.3)**. Rilis ini memperbaiki popup, teks, portrait, backlog, dan suara D.C. II Dearest Marriage, konfirmasi DC4/DC4PH, serta menambahkan penghalusan gambar dan navigasi yang bisa disembunyikan. Baca [catatan rilis](docs/releases/v0.6.3/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -40,7 +40,7 @@ Arisa32 mengenali 21 judul resmi berbasis CIRCUS adv32 dari seri Da Capo dan Dal
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
 
-Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Dukungan ini masih berstatus beta: font menu terlalu besar, warna teks beberapa popup belum sesuai, suara karakter dapat berulang, dan masih ada bug lain. Lihat [bug DC2DM yang masih diketahui](CHANGELOG.md#bug-dc2dm-yang-masih-diketahui).
+Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Versi 0.6.3 memperbaiki pratinjau teks CONFIG, popup bergambar, portrait, dan pemutaran suara berulang. Dukungan tetap berstatus beta; seluruh rute dan varian patch belum diverifikasi. Lihat [batasan DC2DM](docs/releases/v0.6.3/id.md#batasan).
 
 ### Seri Da Capo pertama
 
