@@ -78,6 +78,21 @@ void service_regressions() {
     require(vm.read_variable(3, 0) == 99, "credits service changed route variables");
 }
 
+void fresh_progress() {
+    for (uint32_t version : {0xAAB6u, 0xABB6u}) {
+        dc4::MesFile file;
+        file.version = version;
+        file.code = {0xB6, uint8_t(version >> 8), 0, 0};
+        dc4::MesVm vm(file);
+        for (uint16_t i = 100; i < 150; ++i)
+            require(vm.read_variable(100, i) == 0, "fresh game starts with completed endings");
+        vm.write_variable(100, 101, 1);
+        restore(vm, file);
+        require(vm.read_variable(100, 101) == 1 && vm.read_variable(100, 100) == 0,
+                "snapshot changed earned or locked progression");
+    }
+}
+
 std::string lower(std::string name) {
     for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
     return name;
@@ -112,9 +127,12 @@ void map_path(Scripts& scripts, const std::array<int,4>& picks, bool unlocked, b
     vm.write_variable(100, 112, unlocked ? 1 : 0);
     std::array<int,4> points{};
     size_t selections = 0;
+    std::string map_background;
     for (size_t steps = 0; steps < 100000; ++steps) {
         dc4::MesCommand command;
         if (vm.next(&command)) {
+            if(command.op==0x49 && lower(command.str).rfind("bg\\map_",0)==0)
+                map_background=lower(command.str);
             if (!vm.transferring()) continue;
             const auto next = lower(command.str);
             const auto group = std::find(groups.begin(), groups.end(), next);
@@ -132,6 +150,11 @@ void map_path(Scripts& scripts, const std::array<int,4>& picks, bool unlocked, b
         } else if (vm.waiting_for_choice()) {
             require(selections < 4 && name == maps[selections], "unexpected map choice in " + name);
             require(vm.choices().size() == (unlocked ? 4u : 3u), "wrong locked/unlocked map options");
+            const char* backgrounds[]={"bg\\map_gaku_0208c","bg\\map_sima_0209b",
+                "bg\\map_sima_0211b","bg\\map_gaku_0212c"};
+            require(map_background==std::string(backgrounds[selections])+(unlocked?"_asa":""),
+                    "map artwork exposes the wrong heroine/location markers");
+            require(!vm.choose(vm.choices().size()),"map accepted a nonexistent trigger");
             for (uint16_t i = 0; i < 4; ++i)
                 require(vm.read_variable(5, i) == points[i], "previous map awarded the wrong score");
             if (saved) restore(vm, scripts.get(name));
@@ -183,6 +206,83 @@ void heroine_branches(Scripts& scripts) {
     }
 }
 
+uint32_t flag_instruction(const dc4::MesFile& file, uint8_t opcode, uint16_t flag) {
+    dc4::MesStream stream(file);
+    dc4::MesCommand c;
+    while (stream.next(&c))
+        if (c.op == opcode && c.words[0] == 100 && c.words[1] == flag) return c.pos;
+    throw std::runtime_error("missing progression instruction");
+}
+
+void run_to_transfer(dc4::MesVm& vm) {
+    dc4::MesCommand c;
+    for (size_t step = 0; step < 100000 && vm.next(&c); ++step)
+        if (vm.transferring()) return;
+    throw std::runtime_error("ending did not transfer: " + vm.error());
+}
+
+void progression_branches(Scripts& scripts) {
+    const char* endings[] = {"dc4_nin20190503b", "dc4_sor20190504a", "dc4_hiy20190430b",
+        "dc4_sii20190507c", "dc4_miu20190331c", "dc4_tiy20190405d",
+        "dc4_asa20200406a", "dc4_asu20190506b"};
+    if(scripts.get("main").version==0xABB6)endings[6]="dc4_asa20190513c";
+    for (int last = 0; last < 8; ++last) {
+        const auto& ending = scripts.get(endings[last]);
+        dc4::MesVm vm(ending);
+        vm.seek_to_pc(flag_instruction(ending, 0x82, uint16_t(101 + last)));
+        run_to_transfer(vm);
+        for (int i = 0; i < 8; ++i)
+            require(vm.read_variable(100, uint16_t(101+i)) == int(i==last),
+                    "ending awarded an unrelated completion");
+        require(vm.read_variable(100,112)==0, "one ending unlocked Arisu's map");
+    }
+    for (int mask = 0; mask < 16; ++mask) for (int last = 0; last < 4; ++last) {
+        const auto& ending = scripts.get(endings[last]);
+        dc4::MesVm vm(ending);
+        for (int i = 0; i < 4; ++i) vm.write_variable(100,uint16_t(101+i),(mask>>i)&1);
+        vm.seek_to_pc(flag_instruction(ending,0x82,uint16_t(101+last)));
+        restore(vm,ending);
+        run_to_transfer(vm);
+        require(vm.read_variable(100,112)==int((mask|(1<<last))==15),
+                "Arisu map ignored one of the four prerequisite endings");
+        require(vm.bind(scripts.get(maps[0])),vm.error());
+        dc4::MesCommand c;while(vm.next(&c)) {}
+        require(vm.waiting_for_choice() && vm.choices().size()==((mask|(1<<last))==15?4u:3u),
+                "earned map unlock did not reach the actual choices");
+    }
+    for (const char* name : {"dc4_mid20190420e", "dc4_sor20190501a"}) {
+        const auto& file=scripts.get(name);
+        for (bool cleared : {false,true}) {
+            dc4::MesVm vm(file);
+            if(cleared)vm.write_variable(100,107,1);
+            vm.seek_to_pc(flag_instruction(file,0x86,107));
+            dc4::MesCommand c;
+            for(int steps=0;steps<10000 && vm.next(&c);++steps)
+                if(c.op==0x54)break;
+            const bool sorane=std::string(name)=="dc4_sor20190501a";
+            require(vm.waiting_for_choice()==(cleared||sorane),"Arisu completion gate bypassed");
+            require(vm.choices().size()==(cleared?2u:sorane?1u:0u),"wrong gated heroine choices");
+            if(cleared){
+                restore(vm,file);
+                const std::string label=sorane?"label02":"arisu";
+                const auto found=std::find_if(vm.choices().begin(),vm.choices().end(),[&](const auto& choice){return choice.label==label;});
+                require(found!=vm.choices().end(),"missing unlocked heroine choice");
+                require(vm.choose(size_t(found-vm.choices().begin())),vm.error());
+            }
+        }
+    }
+    const auto& ed=scripts.get("ed");
+    for (int missing=-1;missing<8;++missing) {
+        dc4::MesVm vm(ed);
+        for(int i=0;i<8;++i)vm.write_variable(100,uint16_t(101+i),int(i!=missing));
+        dc4::MesCommand c;
+        for(int steps=0;steps<10000 && vm.next(&c);++steps)if(c.op==0x13)break;
+        require(vm.error().empty() && vm.read_variable(100,100)==int(missing==-1),
+                "D.C. unlocked without all eight ending flags");
+    }
+    std::cout<<"8 ending awards, 64 Arisu map gates, Arisu/Sorane choices and 9 D.C. gates passed\n";
+}
+
 void game_regressions(const char* variable) {
     const char* data = std::getenv(variable);
     if (!data) { std::cout << variable << " unset: installed-data routes skipped\n"; return; }
@@ -200,6 +300,7 @@ void game_regressions(const char* variable) {
         }
     }
     heroine_branches(scripts);
+    progression_branches(scripts);
     std::cout << variable << ": " << paths << " map paths and 12 heroine comparisons passed\n";
 }
 }
@@ -211,6 +312,7 @@ int main() {
         catch (const std::exception& e) { std::cerr << name << ": " << e.what() << '\n'; ++failures; }
     };
     run("Service", service_regressions);
+    run("Fresh progress", fresh_progress);
     run("DC4", [] { game_regressions("DC4_DATA"); });
     run("DC4PH", [] { game_regressions("DC4PH_DATA"); });
     std::cout << (failures ? "DC4 route regressions FAILED\n" : "DC4 route regressions passed\n");

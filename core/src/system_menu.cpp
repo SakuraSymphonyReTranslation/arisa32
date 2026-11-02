@@ -324,8 +324,8 @@ struct SystemMenu::Impl {
     size_t gallery_variant = 0;
     std::mt19937 random{std::random_device{}()};
 
-    Impl() { defaults(); }
-    void defaults() {
+    Impl() { defaults(false); }
+    void defaults(bool initialize_progress = true) {
         const std::pair<int, int> defaults[] = {
             {5,1},{7,80},{8,80},{9,100},{10,1},{11,80},{12,5},{14,1},{15,1},
             {26,8},{27,8},{28,1},{29,12},{30,0},{180,1},{181,1},{190,1},{194,6},
@@ -336,7 +336,8 @@ struct SystemMenu::Impl {
         if (dc4_profile) for (int i = 0; i < 20; ++i) vars[{93,i}] = 0;
         vars[{100,49}] = 80;
         for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
-        for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
+        if (initialize_progress && !dc4_profile)
+            for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
         if (dc2dm) {
             for (const auto& value : {std::pair<int,int>{7,25},{8,25},{9,29},{11,8},{12,1}})
                 vars[{99,value.first}] = value.second;
@@ -1352,6 +1353,8 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
         const auto scene = key(name);
         return scene == "dc4_kyo20190204a1" || scene == "dc4_sen20181213b" || scene == "dc4_asu20190506c";
     });
+    if (!p_->dc4_profile)
+        for (int i = 100; i <= 119; ++i) p_->vars.try_emplace({100,i},1);
     for (const char* name : {"system/titleback02","system/titlechip01","system/configback01","system/configchip01","system/exchip"}) {
         auto* img = p_->image(name);
         if (!img || !img->valid()) {
@@ -1518,7 +1521,8 @@ Action SystemMenu::activate(const std::string& tag) {
         kind = ConfirmKind::NewGame;
         break;
     case MenuTag::DcRoute:
-        if (p_->get(100, 100)) kind = ConfirmKind::NewGame;
+        if (!p_->get(100, 100)) return {};
+        kind = ConfirmKind::NewGame;
         break;
     case MenuTag::Quit:
         kind = ConfirmKind::Quit;
@@ -1726,7 +1730,7 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
 
     case MenuTag::DcRoute:
         if (p_->get(100, 100)) return {Type::NewGame, -1, "DC4_DC99990101A", {}};
-        break;
+        return {};
 
     case MenuTag::Load:
         return {Type::Load};
@@ -2176,6 +2180,12 @@ void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) cons
         scene.set_variable(99,20,p_->get(99,20));
     }
 }
+void SystemMenu::restore_scene_progress(dc4scene::SceneRunner& scene) const {
+    if (!p_->dc4_profile) return;
+    // Route completions are global; loading an older slot must not roll them back.
+    for (int i = 100; i < 150; ++i)
+        scene.set_variable(100,uint16_t(i),p_->get(100,i));
+}
 bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     const std::string temporary=path+".tmp";
     std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
@@ -2334,7 +2344,12 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     while(std::getline(in,line)) {
         if(++lines>120000||line.size()>4096){if(error)*error="Emulator profile exceeds limits";return false;}
         std::istringstream row(line);char type=0;row>>type;
-        if(type=='v'){int b,i,value;if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}vars[{b,i}]=p_->dc2pc&&b==100&&i<23?std::max(vars[{b,i}],value):value;}
+        if(type=='v'){
+            int b,i,value;
+            if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}
+            const bool progress=b==100 && ((p_->dc2pc && i<23) || (p_->dc4_profile && i>=100 && i<150));
+            vars[{b,i}]=progress?std::max(vars[{b,i}],value):value;
+        }
         else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
         else if(type=='p'){int id;if(!(row>>id)||id<0||id>1000){if(error)*error="Invalid playlist entry";return false;}playlist.insert(id);}
         else if(type){if(error)*error="Unknown profile record";return false;}
@@ -2343,7 +2358,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         if (vars.find({94, i}) == vars.end()) vars[{94, i}] = 100;
         if (vars.find({95, i}) == vars.end() || vars[{95, i}] == 0) vars[{95, i}] = 1;
     }
-    for (int i = 100; !p_->dc2pc && i <= 119; ++i) {
+    for (int i = 100; !p_->dc2pc && !p_->dc4_profile && i <= 119; ++i) {
         if (vars.find({100, i}) == vars.end() || vars[{100, i}] == 0) vars[{100, i}] = 1;
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);

@@ -422,7 +422,7 @@ void assets(const std::string& data){
     CHECK(m.activate("defaultparts").type==Type::None);CHECK(m.confirming());shot("confirm-reset");
     CHECK(m.config().text_speed==7);CHECK(m.back().type==Type::None);CHECK(m.config().text_speed==7);
     m.activate("defaultparts");CHECK(m.answer_confirmation(true).type==Type::SettingsChanged);CHECK(m.config().text_speed==8);
-    m.set_variable(100,109,0); // Reset Settings above restores this feature's default to enabled.
+    m.set_variable(100,109,0);
     m.open(Page::Extras);CHECK(has(m,"cgmode"));CHECK(has(m,"scemode"));CHECK(!has(m,"musmode"));
     m.set_variable(100,109,1);CHECK(has(m,"musmode"));shot("extras");
     click(m,"cgmode");CHECK(m.page()==Page::Gallery);CHECK(!has(m,"cg0"));shot("gallery-locked");
@@ -443,16 +443,116 @@ void assets(const std::string& data){
     m.scroll(36);CHECK(m.error().empty());shot("music-last-page");
     m.activate("selmovie");shot("movies");CHECK(m.activate("movie01").type==Type::None);CHECK(m.confirming());shot("confirm-movie");CHECK(m.answer_confirmation(true).asset=="DC4_OP1.MPG");
 }
+void progression(const std::string& data,const std::filesystem::path& scratch){
+    std::filesystem::create_directories(scratch);
+    Menu menu;std::string error;CHECK(menu.load(data,&error));
+    CHECK(!has(menu,"dc"));CHECK(menu.activate("dc").type==Type::None);CHECK(!menu.confirming());
+    for(int i=100;i<150;++i)CHECK(menu.variable(100,i)==0);
+    const auto end_y=[&](){for(const auto& c:menu.controls())if(c.tag=="end")return c.y;return -1;};
+    CHECK(end_y()==536);
+    dc4scene::FontRenderer font;std::vector<uint8_t> locked,unlocked;
+    menu.draw(-1,-1,false,font,&locked);
+    const auto path=(scratch/"profile.dat").string();
+    for(bool complete:{false,true}){
+        for(int i=100;i<150;++i)menu.set_variable(100,i,complete?1:0);
+        CHECK(menu.save_profile(path,&error));
+        Menu restored;CHECK(restored.load(data,&error));CHECK(restored.load_profile(path,&error));
+        CHECK(has(restored,"dc")==complete);
+        dc4scene::SceneRunner scene(data);CHECK(scene.load_script(data+"/MES/main.mes"));
+        restored.initialize_scene(scene,false);
+        CHECK(scene.variable(100,100)==int(complete));CHECK(scene.variable(100,112)==int(complete));
+        CHECK(!restored.sync_progress(scene));
+        scene.set_variable(5,2,7);scene.set_variable(100,112,complete?0:1);
+        std::vector<uint8_t> old_slot;CHECK(scene.capture_state(&old_slot));
+        CHECK(scene.restore_state(old_slot));restored.restore_scene_progress(scene);
+        CHECK(scene.variable(100,112)==int(complete));CHECK(scene.variable(5,2)==7);
+        CHECK(!restored.sync_progress(scene));CHECK(restored.variable(100,112)==int(complete));
+        restored.open(Page::Config);restored.set_variable(93,19,1);
+        restored.activate("defaultparts");if(restored.confirming())restored.answer_confirmation(true);
+        for(int i=100;i<150;++i)CHECK(restored.variable(100,i)==int(complete));
+        restored.open(Page::Title);CHECK(has(restored,"dc")==complete);
+    }
+    menu.open(Page::Title);CHECK(end_y()==592);CHECK(has(menu,"dc"));
+    menu.draw(-1,-1,false,font,&unlocked);CHECK(locked!=unlocked);
+    CHECK(click(menu,"dc").asset=="DC4_DC99990101A");
+    if(const char* capture=std::getenv("DC4_MENU_CAPTURES")){
+        std::filesystem::create_directories(capture);
+        bmp(std::filesystem::path(capture)/"title-locked.bmp",locked);
+        bmp(std::filesystem::path(capture)/"title-complete.bmp",unlocked);
+    }
+    for(bool complete:{false,true}){
+        std::vector<uint8_t> native(0x4B80);
+        for(int i=100;i<150;++i)native[0xD8+i]=complete?1:0;
+        write_bytes(scratch/"system.dat",native);
+        Menu imported;CHECK(imported.load(data,&error));
+        CHECK(imported.load_system_dat((scratch/"system.dat").string(),&error));
+        CHECK(has(imported,"dc")==complete);CHECK(imported.variable(100,112)==int(complete));
+        {std::ofstream old(path,std::ios::binary);old<<"DC4ENGINE_PROFILE 1\nv 100 100 0\nv 100 112 0\n";}
+        CHECK(imported.load_profile(path,&error));
+        CHECK(has(imported,"dc")==complete);CHECK(imported.variable(100,112)==int(complete));
+        CHECK(imported.save_profile(path,&error));
+        Menu restarted;CHECK(restarted.load(data,&error));CHECK(restarted.load_profile(path,&error));
+        CHECK(has(restarted,"dc")==complete);
+    }
+    Menu partial;CHECK(partial.load(data,&error));
+    dc4scene::SceneRunner story(data);CHECK(story.load_script(data+"/MES/main.mes"));
+    partial.initialize_scene(story,false);
+    story.set_variable(100,101,1);CHECK(partial.sync_progress(story));
+    CHECK(partial.save_profile(path,&error));
+    Menu resumed;CHECK(resumed.load(data,&error));CHECK(resumed.load_profile(path,&error));
+    CHECK(resumed.variable(100,101)==1);CHECK(resumed.variable(100,102)==0);CHECK(!has(resumed,"dc"));
+    story.set_variable(100,101,0);resumed.restore_scene_progress(story);
+    CHECK(story.variable(100,101)==1);CHECK(story.variable(100,112)==0);
+    std::cout<<"Fresh/completed progression, profile restart, settings reset and PC import checked: "<<data<<'\n';
+}
+void map_progression(const std::string& data){
+    const char* maps[]={"dc4_kyo20190208c1_m0","dc4_kyo20190209b_m0",
+        "dc4_kyo20190211b_m0","dc4_kyo20190212c_m0"};
+    dc4scene::FontRenderer font;
+#ifdef _WIN32
+    font.load("C:/Windows/Fonts/msgothic.ttc",0,22);
+#endif
+    for(int map=0;map<4;++map)for(bool unlocked:{false,true}){
+        dc4scene::SceneRunner scene(data);scene.set_font(&font);scene.set_animation_enabled(false);
+        CHECK(scene.load_sheets(data+"/MES/start.mes"));
+        CHECK(scene.load_script(data+"/MES/"+maps[map]+".mes"));
+        scene.set_variable(100,112,unlocked?1:0);
+        for(int steps=0;steps<1000 && !scene.waiting_for_choice() && !scene.scene_ended();++steps){
+            scene.advance_to_next_text();
+            if(scene.waiting_for_time())scene.finish_script_wait();
+            if(!scene.pending_movie().empty())scene.finish_movie();
+        }
+        CHECK(scene.last_error().empty());CHECK(scene.waiting_for_choice());
+        CHECK(scene.choices().size()==(unlocked?4u:3u));
+        std::set<int> targets;
+        for(int y=0;y<720;++y)for(int x:{0,640,1279}){
+            const int choice=scene.choice_at(x,y);
+            CHECK(choice<0 || size_t(choice)<scene.choices().size());
+            if(choice>=0)targets.insert(choice);
+        }
+        CHECK(targets.size()==scene.choices().size());
+        scene.draw(-1);
+        if(const char* capture=std::getenv("DC4_MENU_CAPTURES")){
+            std::filesystem::create_directories(capture);
+            bmp(std::filesystem::path(capture)/("map"+std::to_string(map)+(unlocked?"-unlocked.bmp":"-locked.bmp")),scene.frame());
+        }
+    }
+    std::cout<<"Four map screens: locked/unlocked choices and touch targets checked: "<<data<<'\n';
+}
 }
 int main(int argc,char** argv){
     profile();
     const auto parent=std::filesystem::canonical(std::filesystem::temp_directory_path());
     const auto scratch=parent/("arisa32-replay-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     replay_policy_fixtures(scratch);
+    if(argc==1)for(const char* variable:{"DC4_DATA","DC4PH_DATA"})
+        if(const char* data=std::getenv(variable))progression(data,scratch/variable);
     const char* installed=argc>1?argv[1]:std::getenv("DC4_TEST_DATA");
     if(installed){
         const std::string mode=argc>2?argv[2]:"";
-        if(mode=="--confirmations") confirmations(installed,scratch/"confirmations");
+        if(mode=="--map-progression") map_progression(installed);
+        else if(mode=="--progression") progression(installed,scratch/"progression");
+        else if(mode=="--confirmations") confirmations(installed,scratch/"confirmations");
         else {
             if(mode!="--movie-modal")replay_policy_assets(installed,scratch/"installed");
             if(mode!="--replay-policy")movie_modal_assets(installed);

@@ -252,6 +252,37 @@ public final class Arisa32Activity {
         } finally { dc4Quit(); }
     }
 
+    private void verifyLockedProgress(File root, int version, boolean saved) throws Exception {
+        ByteArrayOutputStream main = script(version);
+        text(main,"BEFORE_GATE",version);
+        for (int flag : new int[]{100,107,112}) {
+            words(main,0x86,100,flag,0,1);
+            main.write(new byte[]{2,1,0});
+            text(main,"INCORRECTLY_UNLOCKED",version);
+            main.write(new byte[]{0x20,1,1});
+        }
+        text(main,"LOCKED",version);main.write(0);
+        write(new File(root,"MES/main.mes"),main.toByteArray());
+        write(new File(root,"MES/DC4_KYO20190204A1.MES"),main.toByteArray());
+        File saves = new File(root,"saves");saves.mkdirs();
+        dc4Configure(saves.getAbsolutePath(),"","windows-31j","","en");
+        check(dc4Init(root.getAbsolutePath()),"progress fixture initialization");
+        try {
+            check("BEFORE_GATE".equals(dc4CurrentLine()),"before progression gate");
+            if(saved) {
+                File slot = new File(saves,"progress.dc4sav");
+                check(dc4Save(slot.getAbsolutePath()).isEmpty(),"save before progression gate");
+                dc4Quit();
+                dc4Configure(saves.getAbsolutePath(),"","windows-31j","","en");
+                check(dc4Init(root.getAbsolutePath()),"progress restart");
+                check(dc4Load(slot.getAbsolutePath()).isEmpty(),"load before progression gate");
+            }
+            for(int step=0;step<4 && "BEFORE_GATE".equals(dc4CurrentLine());++step)dc4Advance();
+            check("LOCKED".equals(dc4CurrentLine()),"fresh/restored progress unlocked: "+dc4CurrentLine());
+            System.out.println("PASS locked progression version="+Integer.toHexString(version)+" save/restart="+saved);
+        } finally { dc4Quit(); }
+    }
+
     public static void main(String[] args) {
         try { run(args); }
         catch (Throwable error) {
@@ -284,5 +315,8 @@ public final class Arisa32Activity {
             host.verifyMapRoute(new File(root,"org.dc4engine/map-"+version+"-"+saved+"-"+i),
                     version,paths[i],routes[i],saved);
         System.out.println("All 24 Android JNI map route cases passed.");
+        for(int version:new int[]{0xaab6,0xabb6})for(boolean saved:new boolean[]{false,true})
+            host.verifyLockedProgress(new File(root,"org.dc4engine/progress-"+version+"-"+saved),version,saved);
+        System.out.println("All 4 Android JNI locked progression cases passed.");
     }
 }

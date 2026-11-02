@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.5 - 2026-11-02
+
+- Memperbaiki profil baru DC4/DC4PH yang sebelumnya dianggap sudah menamatkan rute. Pembukaan rute Arisu/Arisa, pilihan tambahan Sorane, dan menu D.C. kini mengikuti syarat skrip asli.
+- Menyembunyikan karakter, penanda lokasi, dan pilihan tambahan pada empat peta sampai syaratnya terpenuhi. Menu D.C. yang terkunci juga menolak aktivasi langsung.
+- Mempertahankan progres tamat setelah memuat save lama, mengulang dari backlog, atau mereset konfigurasi. Skor pilihan peta tetap mengikuti save yang dimuat.
+- Mempertahankan progres impor PC saat profil Android yang lebih lama dimuat. Profil 100% tetap terbuka seluruhnya.
+
+Flag profil lama yang telanjur terbuka akibat bug tidak direset otomatis karena tidak dapat dibedakan dengan progres tamat asli. Perbaikan ini khusus DC4/DC4PH; perbaikan sebelumnya tetap tersedia.
+
+Catatan rilis lengkap: [Bahasa Indonesia](docs/releases/v0.6.5/id.md) | [English](docs/releases/v0.6.5/en.md).
+
 ## 0.6.4 - 2026-11-02
 
 - Memperbaiki pemilihan kelompok rute DC4/DC4PH berdasarkan skor pilihan peta, termasuk aturan skor seri dan pemulihan dari save sebelum percabangan.

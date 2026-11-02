@@ -1,0 +1,111 @@
+# DC4 / DC4 Plus Harmony progression
+
+The emulator must start a new profile with no completed endings. The original
+MES scripts award completion flags and decide which choices and title buttons
+exist. A completed profile keeps its unlocks, including after loading an older
+save slot or resetting configuration.
+
+## Script evidence
+
+Both installed game versions use these bank 100 flags:
+
+| Flag | Authored use |
+| --- | --- |
+| 101-104 | Nino, Sorane, Hiyori and Shiina completion flags |
+| 105-106 | Miu and Chiyoko completion flags |
+| 107 | First Arisu completion; enables the additional Sorane and Arisu/Arisa choices |
+| 108 | The other Arisu/Arisa completion |
+| 112 | Map unlock, awarded when flags 101-104 are all set |
+| 100 | D.C. title entry, awarded by `ed.mes` when flags 101-108 sum to at least eight |
+
+`dc4_mid20190420e` and `dc4_sor20190501a` test flag 107 directly.
+The first Arisu completion is written in `dc4_asa20200406a` in DC4 and
+`dc4_asa20190513c` in DC4PH. Flag 108 is written in `dc4_asu20190506b`.
+These checks use opcodes and script identifiers, independent of dialogue text.
+
+The February 8, 9, 11 and 12 map scripts select the ordinary map artwork and
+three choices while flag 112 is zero. Once it is set, they select the `_ASA`
+artwork containing the extra character/location marker and offer four choices.
+Rendering and input both use that same branch of the original script.
+
+`main.mes` tests flag 100 before constructing the D.C. button. With that flag
+zero, END occupies y=536. With it set, D.C. occupies that row and END moves to
+y=592. No replacement artwork or custom title layout is needed.
+
+The supplied Seiya-Saiga URLs returned empty bodies in this environment.
+The conditions above were checked against both games' installed MES files;
+they are not presented as independently verified quotations from those guides.
+
+## Cause and fix
+
+The VM treated missing flags 100-119 as one. Menu initialization and settings
+reset also assigned ones, and profile loading replaced explicit zeros with
+ones. Android additionally forced those flags on after loading a save.
+
+DC4/DC4PH now retain zero for missing completion flags and preserve earned
+flags across settings resets. Profile and PC imports merge completion flags
+monotonically, so an older Android profile cannot overwrite newer PC progress.
+After save loading or backlog rewind, hosts apply global completion flags to
+the scene before it can copy stale slot flags back into the profile. Local map
+scores and route choices are left in the restored scene.
+
+The VM change applies to modern MES versions AAB6 and ABB6. Menu and restore
+policy use the existing DC4 scenario-catalogue identification. Other menu
+profiles keep their compatibility behavior.
+
+## Existing profiles
+
+No existing completion flag is erased. The user confirmed that their current
+profile is already 100% complete, so all its unlocked routes remain available.
+Native PC `system.dat` completion flags remain supported.
+
+Profiles previously saved with fabricated completion flags cannot be reliably
+distinguished from genuinely completed profiles. This fix does not silently
+reset those profiles or claim to reconstruct their true progress. A locked
+profile starts correctly; restoring an authoritative PC profile into a fresh
+emulator profile can recover known partial progress without altering save slots.
+
+## Regression coverage
+
+`dc4_route_test` checks fresh VM flags, each authored ending award, all 64
+combinations of the four prerequisite flags and the last ending reached,
+actual map choices, the flag-107 choices, and D.C. with every ending present
+or one missing. All 1,348 map paths also check the selected map artwork and
+reject nonexistent choice indexes.
+
+`system_menu_test --progression` checks hidden and unlocked title controls,
+native title rendering, fresh/partial/completed profiles, profile reload,
+settings reset, PC import ordering, and restoring global progress over stale
+slot state without changing map scores. The default test run includes both
+games when `DC4_DATA` and `DC4PH_DATA` are set.
+`system_menu_test --map-progression` renders each map with the flag off and on
+and checks that every touch target belongs to an available choice.
+
+The Android production-JNI probe adds fresh and save/restart progression
+checks for both MES versions. Test evidence and title captures are kept in
+the ignored `build/dc4-progression/` directory.
+
+## Validation (2026-11-02)
+
+- All 24 desktop CTest suites passed, including DC2DM regression coverage.
+- The final map-artwork assertions passed for all 1,348 paths across DC4 and
+  DC4PH. Both games passed the ending and choice prerequisites above.
+- Locked/unlocked title and all four map captures were visually inspected for
+  both games. The gated marker is absent in the locked artwork; the fourth
+  choice and its marker appear together when unlocked. Touch-target checks
+  passed for all 16 map renders.
+- The Android release build succeeded for arm64-v8a and armeabi-v7a. Its
+  production arm64 JNI library passed all four fresh/save-restart progression
+  checks, 24 map-routing cases, nine replay cases and the CP932 space check on
+  the connected Android device. These used isolated fixtures, not user saves.
+- The APK ZIP integrity and signing verification passed. The local test APK is
+  `build/dc4-progression/Arisa32-dc4-progression-test.apk`, retaining version
+  0.6.4/code 11. SHA-256:
+  `05ccd7ec9dc7f120ef5533a806d0e76a11f55299de7b4dee351a84b6cc0ec7b6`.
+
+The graphical captures use the desktop renderer with installed game assets;
+the Android checks exercise production JNI with synthetic scripts. This does
+not represent a complete heroine playthrough on the phone. Feature validation
+did not change the installed app, user saves or published v0.6.4 release.
+The subsequent v0.6.5 packages are covered by
+[release verification](release-qa-0.6.5.md).

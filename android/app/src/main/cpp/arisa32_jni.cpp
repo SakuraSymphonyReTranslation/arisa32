@@ -291,6 +291,7 @@ std::string jump_to_row(Engine* e, int row_index) {
     if (row.snapshot.empty()) return "This older history row no longer has a rewind snapshot";
     std::string error;
     if (!e->scene->restore_state(row.snapshot, &error)) return "Scene jump failed: " + error;
+    e->menu.restore_scene_progress(*e->scene);
     e->dialogue_index = row.line;
     e->log_rows.resize(size_t(row_index) + 1);
     e->log_scroll = e->log.last_scroll(e->log_rows.size());
@@ -473,6 +474,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
 }
 
 void finish_restore(Engine* e, bool prepared_audio = false) {
+    e->menu.restore_scene_progress(*e->scene);
     sync_progress(e);
     e->movie.close();
     if (!prepared_audio) {
@@ -486,9 +488,6 @@ void finish_restore(Engine* e, bool prepared_audio = false) {
     e->save_frame_visible = false;
     e->menu.initialize_scene(*e->scene, false);
     e->scene->set_variable(9, 7, 0);
-    for (uint16_t i = 100; i <= 119; ++i) {
-        e->scene->set_variable(100, i, 1);
-    }
     e->line_key.clear();
     if (e->scene->current_line().empty()) {
         advance_scene(e);

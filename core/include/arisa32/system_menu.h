@@ -77,6 +77,7 @@ public:
     void set_variable(int bank, int index, int value);
     // Seed a newly loaded story/replay before its first VM advance.
     void initialize_scene(dc4scene::SceneRunner& scene, bool replay = false) const;
+    void restore_scene_progress(dc4scene::SceneRunner& scene) const;
     // Only emulator-owned profile files may be passed here.
     bool load_profile(const std::string& path, std::string* error = nullptr);
     bool load_system_dat(const std::string& path, std::string* error = nullptr);

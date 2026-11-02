@@ -903,6 +903,7 @@ int run(const Options& o) {
         const dc4ui::LogRow row = backlog.rows[size_t(row_index)];
         if (row.snapshot.empty()) { notify("This older log row has no retained scene snapshot"); return; }
         if(!scene->restore_state(row.snapshot,&err)){notify("Scene jump failed: "+err);return;}
+        system_menu.restore_scene_progress(*scene);
         backlog.rows.erase(backlog.rows.begin() + size_t(row_index)+1, backlog.rows.end());
         backlog.scroll = backlog.max_scroll();
         dialogue_index = row.line;
@@ -947,6 +948,7 @@ int run(const Options& o) {
             }
             if (load) {
                 if (!scene->load_state(path.string())) { notify(operation + " failed: " + scene->last_error()); return; }
+                system_menu.restore_scene_progress(*scene);
                 backlog = Backlog{};
                 backlog.add(*scene, dialogue_index);
                 line_done = true;
@@ -1091,7 +1093,10 @@ int run(const Options& o) {
         case T::AutoLoad:
             play_sys_voice(8);
             open_slots(true);
-            if(scene&&scene->load_state((profile_dir/"autosave.dc4sav").string())){menu_open=slots.open=false;apply_settings();}
+            if(scene&&scene->load_state((profile_dir/"autosave.dc4sav").string())){
+                system_menu.restore_scene_progress(*scene);
+                menu_open=slots.open=false;apply_settings();
+            }
             break;
         case T::Quit:run_loop=false;break; // Already confirmed by SystemMenu.
         case T::Title:
