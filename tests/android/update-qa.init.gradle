@@ -2,6 +2,12 @@ allprojects {
     plugins.withId('com.android.application') {
         androidComponents.finalizeDsl { extension ->
             extension.defaultConfig.applicationId = 'org.dc4engine.updateqa'
+            extension.defaultConfig.versionCode = 10
+            extension.defaultConfig.versionName = '0.6.3'
+            if (providers.gradleProperty('qaUpdate').isPresent()) {
+                extension.defaultConfig.versionCode = 11
+                extension.defaultConfig.versionName = '0.6.4'
+            }
         }
     }
 }

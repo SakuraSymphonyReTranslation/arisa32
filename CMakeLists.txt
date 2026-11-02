@@ -20,6 +20,7 @@ add_library(arisa32_core STATIC
     core/src/xpcm.cpp
     core/src/bgm.cpp
     core/src/scene.cpp
+    core/src/scene_dc4_effects.cpp
     core/src/scene_state.cpp
     core/src/scene_dc2dm_ending.cpp
     core/src/log_screen.cpp
@@ -88,6 +89,9 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(dc4_effect_test tests/dc4_effect_test.cpp)
+    target_link_libraries(dc4_effect_test PRIVATE arisa32_core)
+    add_test(NAME dc4_effect_test COMMAND dc4_effect_test)
     add_executable(dc2pc_menu_transition_test tests/dc2pc_menu_transition_test.cpp)
     target_include_directories(dc2pc_menu_transition_test PRIVATE core/include)
     add_test(NAME dc2pc_menu_transition_test COMMAND dc2pc_menu_transition_test)
@@ -136,6 +140,9 @@ if(BUILD_TESTING)
     add_executable(mesvm_test tests/mesvm_test.cpp)
     target_link_libraries(mesvm_test PRIVATE dc4core)
     add_test(NAME mesvm_test COMMAND mesvm_test)
+    add_executable(dc4_route_test tests/dc4_route_test.cpp)
+    target_link_libraries(dc4_route_test PRIVATE dc4core)
+    add_test(NAME dc4_route_test COMMAND dc4_route_test)
     add_executable(audio_test tests/audio_test.cpp)
     target_link_libraries(audio_test PRIVATE dc4core)
     add_test(NAME audio_test COMMAND audio_test)

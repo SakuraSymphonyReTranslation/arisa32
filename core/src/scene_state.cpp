@@ -137,7 +137,7 @@ dc4::SceneAudioSnapshot read_audio(Reader& in) {
 bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* capture_error) {
     try {
         if (!bytes) throw std::runtime_error("missing snapshot destination");
-        if (!pending_movie_.empty() || script_wait_pending_)
+        if (!pending_movie_.empty() || script_wait_pending_ || !screen_effect_.empty())
             throw std::runtime_error("wait for the current movie or timed sequence to finish before saving");
         dc4::MesVmSnapshot snapshot;
         std::string error;
@@ -173,11 +173,27 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.u32(uint32_t(item.stamp));
             out.str(item.text);
         }
-        if (dc2dm_ending_reference_valid_) out.number(dc2dm_ending_reference_elapsed_ms_);
+        const bool save_effects = is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
+            (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || sheets_.count(28));
+        if (!save_effects && dc2dm_ending_reference_valid_) out.number(dc2dm_ending_reference_elapsed_ms_);
+        if (save_effects) {
+            for (const auto* image : {&mask_, &screen_effect_atlas_, &sakura_sheet_}) out.str(image->name);
+            const auto pending = sheets_.find(28);
+            out.str(pending == sheets_.end() ? "" : pending->second.name);
+            out.u32(effect_random_state_);
+            out.flag(sakura_.active); out.u32(sakura_.type); out.u32(sakura_.parameter);
+            out.number(sakura_.tick_remainder);
+            out.u32(uint32_t(sakura_.particles.size()));
+            for (const auto& p : sakura_.particles) {
+                out.number(p.x); out.number(p.y); out.number(p.vy); out.number(p.scale);
+                out.number(p.phase); out.number(p.amplitude);
+                out.u32(p.row); out.u32(p.cell); out.u32(p.cell_ticks); out.u32(p.alpha);
+            }
+        }
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(save_effects ? 7 : dc2dm_ending_reference_valid_ ? 6 : 5);
         header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
@@ -720,7 +736,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 6)
+        if (version < 1 || version > 7)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -735,8 +751,10 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         const int transition = in.integer(); const double camera_scale = in.number();
         const double camera_x = version == 1 ? in.integer() : in.number();
         const double camera_y = version == 1 ? in.integer() : in.number();
+        const double max_x = is_dc4_or_dc4ph_ ? 1279 : 1151;
+        const double max_y = is_dc4_or_dc4ph_ ? 719 : 647;
         if (transition < 0 || transition > 255 || camera_scale < 1 || camera_scale > 655.35 ||
-            camera_x < -127 || camera_x > 1151 || camera_y < -71 || camera_y > 647)
+            camera_x < -127 || camera_x > max_x || camera_y < -71 || camera_y > max_y)
             throw std::runtime_error("invalid saved camera or transition");
         // Rehydrate and validate in an independent runner. A broken save never
         // destroys the currently running scene, its VM, or its resource state.
@@ -857,10 +875,54 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             restored_comu_visible = comu_visible;
             restored_comu = std::move(restored);
         }
-        const double ending_reference_elapsed = version >= 6 ? in.number() : 0;
-        if (version >= 6 && (candidate.mes_.dialect != dc4::MesDialect::ClassicDM ||
+        const double ending_reference_elapsed = version == 6 ? in.number() : 0;
+        if (version == 6 && (candidate.mes_.dialect != dc4::MesDialect::ClassicDM ||
             ending_reference_elapsed < 0 || ending_reference_elapsed > 500000))
             throw std::runtime_error("invalid saved ending timer");
+        if (version == 7) {
+            if (!is_dc4_or_dc4ph_ || (candidate.mes_.version != 0xAAB6 && candidate.mes_.version != 0xABB6))
+                throw std::runtime_error("saved effects require the DC4 profile");
+            for (auto* image : {&candidate.mask_, &candidate.screen_effect_atlas_, &candidate.sakura_sheet_}) {
+                const auto name = in.str(255);
+                if (name.empty()) continue;
+                if (!resource_name(name) || !candidate.load_grp_crx(name, image, &error))
+                    throw std::runtime_error("saved effect asset is unavailable: " + name);
+                image->name = name;
+            }
+            const auto pending = in.str(255);
+            if (!pending.empty()) {
+                Image sheet;
+                if (!resource_name(pending) || !candidate.load_grp_crx(pending, &sheet, &error))
+                    throw std::runtime_error("saved effect sheet is unavailable: " + pending);
+                sheet.name = pending; candidate.sheets_[28] = std::move(sheet);
+            }
+            candidate.effect_random_state_ = in.u32();
+            auto& sakura = candidate.sakura_;
+            sakura.active = in.flag(); sakura.type = in.integer(); sakura.parameter = in.integer();
+            sakura.tick_remainder = in.number();
+            const auto count = in.count(100);
+            constexpr int counts[] = {0, 1, 3, 6, 9, 12, 20};
+            if (sakura.parameter < 0 || sakura.parameter > 255 ||
+                sakura.tick_remainder < 0 || sakura.tick_remainder >= 1000 ||
+                (sakura.active && ((sakura.type != 1 && sakura.type != 9) || !candidate.sakura_sheet_.valid() ||
+                    count != 5 * counts[std::min(sakura.parameter % 10, 6)])) ||
+                (!sakura.active && count != 0)) throw std::runtime_error("invalid saved sakura emitter");
+            for (uint32_t i = 0; i < count; ++i) {
+                SakuraParticle p;
+                p.x = float(in.number()); p.y = float(in.number()); p.vy = float(in.number()); p.scale = float(in.number());
+                p.phase = float(in.number()); p.amplitude = float(in.number());
+                p.row = in.integer(); p.cell = in.integer(); p.cell_ticks = in.integer();
+                const auto alpha = in.count(255); p.alpha = uint8_t(alpha);
+                constexpr int frames[] = {7, 7, 6, 8, 5, 8};
+                if (p.x < -40000 || p.x > 40000 || p.y < -720 || p.y >= 720 ||
+                    p.vy < 1 || p.vy > 8 || p.scale < .6f || p.scale > 1 ||
+                    p.phase < 0 || p.phase > 10000 || p.amplitude < 28 || p.amplitude > 59 ||
+                    p.row < 0 || p.row > 5 || p.cell < 0 || p.cell >= frames[p.row] ||
+                    p.cell_ticks < 0 || p.cell_ticks > 18)
+                    throw std::runtime_error("invalid saved sakura particle");
+                sakura.particles.push_back(p);
+            }
+        }
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
         if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
         comu_visible_ = restored_comu_visible;
@@ -876,7 +938,11 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (!animation_enabled_) finish_animations();
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
         reset_restore_transients();
-        dc2dm_ending_reference_valid_ = version >= 6;
+        mask_ = std::move(candidate.mask_); screen_effect_atlas_ = std::move(candidate.screen_effect_atlas_);
+        sakura_ = std::move(candidate.sakura_); sakura_sheet_ = std::move(candidate.sakura_sheet_);
+        effect_random_state_ = candidate.effect_random_state_;
+        if (candidate.sheets_.count(28)) sheets_[28] = std::move(candidate.sheets_[28]);
+        dc2dm_ending_reference_valid_ = version == 6;
         dc2dm_ending_reference_elapsed_ms_ = ending_reference_elapsed;
         if (restore_error) restore_error->clear();
         return true;
@@ -897,6 +963,8 @@ void SceneRunner::reset_restore_transients() {
     dc2dm_ending_ = {};
     dc2dm_ending_reference_valid_ = false; dc2dm_ending_reference_elapsed_ms_ = 0;
     effect_pck_.clear();
+    sakura_ = {}; sakura_sheet_ = {}; sheets_.erase(28);
+    screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;
     dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();

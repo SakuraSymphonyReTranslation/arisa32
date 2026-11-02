@@ -34,6 +34,8 @@ public final class UpdateDialogChecks extends Instrumentation {
     private boolean sidebarOnly;
     private boolean graphicsOnly;
     private boolean navigationOnly;
+    private boolean installerOnly;
+    private String installMode;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
@@ -41,6 +43,8 @@ public final class UpdateDialogChecks extends Instrumentation {
         sidebarOnly = arguments != null && "true".equals(arguments.getString("sidebarOnly"));
         graphicsOnly = arguments != null && "true".equals(arguments.getString("graphicsOnly"));
         navigationOnly = arguments != null && "true".equals(arguments.getString("navigationOnly"));
+        installerOnly = arguments != null && "true".equals(arguments.getString("installerOnly"));
+        installMode = arguments == null ? null : arguments.getString("installMode");
         start();
     }
 
@@ -56,6 +60,7 @@ public final class UpdateDialogChecks extends Instrumentation {
                 return;
             }
             getTargetContext().getSharedPreferences("launcher", 0).edit().putBoolean("autoCheckUpdate", false).commit();
+            if (installerOnly) UpdateInstallChecks.prepare(this);
             if (graphicsOnly || navigationOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
                     .remove(FrameFilter.PREFERENCE).putBoolean("retainSession", false)
                     .remove("pausedGame").remove("pausedLanguage").commit();
@@ -66,6 +71,12 @@ public final class UpdateDialogChecks extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (Arisa32Activity) startActivitySync(launch);
             waitForIdleSync();
+            if (installerOnly) {
+                int count = new UpdateInstallChecks(this, activity).run(installMode);
+                result.putString("stream", "In-app update checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if (navigationOnly) {
                 int count = new FloatingNavigationChecks(this, activity).run();
                 result.putString("stream", "Floating navigation checks passed: " + count + "\n");
@@ -198,14 +209,27 @@ public final class UpdateDialogChecks extends Instrumentation {
                 awaitDialog();
                 runUi(() -> dialog.getButton(button).performClick());
                 waitForIdleSync();
-                check(monitor.getHits() == 1, "Release/download action opens URL");
+                check(monitor.getHits() == (button == AlertDialog.BUTTON_NEUTRAL ? 1 : 0),
+                        "Only the explicit release link opens a URL");
+                if (button == AlertDialog.BUTTON_POSITIVE) {
+                    check(AppUpdate.get(activity).state().stage == AppUpdate.Stage.FAILED, "Missing APK stays inside Arisa32");
+                    runUi(() -> {
+                        try {
+                            Field field = Arisa32Activity.class.getDeclaredField("updateUi");
+                            field.setAccessible(true);
+                            Field window = UpdateUi.class.getDeclaredField("dialog");
+                            window.setAccessible(true);
+                            ((AlertDialog) window.get(field.get(activity))).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                        } catch (Exception e) { throw new AssertionError(e); }
+                    });
+                }
             } finally {
                 removeMonitor(monitor);
             }
         }
         Bundle progress = new Bundle();
         progress.putString("stream", scenario + " passed: touch scroll, final line, unclipped actions, Back, "
-                + "Tab across all actions, Later via Enter/Space, release/download intents\n");
+                + "Tab across all actions, Later via Enter/Space, release link and in-app update\n");
         sendStatus(0, progress);
     }
 
@@ -244,11 +268,12 @@ public final class UpdateDialogChecks extends Instrumentation {
             Field field = Arisa32Activity.class.getDeclaredField("uiLanguage");
             field.setAccessible(true);
             field.set(activity, language);
+            activity.getSharedPreferences("launcher", 0).edit().putString("uiLanguage", language).commit();
             ReleaseNotes.Content notes = ReleaseNotes.parse(markdown, "Arisa32 v0.6.3");
-            Method method = Arisa32Activity.class.getDeclaredMethod("showUpdateDialog", String.class, String.class, String.class, String.class, String.class);
+            Method method = Arisa32Activity.class.getDeclaredMethod("showUpdateDialog", String.class, String.class, String.class, AppUpdate.Asset.class, String.class);
             method.setAccessible(true);
             dialog = (AlertDialog) method.invoke(activity, "v0.6.3", notes.title, notes.body,
-                    "https://example.org/test.apk", "https://example.org/release");
+                    new AppUpdate.Asset("v0.6.4", null, 0, null), "https://example.org/release");
             dialog.getWindow().getDecorView().post(() -> dialog.getWindow().setLayout(
                     ArisaUi.dp(activity, widthDp), ViewGroup.LayoutParams.WRAP_CONTENT));
             scroll = findScroll(dialog.getWindow().getDecorView());

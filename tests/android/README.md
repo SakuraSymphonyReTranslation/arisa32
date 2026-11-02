@@ -27,7 +27,8 @@ adb shell am instrument -w org.dc4engine.updateqa.test/org.dc4engine.UpdateDialo
 
 Keep the test device unlocked. The harness opens the real Activity in its own
 application package and intercepts the storage-permission prompt and external
-download/release intents. It tests the actual v0.6.3 Indonesian and English notes
+release intents. It verifies that Update now stays inside Arisa32, including a
+release with no APK. It tests the actual v0.6.3 Indonesian and English notes
 at widths of 540dp and 380dp, with font scales of 100% and 200%. Checks include
 touch scrolling, the final line, visible actions, Back, and keyboard activation.
 Screenshots are saved under
@@ -43,6 +44,62 @@ This compares both downloaded translations with the fixtures and checks the
 missing-translation HTTP error. A notes failure must not block the update actions.
 Uninstall only `org.dc4engine.updateqa.test` and `org.dc4engine.updateqa` after QA.
 A normal build without the init script keeps the production package ID.
+
+## In-app download and installation
+
+Host-side download checks (Java 17, no network):
+
+```powershell
+javac -encoding UTF-8 -d build/update-download-check android/app/src/main/java/org/dc4engine/UpdateDownload.java tests/android/UpdateDownloadChecks.java
+java -cp build/update-download-check org.dc4engine.UpdateDownloadChecks
+```
+
+The 15 cases cover known/unknown lengths, byte progress, checksum verification,
+absolute/relative redirects, redirect loops, HTTPS downgrades, HTTP failures,
+truncation, excess bytes, incorrect metadata, oversize payloads and cancellation.
+Every failure must remove the partial file and close its connection.
+
+For device tests, prepare these APK fixtures under the QA application's
+external-files `update-fixtures/` directory:
+
+- `candidate.apk`: build with `-I ../tests/android/update-qa.init.gradle -PqaUpdate`;
+  it uses the QA package ID, version 0.6.4 / code 11, and the normal debug signer.
+- `wrong-package.apk`: a normal production-ID build; never install this fixture.
+- `wrong-signer.apk`: re-sign a copy of the candidate with a disposable test key;
+  never install this fixture.
+
+Build and install the QA application and instrumentation without `-PqaUpdate`
+after saving the candidate, so the installed test application is code 10.
+The init script pins that baseline to 0.6.3 / code 10 and the candidate to
+0.6.4 / code 11 independently of the production release version.
+Keep installation from this QA application disabled initially. Run:
+
+```powershell
+adb shell am instrument -w -e installerOnly true -e installMode stage org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+This checks package/version/signer rejection, real package staging, failed
+downloads, retry, cancellation, cleanup, EN/ID/JP progress at 100%/200% text,
+visible controls at 540dp/380dp widths, UI reattachment during download,
+the permission-settings intent, and rejection of unrelated installer callbacks.
+It leaves one complete staged session for a restart/installation check.
+Without `installMode stage`, the test also cancels that session and checks cleanup.
+
+With installation still disabled, `-e installMode recover` checks recovery
+across process restart and cancels the recovered session. Alternatively, allow
+installation through Android's settings for **the QA application only** and
+use `-e installMode cancelInstall` to resume the staged session, open the actual
+Android confirmation and cancel it. Some OEMs keep a separate permission state;
+`appops set` alone may not grant this permission.
+
+Finally, with installation allowed, `-e installMode installNew` downloads and
+installs the candidate. Replacing the package terminates the instrumentation;
+check success externally using `adb shell dumpsys package org.dc4engine.updateqa`
+(version code 11 / version name 0.6.4). Reopen QA and verify that its private
+`cache/arisa-update.apk.part` and `app-update` session entries are absent.
+Screenshots go into the QA external-files `update-install-checks/` directory.
+Delete the QA fixtures or uninstall only the QA packages when done. No public
+Downloads directory is used by the implementation.
 
 With the same isolated QA packages, run the DC2DM sidebar navigation checks:
 

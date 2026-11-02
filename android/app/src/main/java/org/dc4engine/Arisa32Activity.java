@@ -530,6 +530,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private volatile boolean autoCheckUpdate = true;
     private float currentFps = 60.0f;
     private static boolean updateCheckedThisSession = false;
+    private boolean checkingUpdate;
+    private UpdateUi updateUi;
+    private AlertDialog updateOffer;
+    private static final String ACTION_UPDATE = "org.dc4engine.CHECK_UPDATE";
     private SimpleDateFormat dateFormat;
 
     // Parsed dc4Status fields.
@@ -604,6 +608,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         ensureDefaultFont();
         preferences = getSharedPreferences("launcher", MODE_PRIVATE);
         uiLanguage = preferences.getString("uiLanguage", "en");
+        updateUi = new UpdateUi(this);
         retainSession = preferences.getBoolean("retainSession", true);
         showFps = preferences.getBoolean("showFps", true);
         textureFilter = FrameFilter.normalize(preferences.getInt(FrameFilter.PREFERENCE, FrameFilter.DEFAULT));
@@ -620,7 +625,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         frame = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         showLibrary();
-        if (autoCheckUpdate) {
+        if (ACTION_UPDATE.equals(getIntent().getAction())) {
+            getIntent().setAction(Intent.ACTION_MAIN);
+            checkForUpdates(true);
+        } else if (autoCheckUpdate) {
             checkForUpdates(false);
         }
         String resumeGame = preferences.getString("pausedGame", "");
@@ -3437,6 +3445,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (updateUi != null) updateUi.resume();
         if (navigation != null) navigation.setActive(hasWindowFocus());
         if (moviePlaying) {
             if (movieMediaPlayer != null) {
@@ -3464,6 +3473,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override protected void onPause() {
         resumed = false;
+        if (updateUi != null) updateUi.pause();
         if (navigation != null) navigation.setActive(false);
         autoMode = false;
         skipMode = false;
@@ -3496,6 +3506,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     @Override protected void onDestroy() {
+        if (updateUi != null) updateUi.destroy();
+        if (updateOffer != null) updateOffer.dismiss();
         if (navigation != null) navigation.dispose();
         stopRendering();
         stopMovie();
@@ -3542,8 +3554,16 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         return false;
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (ACTION_UPDATE.equals(intent.getAction())) checkForUpdates(true);
+    }
+
     private void checkForUpdates(boolean manual) {
+        if (updateUi != null && updateUi.showIfBusy()) return;
+        if (checkingUpdate || (updateOffer != null && updateOffer.isShowing())) return;
         if (!manual && updateCheckedThisSession) return;
+        checkingUpdate = true;
         final String notesLanguage = ReleaseNotes.language(uiLanguage);
         if (manual) {
             notifyUser(tr("Checking for updates...", "Memeriksa pembaruan...", "更新を確認中..."));
@@ -3556,29 +3576,32 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 String tagName = release.optString("tag_name", "");
                 String htmlUrl = release.optString("html_url", "https://github.com/SakuraSymphonyReTranslation/arisa32/releases");
 
-                String apkDownloadUrl = null;
+                JSONObject apkAsset = null;
                 JSONArray assets = release.optJSONArray("assets");
                 if (assets != null) {
                     for (int i = 0; i < assets.length(); i++) {
                         JSONObject asset = assets.getJSONObject(i);
                         String assetName = asset.optString("name", "");
                         if (assetName.endsWith(".apk") && !assetName.toLowerCase(Locale.US).contains("debug")) {
-                            apkDownloadUrl = asset.optString("browser_download_url", null);
+                            apkAsset = asset;
                             break;
                         }
                     }
-                    if (apkDownloadUrl == null) {
+                    if (apkAsset == null) {
                         for (int i = 0; i < assets.length(); i++) {
                             JSONObject asset = assets.getJSONObject(i);
                             String assetName = asset.optString("name", "");
                             if (assetName.endsWith(".apk")) {
-                                apkDownloadUrl = asset.optString("browser_download_url", null);
+                                apkAsset = asset;
                                 break;
                             }
                         }
                     }
                 }
-                final String finalDownloadUrl = (apkDownloadUrl != null && !apkDownloadUrl.isEmpty()) ? apkDownloadUrl : htmlUrl;
+                final AppUpdate.Asset download = new AppUpdate.Asset(tagName,
+                        apkAsset == null ? null : apkAsset.optString("browser_download_url", null),
+                        apkAsset == null ? 0 : apkAsset.optLong("size", 0),
+                        apkAsset == null || apkAsset.isNull("digest") ? null : apkAsset.optString("digest", null));
 
                 boolean isNewer = isVersionNewer(tagName, BuildConfig.VERSION_NAME);
                 ReleaseNotes.Content fetchedNotes = null;
@@ -3593,6 +3616,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 final ReleaseNotes.Content notes = fetchedNotes;
 
                 runOnUiThread(() -> {
+                    checkingUpdate = false;
                     if (destroyed || isFinishing()) return;
                     if (!notesLanguage.equals(ReleaseNotes.language(uiLanguage))) {
                         checkForUpdates(manual);
@@ -3610,8 +3634,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                                    "Pembaruan baru tersedia: " + tagName,
                                    "新しいアップデートがあります: " + tagName),
                                 Toast.LENGTH_LONG).show();
-                        showSystemNotification(tagName, releaseName, body, finalDownloadUrl);
-                        showUpdateDialog(tagName, releaseName, body, finalDownloadUrl, htmlUrl);
+                        showSystemNotification(tagName, releaseName, body);
+                        if (!updateUi.showIfBusy()) showUpdateDialog(tagName, releaseName, body, download, htmlUrl);
                     } else if (manual) {
                         notifyUser(tr("Arisa32 is up to date (v" + BuildConfig.VERSION_NAME + ").",
                                 "Arisa32 sudah versi terbaru (v" + BuildConfig.VERSION_NAME + ").",
@@ -3620,11 +3644,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 });
             } catch (Exception e) {
                 Log.e(TAG, "check update failed", e);
-                if (manual) {
-                    runOnUiThread(() -> notifyUser(tr("Update check error: " + e.getMessage(),
+                runOnUiThread(() -> {
+                    checkingUpdate = false;
+                    if (manual && !destroyed && !isFinishing()) notifyUser(tr("Update check error: " + e.getMessage(),
                             "Gagal cek pembaruan: " + e.getMessage(),
-                            "更新確認エラー: " + e.getMessage())));
-                }
+                            "更新確認エラー: " + e.getMessage()));
+                });
             }
         }, "Arisa32-Updates").start();
     }
@@ -3649,7 +3674,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
     }
 
-    private AlertDialog showUpdateDialog(String tag, String name, String body, String downloadUrl, String releaseUrl) {
+    private AlertDialog showUpdateDialog(String tag, String name, String body, AppUpdate.Asset download, String releaseUrl) {
+        if (updateOffer != null) updateOffer.dismiss();
         LinearLayout content = ArisaUi.column(this);
         content.setPadding(dp(20), dp(4), dp(20), dp(12));
         content.addView(ArisaUi.badge(this, tag));
@@ -3671,18 +3697,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         scroll.setScrollbarFadingEnabled(false);
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
 
-        return dialog().setTitle(tr("New Version Available", "Versi Baru Tersedia", "新しいバージョンが利用可能です"))
+        updateOffer = dialog().setTitle(tr("New Version Available", "Versi Baru Tersedia", "新しいバージョンが利用可能です"))
                 .setView(scroll)
-                .setPositiveButton(tr("Download APK", "Unduh APK", "APKをダウンロード"), (d, w) -> {
-                    try {
-                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl));
-                        startActivity(intent);
-                    } catch (Exception e) {
-                        try {
-                            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)));
-                        } catch (Exception ignored) {}
-                    }
-                })
+                .setPositiveButton(tr("Update now", "Perbarui", "更新する"), (d, w) -> updateUi.start(download))
                 .setNeutralButton(tr("View Release", "Lihat Rilis", "リリースを見る"), (d, w) -> {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)));
@@ -3690,10 +3707,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 })
                 .setNegativeButton(tr("Later", "Nanti", "後で"), null)
                 .show();
+        return updateOffer;
     }
 
 
-    private void showSystemNotification(String tag, String name, String body, String downloadUrl) {
+    private void showSystemNotification(String tag, String name, String body) {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
@@ -3707,7 +3725,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 channel.setDescription("Notifications for new Arisa32 releases");
                 nm.createNotificationChannel(channel);
             }
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl));
+            Intent intent = new Intent(this, Arisa32Activity.class).setAction(ACTION_UPDATE)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             PendingIntent pi = PendingIntent.getActivity(
                 this, 0, intent,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0

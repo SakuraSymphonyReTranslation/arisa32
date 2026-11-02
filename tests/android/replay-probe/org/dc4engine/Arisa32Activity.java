@@ -15,6 +15,7 @@ public final class Arisa32Activity {
     private native String dc4Touch(int action, int x, int y);
     private native String dc4CurrentLine();
     private native String dc4Status();
+    private native boolean dc4Advance();
     private native boolean dc4SaveLoadAllowed();
     private native String dc4Save(String path);
     private native String dc4Load(String path);
@@ -178,6 +179,79 @@ public final class Arisa32Activity {
         } finally { dc4Quit(); }
     }
 
+    private static void string(ByteArrayOutputStream out, int op, String value) throws Exception {
+        out.write(op); out.write(value.getBytes("US-ASCII")); out.write(0);
+    }
+
+    private static void words(ByteArrayOutputStream out, int op, int a, int b, int c, int d) {
+        out.write(op); word(out,a); word(out,b); word(out,c); word(out,d);
+    }
+
+    private void verifyMapRoute(File root, int version, int[] picks, int expected, boolean saved) throws Exception {
+        ByteArrayOutputStream main = script(version);
+        for (int i=0;i<4;++i) words(main,0x82,5,i,0,0);
+        for (int map=0;map<4;++map) {
+            text(main,"MAP"+map,version);
+            main.write(new byte[]{9,1,0});
+            for (int i=0;i<4;++i) {
+                string(main,0x5c,"map"+map+"pick"+i);
+                main.write(0x6c);
+                for (char c : ("Option"+i).toCharArray()) main.write(c-0x20);
+                main.write(0);
+            }
+            main.write(new byte[]{10,0,0});
+            for (int i=0;i<4;++i) {
+                string(main,0x4b,"map"+map+"pick"+i);
+                words(main,0x82,5,i,1,1);
+                string(main,0x54,"map"+map+"end");
+            }
+            string(main,0x4b,"map"+map+"end");
+        }
+        text(main,"BEFORE_ROUTE",version);
+        main.write(new byte[]{0x1e,2,0});
+        for (int i=0;i<4;++i) {
+            words(main,0x86,3,0,i,0);
+            main.write(new byte[]{2,1,0});
+            string(main,0x4f,"route"+i);
+            main.write(new byte[]{0x20,1,1});
+            ByteArrayOutputStream route = script(version);
+            text(route,"ROUTE"+i,version); route.write(0);
+            write(new File(root,"MES/route"+i+".mes"),route.toByteArray());
+        }
+        main.write(0);
+        write(new File(root,"MES/main.mes"),main.toByteArray());
+        write(new File(root,"MES/DC4_KYO20190204A1.MES"),main.toByteArray());
+        File saves = new File(root,"saves"); saves.mkdirs();
+        dc4Configure(saves.getAbsolutePath(),"","windows-31j","","en");
+        check(dc4Init(root.getAbsolutePath()),"map fixture initialization");
+        try {
+            for (int map=0;map<4;++map) {
+                check(("MAP"+map).equals(dc4CurrentLine()),"map dialogue "+dc4CurrentLine());
+                for (int step=0;step<4 && !dc4Status().split(";")[1].equals("1");++step) dc4Advance();
+                check(dc4Status().split(";")[1].equals("1"),"map did not show choices");
+                if (saved) {
+                    File slot = new File(saves,"map.dc4sav");
+                    check(dc4Save(slot.getAbsolutePath()).isEmpty(),"save at map "+map);
+                    // Restart the native host so no live route variables can survive the load.
+                    dc4Quit();
+                    dc4Configure(saves.getAbsolutePath(),"","windows-31j","","en");
+                    check(dc4Init(root.getAbsolutePath()),"restart before map load");
+                    check(dc4Load(slot.getAbsolutePath()).isEmpty(),"load at map "+map);
+                    check(dc4Status().split(";")[1].equals("1"),"load lost map choices");
+                }
+                int area = dc4Status().split(";")[5].equals("1") ? 480 : 720;
+                int y = (area-4*74)/2 + picks[map]*74 + 34;
+                check(dc4Touch(0,640,y).isEmpty(),"map touch down");
+                check(dc4Touch(1,640,y).isEmpty(),"map touch up");
+            }
+            check("BEFORE_ROUTE".equals(dc4CurrentLine()),"four map choices did not finish");
+            for (int step=0;step<4 && !dc4CurrentLine().startsWith("ROUTE");++step) dc4Advance();
+            check(("ROUTE"+expected).equals(dc4CurrentLine()),"wrong route: "+dc4CurrentLine());
+            System.out.println("PASS map route version="+Integer.toHexString(version)+" picks="+Arrays.toString(picks)
+                    +" route="+expected+" save/restart="+saved);
+        } finally { dc4Quit(); }
+    }
+
     public static void main(String[] args) {
         try { run(args); }
         catch (Throwable error) {
@@ -202,5 +276,13 @@ public final class Arisa32Activity {
             host.verify(new File(root,"org.dc4engine/dc2dm-"+replay),0x9d72,false,replay);
         System.out.println("All 9 Android JNI replay cases passed.");
         host.verifyTranslationSpaces(new File(root,"org.dc4engine/cp932-spaces"));
+        int[][] paths = {{0,0,0,0},{1,1,1,1},{2,2,2,2},{3,3,3,3},{3,2,2,3},{1,0,1,0}};
+        int[] routes = {0,1,2,3,2,0};
+        for (int version : new int[]{0xaab6,0xabb6})
+        for (boolean saved : new boolean[]{false,true})
+        for (int i=0;i<paths.length;++i)
+            host.verifyMapRoute(new File(root,"org.dc4engine/map-"+version+"-"+saved+"-"+i),
+                    version,paths[i],routes[i],saved);
+        System.out.println("All 24 Android JNI map route cases passed.");
     }
 }

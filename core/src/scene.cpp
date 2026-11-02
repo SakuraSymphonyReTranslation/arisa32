@@ -475,6 +475,7 @@ void SceneRunner::set_window_opacity(int percent) { window_opacity_ = std::clamp
 void SceneRunner::set_effects_enabled(bool enabled) {
     effects_enabled_ = enabled;
     if (!enabled) finish_animations();
+    scene_dirty_ = true;
 }
 void SceneRunner::set_effect_speed(int native_0_to_11) { effect_speed_ = std::clamp(native_0_to_11, 0, 11); }
 
@@ -493,6 +494,9 @@ bool SceneRunner::load_grp_crx(const std::string& rel, Image* out,
         full /= resolved.empty() ? part : std::filesystem::path(resolved);
     }
     if (!read_file(full.string(), &buf)) {
+        if (normalized.size() < 4 || normalized.substr(normalized.size() - 4) != ".crx") {
+            return load_grp_crx(rel + ".crx", out, err);
+        }
         if (err) *err = "open " + rel;
         return false;
     }
@@ -516,6 +520,10 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     }
     if (!vm_.bind(mes_)) { last_error_ = vm_.error(); return false; }
     if (!entry_label.empty() && !vm_.jump(entry_label)) { last_error_ = vm_.error(); return false; }
+    if (mes_.version != 0xAAB6 && mes_.version != 0xABB6) {
+        sakura_ = {}; sakura_sheet_ = {};
+        screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
+    }
 
     finish_dc2pc_transition();
     if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id != dc4::MesProfileId::DC2PC) {
@@ -584,6 +592,13 @@ void SceneRunner::finish_script_wait() {
     if (!script_wait_pending_ || !script_wait_skippable_) return;
     if (dc2dm_ending_.active) finish_dc2dm_ending(true);
     if (dc2pc_transition_active_) finish_dc2pc_transition();
+    if (transition_active_) {
+        transition_active_ = false;
+        transition_elapsed_ms_ = transition_duration_ms_ = 0;
+        transition_snap_.clear();
+        transition_snap_.shrink_to_fit();
+    }
+    screen_effect_.clear();
     if (!input_skip_label_.empty()) {
         if (!vm_.jump(input_skip_label_)) last_error_ = vm_.error();
     }
@@ -608,6 +623,8 @@ bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
             {Opcode::WAIT, Opcode::SYSTEM_SERVICE, Opcode::WAIT_INPUT, Opcode::WAIT_INPUT_ALT});
         register_group(CmdKind::Param2, &SceneRunner::dispatch_layer_command,
                        {Opcode::TRANSITION, Opcode::COMMIT_TRANSITION, Opcode::RESET_TRANSITION});
+        register_group(CmdKind::Param2, &SceneRunner::dispatch_dc4_effect_command,
+                       {Opcode::EFFECT_SETUP, Opcode::SCREEN_EFFECT});
         register_group(CmdKind::ParamStr, &SceneRunner::dispatch_layer_command,
                        {Opcode::LOAD_SLOT, Opcode::LEGACY_LOAD_SLOT, Opcode::LOAD_SHEET});
         register_group(CmdKind::Param2, &SceneRunner::dispatch_ui_chip_command,
@@ -723,21 +740,13 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
     if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT && animation_enabled_) {
         // MesVM+0x7D8 = 200*p1 milliseconds; p2 enables input checking.
         if (c.p1 == 254) {
-            if (effect_pck_.active) {
-                double rem = effect_pck_.duration_ms - effect_pck_.elapsed_ms;
-                if (rem > 0) {
-                    script_wait_ms_ = rem;
-                    script_wait_pending_ = true;
-                    return true;
-                }
-            }
-            if (transition_active_) {
-                double rem = transition_duration_ms_ - transition_elapsed_ms_;
-                if (rem > 0) {
-                    script_wait_ms_ = rem;
-                    script_wait_pending_ = true;
-                    return true;
-                }
+            const double remaining = std::max({screen_effect_remaining_ms(),
+                effect_pck_.active ? effect_pck_.duration_ms - effect_pck_.elapsed_ms : 0.0,
+                transition_active_ ? transition_duration_ms_ - transition_elapsed_ms_ : 0.0});
+            if (remaining > 0) {
+                script_wait_ms_ = remaining;
+                script_wait_pending_ = true;
+                return true;
             }
             return true; // effect/audio wait is already host-driven
         }
@@ -939,6 +948,8 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    const bool modern_dc4 = is_dc4_or_dc4ph_ && !c.dc2dm && !c.dc2pc &&
+        (mes_.version == 0xAAB6 || mes_.version == 0xABB6);
     if (c.dc2dm && c.kind == K::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
         load_sheet(c.p1 + 21, c.str);
         return true;
@@ -948,15 +959,16 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
             start_dc2pc_transition(c.p1);
             return true;
         }
-        if (c.p1 == 0 && c.p2 && transition_pending_) start_transition(20 * (int(c.p2) + 1));
+        transition_type_ = c.p1;
+        if (transition_pending_ && (modern_dc4 ? (c.p1 == 0 || c.p1 == 1) : (c.p1 == 0 && c.p2))) {
+            start_transition(20 * (int(c.p2) + 1));
+        }
         if (c.p1 == 21) {
             if (!transition_pending_ || transition_snap_.empty()) {
                 snapshot_for_transition();
             }
-            const int frames = c.p2 ? std::max(24, int(c.p2) * 12) : 30;
-            start_transition(frames);
+            start_transition(modern_dc4 ? int(c.p2) * 12 : (c.p2 ? std::max(24, int(c.p2) * 12) : 30), !modern_dc4);
         }
-        transition_type_ = c.p1;
         if (c.p1 == 32) snapshot_for_transition();
         return true;
     }
@@ -964,14 +976,20 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
         std::string up;
         up.reserve(c.str.size());
         for (char ch : c.str) up.push_back(char(std::toupper((unsigned char)ch)));
-        if (c.p1 == 21 && up.rfind("MSK\\", 0) == 0) {
+        if (modern_dc4 && c.p1 == 21 && up.rfind("MSK\\", 0) == 0) {
             Image img;
             std::string err;
-            if (load_grp_crx(c.str, &img, &err)) mask_ = std::move(img);
-        } else if ((c.p1 == 22 || c.p1 == 21) && up.find("EFFCHANGESCREEN") != std::string::npos) {
+            mask_ = Image{};
+            if (load_grp_crx(c.str, &img, &err)) { img.name = c.str; mask_ = std::move(img); }
+        } else if (modern_dc4 && c.p1 == 22 && up.find("EFFCHANGESCREEN") != std::string::npos) {
             Image img;
             std::string err;
-            if (load_grp_crx(c.str, &img, &err)) transition_overlay_ = std::move(img);
+            screen_effect_.clear();
+            screen_effect_atlas_ = Image{};
+            if (load_grp_crx(c.str, &img, &err)) { img.name = c.str; screen_effect_atlas_ = std::move(img); }
+        } else if (modern_dc4 && (c.p1 == 21 || c.p1 == 22) && c.str == "-") {
+            if (c.p1 == 21) mask_ = Image{};
+            else { screen_effect_.clear(); screen_effect_atlas_ = Image{}; }
         } else {
             if (is_dc4_or_dc4ph_ && (up.find("KTR.PCK") != std::string::npos || up.find("KTR01") != std::string::npos)) {
                 effect_movie_ = "KotoRI_uta01.mpg";
@@ -1090,16 +1108,25 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
         // 0x3F: Character layer index 0..4 (mapped to slots 4..8 -> sprite index 0..4)
         // 0x40: Cut-in / Effect layer (slot 25 -> sprite index 12 in Arisa32)
         // 0x41: Face/expression sub-layer 0..4
+        const bool dc4_effect = is_dc4_or_dc4ph_ &&
+            (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
+            c.opcode() == dc4::Opcode::EFFECT_LAYER;
         int idx = -1;
         if (c.opcode() == dc4::Opcode::CHARACTER_LAYER) {
             if (c.p1 < 5) idx = int(c.p1);
         } else if (c.opcode() == dc4::Opcode::EFFECT_LAYER) {
-            idx = (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
+            idx = dc4_effect ? 12 :
+                (effect_sprite_ >= 0 && size_t(effect_sprite_) < sprites_.size()) ? effect_sprite_ : 12;
         } else if (c.opcode() == dc4::Opcode::FACE_LAYER) {
             if (c.p1 < 5) idx = int(c.p1);
         }
         if (idx >= 0 && size_t(idx) < sprites_.size()) {
-            if (c.str == "-" || c.str == "-n") {
+            if (dc4_effect && c.str == "-n") {
+                // Native 0x40 -n sets slot 25's draw flag from p1; it is not a removal.
+                sprites_[size_t(idx)].visible = c.p1 != 0;
+                pending_sprites_[size_t(idx)] = c.p1 != 0;
+                scene_dirty_ = true;
+            } else if (c.str == "-" || c.str == "-n") {
                 sprites_[size_t(idx)].visible = false;
                 sprites_[size_t(idx)].fade = BstSprite::Fade{};
                 pending_sprites_[size_t(idx)] = false;
@@ -1229,7 +1256,7 @@ bool SceneRunner::advance_to_next_text() {
     if (dc2pc && animation_enabled_) draw(-1);
     script_wait_pending_ = false;
     script_wait_skippable_ = true;
-    finish_animations();
+    finish_animations(false);
     if (dc2pc) dc2pc_present_pending_ = true;
     scene_dirty_ = true;
     std::string prev_speaker = speaker_;
@@ -1871,8 +1898,10 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     s.img.h = info.height;
     // The canvas sits at (inner, inner+size) inside a 1280-tall registration
     // frame; its centre is what the placement math anchors around.
-    s.frame_cx = info.offset_x + float(info.width) / 2;
-    s.frame_cy = info.offset_y + float(info.height) / 2;
+    const int shift_x = (info.canvas_width > 1024) ? int(info.canvas_width - 1024) / 2 : 0;
+    const int shift_y = (info.canvas_height > 2048) ? int(info.canvas_height - 2048) / 2 : 0;
+    s.frame_cx = (info.offset_x - shift_x) + float(info.width) / 2;
+    s.frame_cy = (info.offset_y - shift_y) + float(info.height) / 2;
     s.canvas_w = info.canvas_width; s.canvas_h = info.canvas_height;
     if (dc2pc) {
         const auto ref = dc4::bst_parse_name(name, true);
@@ -1929,8 +1958,10 @@ bool SceneRunner::load_bst_expression(int idx, const std::string& requested) {
     s.name = stored_name; s.visible = visible; s.alpha = alpha; s.z = z;
     if (!s.img.valid()) return false;
     if (name == "-") return true;
-    const int dx = info.offset_x - int(std::lround(s.frame_cx - float(s.img.w)/2));
-    const int dy = info.offset_y - int(std::lround(s.frame_cy - float(s.img.h)/2));
+    const int shift_x = (info.canvas_width > 1024) ? int(info.canvas_width - 1024) / 2 : 0;
+    const int shift_y = (info.canvas_height > 2048) ? int(info.canvas_height - 2048) / 2 : 0;
+    const int dx = (info.offset_x - shift_x) - int(std::lround(s.frame_cx - float(s.img.w)/2));
+    const int dy = (info.offset_y - shift_y) - int(std::lround(s.frame_cy - float(s.img.h)/2));
     const char marker = dc4::bst_parse_name(name, true).marker;
     for (int y = 0; y < info.height; ++y) for (int x = 0; x < info.width; ++x) {
         if (x+dx < 0 || x+dx >= s.img.w || y+dy < 0 || y+dy >= s.img.h) continue;
@@ -2122,95 +2153,12 @@ void SceneRunner::mark_transition_frame(int kind) {
                 }
             }
         }
-        start_transition();
+        if (!is_dc4_or_dc4ph_) {
+            start_transition();
+        }
         return;
     }
     // 0x36 precedes new character batches: redraw boundary only.
-}
-
-void SceneRunner::start_transition(int frames) {
-    if (!animation_enabled_ || !effects_enabled_ || !transition_pending_ || transition_snap_.empty()) {
-        transition_pending_ = false;
-        return;
-    }
-    transition_pending_ = false;
-    transition_kind_ = transition_type_;
-    transition_elapsed_ms_ = 0;
-    // sub_40E1E0 scales transition duration using bank99[12], centre=5.
-    if (effect_speed_ < 5) frames += int(double(frames / 2) / 5 * (5 - effect_speed_));
-    if (effect_speed_ > 5) frames -= int(double(frames / 2) / 6 * (effect_speed_ - 5));
-    transition_duration_ms_ = std::max(1, frames) * 1000.0 / 60;
-    transition_active_ = true;
-    scene_dirty_ = true;
-}
-
-void SceneRunner::draw_transition(uint8_t* dst) {
-    if (!transition_active_ || !dst || transition_snap_.size() != frame_.size()) return;
-    const double t = std::clamp(transition_elapsed_ms_ / std::max(1.0, transition_duration_ms_), 0.0, 1.0);
-    const uint8_t* src = transition_snap_.data();
-
-    if (!mask_.valid()) {
-        const int level = int(std::lround(255.0 * t));  // 0 = old frame, 255 = new
-        for (size_t i = 0; i < frame_.size(); i += 4) {
-            uint8_t* d = dst + i;
-            for (int k = 0; k < 3; ++k)
-                d[k] = uint8_t((src[i + k] * (255 - level) + d[k] * level) / 255);
-        }
-        return;
-    }
-
-    constexpr int kFeather = 48;
-    const double threshold = (255.0 + kFeather) - t * (255.0 + 2.0 * kFeather);
-
-    const int mw = mask_.w;
-    const int mh = mask_.h;
-    const bool has_overlay = transition_overlay_.valid();
-    const int ow = has_overlay ? transition_overlay_.w : 1;
-    const int oh = has_overlay ? transition_overlay_.h : 1;
-
-    for (int y = 0; y < kScreenH; ++y) {
-        const int my = (y * mh) / kScreenH;
-        const int oy = has_overlay ? ((y * oh) / kScreenH) : 0;
-        const size_t row_dst = size_t(y) * kScreenW * 4;
-        const size_t row_mask = size_t(my) * mw * 4;
-        const size_t row_ov = has_overlay ? (size_t(oy) * ow * 4) : 0;
-
-        for (int x = 0; x < kScreenW; ++x) {
-            const int mx = (x * mw) / kScreenW;
-            const size_t mi = row_mask + mx * 4;
-            double m = double(mask_.rgba[mi]);
-
-            int ov_alpha = 0;
-            if (has_overlay) {
-                const int ox = (x * ow) / kScreenW;
-                ov_alpha = transition_overlay_.rgba[row_ov + ox * 4 + 3];
-                m += (double(ov_alpha) * kFeather) / 255.0;
-            }
-
-            const double val = m - threshold;
-            int alpha = 0;
-            if (val <= 0.0) {
-                alpha = 0;
-            } else if (val >= double(kFeather)) {
-                alpha = 255;
-            } else {
-                alpha = int(std::lround((val * 255.0) / double(kFeather)));
-            }
-
-            const size_t di = row_dst + x * 4;
-            uint8_t* d = dst + di;
-            const uint8_t* s = src + di;
-
-            for (int k = 0; k < 3; ++k) {
-                int col = (s[k] * (255 - alpha) + d[k] * alpha) / 255;
-                if (has_overlay && ov_alpha > 0 && alpha > 0 && alpha < 255) {
-                    const double edge = std::sin(3.14159265 * double(alpha) / 255.0) * (double(ov_alpha) / 255.0);
-                    col = std::min(255, col + int(std::lround((255 - col) * edge * 0.4)));
-                }
-                d[k] = uint8_t(col);
-            }
-        }
-    }
 }
 
 // 0x8E: sprite slide (MesVM 0x42DA46 -> sub_447620/sub_447700).
@@ -2220,12 +2168,25 @@ void SceneRunner::draw_transition(uint8_t* dst) {
 // assignment are split between sub_447620 (sprite A) and sub_447700 (sprite B).
 void SceneRunner::queue_sprite_slide(uint16_t scale_pct, uint16_t x, uint16_t y,
                                      uint16_t mode) {
-    const int idx = int(mode & 0x0F) - 1;
+    int idx = -1;
+    int16_t from_dx = int16_t(x);
+    int16_t from_dy = int16_t(y);
+    double duration_ms = double(uint32_t(scale_pct)) * 1000.0 / 60.0;
+    if (y & 0x40) {
+        idx = int(y & 0x0F);
+        if (scale_pct == 0) duration_ms = 12.0 * 1000.0 / 60.0;
+        if (mode == 1 || mode == 2) from_dy = -12;
+        else if (mode == 3) from_dy = 12;
+        else if (mode == 4) from_dy = 8;
+        else if (mode == 6) from_dy = 4;
+        else from_dy = 0;
+    } else {
+        idx = int(mode & 0x0F) - 1;
+    }
     if (idx < 0 || idx >= int(sprites_.size())) return;
     BstSprite& s = sprites_[size_t(idx)];
-    const double duration_ms = double(uint32_t(scale_pct)) * 1000.0 / 60.0;
-    s.slide.from_dx = int16_t(x);
-    s.slide.from_dy = int16_t(y);
+    s.slide.from_dx = from_dx;
+    s.slide.from_dy = from_dy;
     s.slide.duration_ms = duration_ms;
     s.slide.elapsed_ms = animation_enabled_ && effects_enabled_ ? 0.0 : duration_ms;
     if (!animation_enabled_ || !effects_enabled_ || duration_ms <= 0) {
@@ -2496,6 +2457,7 @@ void SceneRunner::draw_comu() {
 void SceneRunner::set_animation_enabled(bool enabled) {
     animation_enabled_ = enabled;
     if (!enabled) finish_animations();
+    scene_dirty_ = true;
 }
 
 void SceneRunner::reset_camera() {
@@ -2597,6 +2559,8 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         }
         scene_dirty_ = true;
     }
+    update_sakura(elapsed_ms);
+    update_screen_effect(elapsed_ms);
     if (transition_active_) {
         transition_elapsed_ms_ += remaining;
         if (transition_elapsed_ms_ >= transition_duration_ms_) {
@@ -2604,8 +2568,6 @@ void SceneRunner::update(uint32_t elapsed_ms) {
             transition_elapsed_ms_ = transition_duration_ms_ = 0;
             transition_snap_.clear();
             transition_snap_.shrink_to_fit();
-            mask_ = Image{};
-            transition_overlay_ = Image{};
         }
         scene_dirty_ = true;
     }
@@ -2628,7 +2590,10 @@ void SceneRunner::update(uint32_t elapsed_ms) {
     }
 }
 
-void SceneRunner::finish_animations() {
+void SceneRunner::finish_animations(bool finish_screen_effect) {
+    // Script resumption may precede the last small petal's fade by 400ms.
+    if (finish_screen_effect) screen_effect_.clear();
+    scene_dirty_ = true;
     finish_dc2pc_transition();
     for (BstSprite& s : sprites_) {
         if (s.slide.active()) {
@@ -2648,8 +2613,6 @@ void SceneRunner::finish_animations() {
         transition_elapsed_ms_ = transition_duration_ms_ = 0;
         transition_snap_.clear();
         transition_snap_.shrink_to_fit();
-        mask_ = Image{};
-        transition_overlay_ = Image{};
     }
     if (camera_motion_.empty()) return;
     const auto& motion = camera_motion_.back();
@@ -2714,11 +2677,18 @@ void SceneRunner::compose_scene() {
             // (cur + tgt); the canvas centre then lands at
             // cur + tgt*(1-s) + frame_centre*s. At scale 1 the 0x8B target
             // cancels and the mode-0 position alone moves the sprite.
+            // DC4/DC4PH loose CRX: zero selects the crop midpoint per axis
+            // (native DC4 0x443616, DC4PH 0x4433F6), before camera scaling.
+            const bool implicit_pivot = is_dc4_or_dc4ph_ &&
+                (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
+                !s.canvas_w && !s.canvas_h;
+            const float anchor_x = implicit_pivot && s.x == 0 ? s.img.w / 2.f : float(s.x);
+            const float anchor_y = implicit_pivot && s.y == 0 ? s.img.h / 2.f : float(s.y);
             const float centre_x = float(s.cur_x + slide_dx)
-                                 + float(s.x) * (1.0f - s.scale)
+                                 + anchor_x * (1.0f - s.scale)
                                  + s.frame_cx * s.scale;
             const float centre_y = float(s.cur_y + slide_dy)
-                                 + float(s.y) * (1.0f - s.scale)
+                                 + anchor_y * (1.0f - s.scale)
                                  + s.frame_cy * s.scale;
             const int base_x = int(std::lround(centre_x - float(s.img.w) * s.scale / 2));
             const int base_y = int(std::lround(centre_y - float(s.img.h) * s.scale / 2));
@@ -2743,6 +2713,7 @@ void SceneRunner::compose_scene() {
     // them top-left anchored at dst + the 0x88 offset, 1:1 from the sheet.
     for (const UiChip& ch : scene_chips_) blit_chip(ch, 255);
     // COMU phone chat overlays the scene, under the message window.
+    draw_sakura();
     if (comu_visible_) draw_comu();
     if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
         clip_dc2pc_viewport(frame_);
@@ -2765,6 +2736,7 @@ void SceneRunner::draw(int reveal_chars) {
         if (!sidebar_visible_) return;
     }
     if (transition_active_) draw_transition(frame_.data());
+    draw_screen_effect();
     // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
     if (effect_pck_.active && effect_pck_.current_img.valid()) {
         blit(&frame_, kScreenW, kScreenH, effect_pck_.x, effect_pck_.y,

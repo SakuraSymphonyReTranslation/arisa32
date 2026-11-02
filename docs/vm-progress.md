@@ -48,6 +48,10 @@ corpus observations, not claims about every adv32 dialect.
 
 ## Verification
 
+The later [DC4/DC4PH map-routing regression](dc4-route-branching-validation.md)
+covers the previously missing `0x1E(2,0)` group selector, complete four-map
+sequences across chapters, and route state restored from saves.
+
 `tests/mesvm_test.cpp` tests byte arithmetic, signed immediates, all six
 comparisons and indirect operands, matching scope IDs, duplicate and
 case-sensitive labels, checkpoint companions, both choice branches and their
@@ -83,6 +87,11 @@ direct-build test binary was `build/vm-tests/mesvm_test.exe`; the shared build
 also registers the same source as `mesvm_test`.
 
 ## Round 3: sprite motion and scene transitions, 2026-10-10 (later)
+
+The DC4/DC4PH crossfade and mask results below are superseded by the
+[2026-11-02 sakura validation](dc4-sakura-validation.md): authored transition
+timing, native mask alpha, ambient petals and animated slot-22 sakura are now
+implemented. The historical observations remain below for reference.
 
 Implemented in `SceneRunner` after corpus-context analysis (781,046 commands
 over all 512 files, 0 fetch failures; `work/opusage.py`, `work/opcontext.py`):

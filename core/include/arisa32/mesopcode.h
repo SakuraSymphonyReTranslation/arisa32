@@ -28,6 +28,7 @@ enum class Opcode : uint8_t {
     SYSTEM_SERVICE = 0x1E,
     SCOPE = 0x20,
     CLEAR_LAYOUT = 0x24,
+    EFFECT_SETUP = 0x28,
     LEGACY_LOAD_SHEET = 0x2A,
     LEGACY_LOAD_SLOT = 0x2B,
     TRANSFER_WITH_PARAM = 0x2E,
@@ -40,6 +41,7 @@ enum class Opcode : uint8_t {
     LEGACY_LABEL_OR_VOICE = 0x35,
     COMMIT_TRANSITION = 0x36,
     RESET_TRANSITION = 0x37,
+    SCREEN_EFFECT = 0x38,
     LEGACY_JUMP = 0x3A,
     LEGACY_ENTRY = 0x3B,
     LOAD_SLOT = 0x3C,
@@ -103,6 +105,7 @@ enum class Opcode : uint8_t {
     CAMERA = 0x9D,
     PHONE_CHAT = 0xAB,
     AUDIO_PAN = 0xAF,
+    SPRITE_BATCH = 0xB0,
     COMMIT_LAYERS = 0xB4,
     UNKNOWN = 0xFF
 };

@@ -22,6 +22,7 @@ set(DC4_CORE_SRC
     ${DC4_CORE}/src/audio.cpp
     ${DC4_CORE}/src/scene_audio.cpp
     ${DC4_CORE}/src/scene.cpp
+    ${DC4_CORE}/src/scene_dc4_effects.cpp
     ${DC4_CORE}/src/scene_state.cpp
     ${DC4_CORE}/src/scene_dc2dm_ending.cpp
     ${DC4_CORE}/src/log_screen.cpp

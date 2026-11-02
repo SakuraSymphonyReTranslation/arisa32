@@ -273,8 +273,8 @@ public:
     // opt in, feed elapsed milliseconds, and may finish effects while skipping.
     void set_animation_enabled(bool enabled);
     void update(uint32_t elapsed_ms);
-    void finish_animations();
-    bool animating() const { return !camera_motion_.empty() || dc2pc_transition_active_; }
+    void finish_animations(bool finish_screen_effect = true);
+    bool animating() const { return !camera_motion_.empty() || dc2pc_transition_active_ || (is_dc4_or_dc4ph_ && (transition_active_ || !screen_effect_.empty())); }
     float camera_scale() const { return camera_scale_; }
     // Native .dat saves for supported games; snapshots for legacy/checkpoints.
     bool save_state(const std::string& path);
@@ -363,13 +363,23 @@ private:
     bool decode_pck_frame(size_t index, Image* out);
     // 0xB4/0x36/0x37 transition frame markers (see docs/vm-progress.md).
     void mark_transition_frame(int kind);
-    void start_transition(int frames = 30);
+    void start_transition(int frames = 30, bool scale_speed = true);
     void snapshot_for_transition();
     void draw_transition(uint8_t* dst);
     void compose_scene();
     void start_dc2pc_transition(int mode);
     void finish_dc2pc_transition();
     void draw_dc2pc_transition();
+    void init_sakura_particles();
+    void update_sakura(uint32_t elapsed_ms);
+    void draw_sakura();
+    bool dispatch_dc4_effect_command(const dc4::MesCommand& c);
+    int effect_random(int range);
+    void reset_sakura_particle(size_t index, int depth);
+    void start_screen_effect(int type, int duration);
+    void update_screen_effect(uint32_t elapsed_ms);
+    void draw_screen_effect();
+    double screen_effect_remaining_ms() const;
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
@@ -383,6 +393,35 @@ private:
     bool dispatch_text_command(const dc4::MesCommand& c);
     bool replay_action_disabled(const std::string& action) const;
 
+    struct SakuraParticle {
+        float x = 0;
+        float y = 0;
+        float vy = 0;
+        float scale = 1.0f;
+        float phase = 0;
+        float amplitude = 0;
+        int row = 0;
+        int cell = 0;
+        int cell_ticks = 0;
+        uint8_t alpha = 255;
+    };
+    struct SakuraSystem {
+        bool active = false;
+        int type = 0;
+        int parameter = 0;
+        double tick_remainder = 0;
+        std::vector<SakuraParticle> particles;
+    } sakura_;
+    Image sakura_sheet_;
+    uint32_t effect_random_state_ = 1;
+    struct ScreenEffectSprite {
+        float from_x = 0, to_x = 0, y = 0;
+        float pivot_x = 0, pivot_y = 0, scale = 1, alpha = 1;
+        int sx = 0, sy = 0, width = 0, height = 0;
+        double elapsed_ms = 0, duration_ms = 0;
+        bool fade = false;
+    };
+    std::vector<ScreenEffectSprite> screen_effect_;
     EffectPck effect_pck_;
     std::string data_;
     std::string script_name_;
@@ -465,7 +504,7 @@ private:
     int ui_bar_top_ = 690;
     Image meswin_;
     Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
-    Image transition_overlay_; // 0x3C slot 22 pattern overlay (SYSTEM\EFFCHANGESCREEN*.crx)
+    Image screen_effect_atlas_; // 0x3C slot 22, animated by 0x38.
     std::vector<uint8_t> frame_;
     std::vector<uint8_t> scene_frame_;
     bool scene_dirty_ = true;

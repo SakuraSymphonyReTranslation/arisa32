@@ -11,8 +11,8 @@ android {
         applicationId 'org.dc4engine'
         minSdk 21          // Android 5.0 (Lollipop)+
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 10
-        versionName '0.6.3'
+        versionCode 11
+        versionName '0.6.4'
         testInstrumentationRunner 'org.dc4engine.UpdateDialogChecks'
         externalNativeBuild {
             cmake {

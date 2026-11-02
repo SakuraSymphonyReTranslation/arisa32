@@ -562,6 +562,23 @@ bool MesVm::next(MesCommand* out) {
         }
         case Opcode::RESTORE_CHECKPOINT:
             return fail("checkpoint restore needs a saved scene", command.pos);
+        case Opcode::SYSTEM_SERVICE:
+            if (mes_->dialect == MesDialect::Modern && (mes_->version == 0xAAB6 || mes_->version == 0xABB6) &&
+                command.kind == CmdKind::Param2 && command.p1 == 2) {
+                // DC4 0x409F2A / DC4PH 0x40A37A: first maximum of the four map scores.
+                uint16_t route = 0;
+                int32_t highest = read_variable(5, 0);
+                for (uint16_t i = 1; i < 4; ++i) {
+                    const int32_t points = read_variable(5, i);
+                    if (points > highest) {
+                        route = i;
+                        highest = points;
+                    }
+                }
+                write_variable(3, 0, route);
+                continue;
+            }
+            break;
         case Opcode::SCOPE:
             if (!command.p1 && !skip_scope(command.p2)) return false;
             continue;

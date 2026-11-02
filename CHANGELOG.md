@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.4 - 2026-11-02
+
+- Memperbaiki pemilihan kelompok rute DC4/DC4PH berdasarkan skor pilihan peta, termasuk aturan skor seri dan pemulihan dari save sebelum percabangan.
+- Memulihkan kelopak sakura dan transisi dari aset asli, termasuk bagian putih, mask, durasi skrip, serta penyimpanan keadaan efek pada save baru.
+- Memperbaiki dua zoom Nino dan kemunculan sprite jam tangan DC4/DC4PH tanpa bergantung pada teks terjemahan. Delapan frame kontrol zoom lain tetap identik dalam pengujian.
+- Menambahkan unduhan pembaruan di dalam aplikasi dengan progress bar, pemeriksaan APK, dan pemasangan melalui konfirmasi Android. APK sementara dibersihkan; sesi siap pasang dapat dilanjutkan setelah proses aplikasi berhenti.
+- Mempertahankan perbaikan DC2DM, konfirmasi, penghalusan gambar, dan navigasi dari 0.6.3.
+
+Untuk rute yang telanjur salah, muat save sebelum percabangan kelompok rute. Izin instal aplikasi tidak dikenal dan konfirmasi pemasangan tetap dikelola Android.
+
+Catatan rilis lengkap: [Bahasa Indonesia](docs/releases/v0.6.4/id.md) | [English](docs/releases/v0.6.4/en.md).
+
 ## 0.6.3 - 2026-11-02
 
 Versi 0.6.3 membawa perbaikan D.C. II Dearest Marriage, konfirmasi D.C.4 dan Plus Harmony, penghalusan gambar, serta kontrol game yang bisa disembunyikan dan dipindahkan.

@@ -313,6 +313,8 @@ bool crxd_decode(const CrmArchive& arc, uint32_t offset,
     Block b;
     if (!load_block_at(arc, offset, &b, 0, err)) return false;
     *info = b.info;
+    if (info->canvas_width == 0 && arc.canvas_w() > 0) info->canvas_width = arc.canvas_w();
+    if (info->canvas_height == 0 && arc.canvas_h() > 0) info->canvas_height = arc.canvas_h();
     crx_to_rgba(b.info, b.stride, b.pixels, b.palette, rgba);
     return true;
 }

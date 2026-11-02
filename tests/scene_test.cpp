@@ -95,6 +95,86 @@ void fixture_round_trip(const fs::path& root) {
         CHECK(!scene.load_state((root / "saves/truncated.dc4sav").string())); CHECK(scene.current_line() == "THIRD");
     }
 }
+void dc4_implicit_sprite_pivot_regressions(const fs::path& root) {
+    const auto data = root / "implicit-pivot";
+    write_image(data / "GRP/BST/loose.CRX", 64, 36);
+    for (const auto version : {uint16_t(0xAAB6), uint16_t(0xABB6)}) {
+        Script main; main.bytes[11] = uint8_t(version >> 8); main.text("MAIN");
+        write_file(data / "MES/main.mes", main.bytes);
+        write_file(data / "MES/dc4_start.mes", main.bytes);
+        for (int axis = 0; axis < 4; ++axis) {
+            const int x = axis & 1 ? 10 : 0, y = axis & 2 ? 12 : 0;
+            Script script; script.bytes[11] = uint8_t(version >> 8);
+            script.words(0x8B, 300, 200, 0, 0);
+            script.words(0x8B, 50, uint16_t(x), uint16_t(y), 16);
+            script.slot(4, "BST\\loose"); script.text("FIRST");
+            script.words(0x9D, 0, 200, 0, 0); script.text("ZOOM");
+            script.words(0x8B, 100, uint16_t(x), uint16_t(y), 16);
+            script.words(0x9D, 0, 100, 0, 0); script.text("UNIT");
+            write_file(data / "MES/pivot.mes", script.bytes);
+            dc4scene::SceneRunner scene(data.string());
+            CHECK(scene.load_script((data / "MES/pivot.mes").string()));
+            CHECK(scene.advance_to_next_text()); scene.set_message_visible(false); scene.draw(-1);
+            const int left = x ? 305 : 316, top = y ? 206 : 209;
+            auto has_pixel = [&](int px, int py) { return scene.frame()[(size_t(py) * 1280 + px) * 4] != 0; };
+            CHECK(has_pixel(left, top)); CHECK(!has_pixel(left - 1, top)); CHECK(!has_pixel(left, top - 1));
+            CHECK(scene.sprite(0).x == x && scene.sprite(0).y == y);
+            CHECK(scene.advance_to_next_text()); scene.draw(-1);
+            CHECK(has_pixel(left * 2 - 512, top * 2 - 288));
+            CHECK(!has_pixel(left * 2 - 513, top * 2 - 288));
+            const auto zoom = scene.frame();
+            fs::create_directories(data / "saves");
+            CHECK(scene.save_state((data / "saves/pivot.dc4sav").string()));
+            CHECK(scene.advance_to_next_text()); scene.draw(-1);
+            CHECK(has_pixel(300, 200)); CHECK(!has_pixel(299, 200));
+            CHECK(scene.load_state((data / "saves/pivot.dc4sav").string())); scene.draw(-1);
+            CHECK(scene.frame() == zoom);
+            CHECK(scene.sprite(0).x == x && scene.sprite(0).y == y);
+        }
+    }
+}
+void dc4_cutin_visibility_regressions(const fs::path& root) {
+    const auto data = root / "cutin-visibility";
+    write_image(data / "GRP/BST/cut.CRX", 64, 36);
+    for (const auto version : {uint16_t(0xAAB6), uint16_t(0xABB6)}) {
+        Script script; script.bytes[11] = uint8_t(version >> 8);
+        auto effect = [&](uint8_t value, const std::string& parameter) {
+            script.bytes.push_back(0x40); script.bytes.push_back(value);
+            script.bytes.insert(script.bytes.end(), parameter.begin(), parameter.end());
+            script.bytes.push_back(0);
+        };
+        script.slot(25, "BST\\cut"); effect(0, "."); effect(1, "-n"); script.text("WATCH");
+        effect(0, "-n"); script.text("HIDDEN");
+        effect(1, "-n"); script.text("RESTORED");
+        script.words(0x8C, 0, 3, 0, 128); script.text("DISMISS");
+        script.slot(25, "BST\\cut"); effect(1, "-n"); script.text("REUSED");
+        script.slot(26, "BST\\cut"); effect(0, "-n"); script.text("OTHER_SLOT");
+        effect(1, "-n"); script.text("SHOW_PRIMARY");
+        effect(0, "-"); script.text("REMOVE_PRIMARY");
+        write_file(data / "MES/main.mes", script.bytes);
+        write_file(data / "MES/dc4_start.mes", script.bytes);
+        dc4scene::SceneRunner scene(data.string()); scene.set_animation_enabled(true);
+        CHECK(scene.load_script((data / "MES/main.mes").string()));
+        CHECK(scene.advance_to_next_text()); scene.set_message_visible(false); scene.draw(-1);
+        CHECK(scene.sprite(12).visible);
+        CHECK(scene.frame()[0] > 0); const auto visible = scene.frame();
+        CHECK(scene.advance_to_next_text()); scene.draw(-1);
+        CHECK(!scene.sprite(12).visible); CHECK(scene.frame()[0] == 0);
+        CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame() == visible);
+        std::vector<uint8_t> snapshot; CHECK(scene.capture_state(&snapshot));
+        CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(12).fade.active());
+        scene.update(150); CHECK(scene.sprite(12).alpha > 0 && scene.sprite(12).alpha < 255);
+        scene.update(150); CHECK(!scene.sprite(12).visible);
+        scene.finish_animations(); CHECK(!scene.sprite(12).visible);
+        CHECK(scene.restore_state(snapshot)); scene.draw(-1); CHECK(scene.frame() == visible);
+        CHECK(scene.advance_to_next_text()); scene.finish_animations();
+        CHECK(scene.advance_to_next_text()); scene.draw(-1);
+        CHECK(scene.sprite(12).visible && scene.sprite(12).alpha == 255); CHECK(scene.frame() == visible);
+        CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(12).visible && scene.sprite(13).visible);
+        CHECK(scene.advance_to_next_text()); CHECK(scene.sprite(12).visible && scene.sprite(13).visible);
+        CHECK(scene.advance_to_next_text()); CHECK(!scene.sprite(12).visible && scene.sprite(13).visible);
+    }
+}
 void graphics_and_text_regressions(const fs::path& root) {
     // A small off-centre character exposes the native placement model: the
     // 0x8B place stores the zoom anchor (tgt) and the mode-0 op the current
@@ -1148,8 +1228,16 @@ int main(int argc, char** argv) {
     try {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        if (argc > 1 && std::string(argv[1]) == "--dc4-sprites") {
+            dc4_implicit_sprite_pivot_regressions(root);
+            dc4_cutin_visibility_regressions(root);
+            std::cout << (failures ? "DC4 sprite regressions FAILED\n" : "DC4 sprite regressions passed\n");
+            return failures ? 1 : 0;
+        }
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
         dc2pc_dialogue_regressions(root);native_save_regressions(root);native_sprite_placement_regressions(root);
+        dc4_implicit_sprite_pivot_regressions(root);
+        dc4_cutin_visibility_regressions(root);
         dc2dm_scene_regressions(root);
         sakuramusubi_text_regressions(root);
         if (const char* data = std::getenv("DC2DM_DATA")) dc2dm_game_regressions(data, root);
