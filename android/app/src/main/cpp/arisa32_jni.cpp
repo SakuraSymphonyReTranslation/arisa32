@@ -44,6 +44,7 @@ struct Engine {
     dc4::AudioEngine audio;
     dc4::VoiceArchive voice;
     dc4scene::FontRenderer font;
+    std::unique_ptr<dc4scene::FontRenderer> textbox_font;
     std::unique_ptr<dc4scene::SceneRunner> scene;
     std::unique_ptr<dc4scene::SceneRunner> pending_scene;
     std::unique_ptr<dc4::AudioEngine> pending_audio;
@@ -452,7 +453,7 @@ std::string enter_scene(Engine* e, std::unique_ptr<dc4scene::SceneRunner> next, 
 std::string start_scene(Engine* e, std::string name, const std::string& label = {}, bool replay = false) {
     auto next = std::make_unique<dc4scene::SceneRunner>(e->data_dir);
     next->set_use_system_menu(e->menu.loaded());
-    next->set_font(&e->font);
+    next->set_font(&e->font, e->textbox_font.get());
     next->set_animation_enabled(true);
     if (std::filesystem::path(name).extension().empty()) name += ".mes";
     if (!next->load_sheets(e->data_dir + "/MES/start.mes") ||
@@ -507,7 +508,7 @@ std::string restore_save(Engine* e, const std::string& path) {
         auto next = std::make_unique<dc4scene::SceneRunner>(e->data_dir);
         auto audio = std::make_unique<dc4::AudioEngine>();
         next->set_use_system_menu(true);
-        next->set_font(&e->font);
+        next->set_font(&e->font, e->textbox_font.get());
         next->set_animation_enabled(true);
         next->set_audio(audio.get(), &e->voice);
         if (!next->load_sheets(e->data_dir + "/MES/start.mes") ||
@@ -925,6 +926,11 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         font_ok = e->font.load(g_config.font, face_index, 22.0f);
         if (!font_ok) font_ok = e->font.load(g_config.font, 0, 22.0f);
         if (font_ok) LOGI("font: %s", g_config.font.c_str());
+        if (font_ok && dc4::is_dc4_or_dc4ph_game(e->data_dir)) {
+            auto textbox_font = std::make_unique<dc4scene::FontRenderer>();
+            if (textbox_font->load(g_config.font, 0, 22.0f))
+                e->textbox_font = std::move(textbox_font);
+        }
     }
     for (const char* path : kFontCandidates) {
         if (font_ok) break;
@@ -1001,7 +1007,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene.reset(new dc4scene::SceneRunner(e->data_dir));
     e->scene->set_use_system_menu(menu_ok);
     e->scene->set_latin_mode(dc4::is_latin());
-    e->scene->set_font(&e->font);
+    e->scene->set_font(&e->font, e->textbox_font.get());
     e->scene->set_audio(&e->audio, &e->voice);
     e->scene->set_animation_enabled(true);
     e->scene->set_observer([e](const dc4::MesCommand& c,const std::string& script){e->menu.observe(c,script);});

@@ -14,16 +14,17 @@ void check(bool ok, int line) {
 #define CHECK(x) check(bool(x), __LINE__)
 void script(const std::filesystem::path& path, const std::string& text) {
     std::vector<uint8_t> bytes{1,0,0,0,3,0,0,0,0,0,0xB6,0xAA,0,0x6B};
-    for (unsigned char ch : text) bytes.push_back(uint8_t(ch - 0x20));
+    for (unsigned char ch : text) bytes.push_back(uint8_t((ch == ' ' ? 0xA5 : ch) - 0x20));
     bytes.push_back(0); bytes.push_back(0);
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 std::vector<uint8_t> render(const std::filesystem::path& root, const std::string& text,
-                            dc4scene::FontRenderer& font, int reveal = -1) {
+                            dc4scene::FontRenderer& font, int reveal = -1,
+                            const dc4scene::FontRenderer* textbox_font = nullptr) {
     script(root / "text.mes", text);
     dc4scene::SceneRunner scene(root.string());
-    scene.set_font(&font);
+    scene.set_font(&font, textbox_font);
     CHECK(scene.load_script((root / "text.mes").string()));
     CHECK(scene.advance_to_next_text());
     scene.draw(reveal);
@@ -46,6 +47,75 @@ struct DmScript {
         out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     }
 };
+void dc4_textbox_rendering(const std::filesystem::path& root, const char* font_path) {
+    dc4scene::FontRenderer ui_font, textbox_font;
+    CHECK(ui_font.load(font_path, 1, 22, false));
+    CHECK(textbox_font.load(font_path, 0, 22, false));
+    const auto language = dc4::get_language();
+    for (const auto* profile : {"dc4", "dc4ph"}) {
+        const auto data = root / profile;
+        std::filesystem::create_directories(data);
+        for (const auto mode : {dc4::Language::English, dc4::Language::Indonesian}) {
+            dc4::set_language(mode);
+            const std::string text = "Sihir cermin Nii-san memang selalu memperlihatkan diriku\n"
+                "yang tenang dan stabil. Memang benar ada kalanya itu membantuku\n"
+                "menemukan kembali diriku yang hilang";
+            const auto frame = render(data, text, ui_font, -1, &textbox_font);
+            CHECK(frame == render(data, "@m" + text, ui_font, -1, &textbox_font));
+            CHECK(frame != render(data, text, ui_font));
+            int top = 720, bottom = -1, right = -1;
+            for (int y = 560; y < 610; ++y) for (int x = 283; x < 1280; ++x) {
+                const size_t at = (size_t(y) * 1280 + x) * 4;
+                if (frame[at] < 100) continue;
+                top = std::min(top, y); bottom = std::max(bottom, y); right = std::max(right, x);
+            }
+            // PC reference: 22px MS Gothic, 11px Latin cells, three 34px rows.
+            CHECK(bottom - top >= 18 && bottom - top <= 22);
+            CHECK(right >= 895 && right <= 907);
+            bool third_row = false, below_box = false;
+            for (int y = 635; y < 720; ++y) for (int x = 283; x < 1100; ++x) {
+                if (frame[(size_t(y) * 1280 + x) * 4] < 100) continue;
+                if (y < 680) third_row = true;
+                else below_box = true;
+            }
+            CHECK(third_row && !below_box);
+            CHECK(render(data, "iiiWWW", ui_font, 3, &textbox_font) ==
+                  render(data, "iii", ui_font, -1, &textbox_font));
+            std::string prefix;
+            while (textbox_font.text_width(std::u16string(prefix.begin(), prefix.end()) + u"dunia ", 22) <= 750)
+                prefix += "dunia ";
+            CHECK(render(data, prefix + "dunia memutih", ui_font, -1, &textbox_font) ==
+                  render(data, prefix + "\ndunia memutih", ui_font, -1, &textbox_font));
+
+            DmScript dialogue; dialogue.bytes[10] = 0xB6;
+            dialogue.bytes[11] = std::string(profile) == "dc4" ? 0xAA : 0xAB;
+            std::string encoded = text;
+            std::replace(encoded.begin(), encoded.end(), ' ', '\xA5');
+            dialogue.text(0x6A, "Nino"); dialogue.text(0x6B, encoded); dialogue.bytes.push_back(0);
+            dialogue.save(data / "MES/named.mes");
+            dc4scene::SceneRunner scene(data.string()); scene.set_font(&ui_font, &textbox_font);
+            CHECK(scene.load_script((data / "MES/named.mes").string()));
+            CHECK(scene.advance_to_next_text()); scene.draw(-1);
+            const auto named = scene.frame();
+            int name_top = 720, name_bottom = -1, name_left = 1280, name_right = -1;
+            for (int y = 500; y < 550; ++y) for (int x = 270; x < 700; ++x) {
+                if (named[(size_t(y) * 1280 + x) * 4] < 100) continue;
+                name_top = std::min(name_top, y); name_bottom = std::max(name_bottom, y);
+                name_left = std::min(name_left, x); name_right = std::max(name_right, x);
+            }
+            CHECK(name_bottom - name_top >= 15);
+            CHECK(name_right - name_left >= 40);
+            CHECK(name_top >= 515 && name_bottom < 548);
+            std::vector<uint8_t> snapshot; CHECK(scene.capture_state(&snapshot));
+            dc4scene::SceneRunner restored(data.string()); restored.set_font(&ui_font, &textbox_font);
+            CHECK(restored.restore_state(snapshot)); restored.draw(-1);
+            CHECK(restored.frame() == named);
+            restored.set_font(&textbox_font); restored.draw(-1);
+            CHECK(restored.frame() == named);
+        }
+    }
+    dc4::set_language(language);
+}
 void dc2dm_rendering(const std::filesystem::path& root, const char* font_path) {
     dc4scene::FontRenderer font;
     CHECK(font.load(font_path, 0, 22, false));
@@ -185,6 +255,7 @@ int main(int argc, char** argv) {
         CHECK(plain[i] == styled[i] && plain[i+1] == styled[i+1] && plain[i+2] == styled[i+2]);
     }
     CHECK(render(root, "iiiWWW", font, 3) == render(root, "iii", font));
+    dc4_textbox_rendering(root, argv[1]);
     dc2dm_rendering(root / "dc2dm", argv[1]);
     std::filesystem::remove_all(root);
     dc4::configure_resources("", "");

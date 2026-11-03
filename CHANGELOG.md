@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.6 - 2026-11-03
+
+- Memperbesar ukuran bawaan dialog Latin DC4/DC4PH dari 20 menjadi 22 piksel dan nama karakter dari 18 menjadi 22 piksel pada kanvas game. Jendela dialog Android memakai MS Gothic agar bentuk dan jarak huruf lebih mendekati versi PC.
+- Memisahkan font jendela dialog dari font menu. Pemenggalan baris, tampilan teks bertahap, dan pemulihan teks dari save tetap menggunakan ukuran dan jarak huruf yang sesuai.
+- Mengurangi opasitas penanda biru pembuka kontrol menjadi 40% saat tidak digunakan. Penanda kembali penuh saat disentuh atau mendapat fokus keyboard, dengan area sentuh dan gerakan navigasi yang sama.
+
+Perbaikan progres rute dan peta dari 0.6.5 tetap tersedia. Dukungan DC2DM tetap beta.
+
+Catatan rilis lengkap: [Bahasa Indonesia](docs/releases/v0.6.6/id.md) | [English](docs/releases/v0.6.6/en.md).
+
 ## 0.6.5 - 2026-11-02
 
 - Memperbaiki profil baru DC4/DC4PH yang sebelumnya dianggap sudah menamatkan rute. Pembukaan rute Arisu/Arisa, pilihan tambahan Sorane, dan menu D.C. kini mengikuti syarat skrip asli.

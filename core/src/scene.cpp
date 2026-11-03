@@ -402,8 +402,9 @@ void SceneRunner::set_latin_mode(bool latin) {
         layout_.line_spacing = latin ? 28 : 32;
         return;
     }
+    if (is_dc4_or_dc4ph_) layout_.name_font = 22;
     if (latin) {
-        layout_.font_size = 20;
+        layout_.font_size = is_dc4_or_dc4ph_ ? 22 : 20;
         layout_.text_w = 750;
         layout_.line_spacing = 34;
     } else {
@@ -3173,7 +3174,7 @@ void SceneRunner::draw_message_window(int reveal_chars) {
              int(std::lround(layout_.bg_y * scale)), piece,
              scale, (window_opacity_ * 255 + 50) / 100);
     }
-    if (font_) {
+    if (textbox_font_) {
         // Speaker text occupies the floral nameplate in the complete frame.
         if (!displayed_speaker().empty()) {
             auto text = sjis_to_utf16(displayed_speaker());
@@ -3187,13 +3188,13 @@ void SceneRunner::draw_message_window(int reveal_chars) {
             const int name_baseline = layout_.name_baseline;
             const int name_x = dc2dm_ui_ ? layout_.name_x +
                 (5 * size - int(displayed_speaker().size()) * size / 2) / 2 : layout_.name_x;
-            if (dc2pc_ui_) while (size > 6 && font_->text_width(text, float(size)) > 184) --size;
-            const int width = font_->text_width(text, float(size), false, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
+            if (dc2pc_ui_) while (size > 6 && textbox_font_->text_width(text, float(size)) > 184) --size;
+            const int width = textbox_font_->text_width(text, float(size), false, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
             Image name;
             name.w = dc2pc_ui_ ? 192 : std::max(400, width + 4);
             name.h = name_height + 10;
             name.rgba.assign(size_t(name.w) * name.h * 4, 0);
-            font_->rasterize_line(text, dc2pc_ui_ ? std::max(2, (name.w - width) / 2) : 0,
+            textbox_font_->rasterize_line(text, dc2pc_ui_ ? std::max(2, (name.w - width) / 2) : 0,
                                   name_height + 2, &name.rgba, name.w,
                                   name.h, float(size), 0xFFFFFF, false, 0, dc2dm_ui_,
                                   dc2dm_ui_ ? -1 : 0, dm_latin ? size * 15.0f / 19.0f : 0);
@@ -3334,7 +3335,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     std::vector<Line> lines;
     auto advance_at = [&](size_t i) {
         const auto& style = parsed.styles[i];
-        return font_->glyph_advance(parsed.text[i], float(style.size), style.wide, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
+        return textbox_font_->glyph_advance(parsed.text[i], float(style.size), style.wide, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
     };
 
     auto is_cjk = [](char16_t ch) {
@@ -3416,7 +3417,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             const auto style = parsed.styles[at];
             size_t end = at + 1;
             while (end < shown_end && parsed.styles[end] == style) ++end;
-            font_->rasterize_line(parsed.text.substr(at, end - at), 2 + x, baseline,
+            textbox_font_->rasterize_line(parsed.text.substr(at, end - at), 2 + x, baseline,
                 &text_img.rgba, text_img.w, text_img.h, float(style.size), style.rgb, style.wide,
                 0, dc2dm_ui_, dc2dm_ui_ ? -1 : 0, dm_latin ? style.size * 15.0f / 19.0f : 0);
             for (; at < end; ++at) x += advance_at(at);
@@ -3426,9 +3427,9 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             int rx = 0, rw = 0;
             for (size_t at = line.start; at < ruby.start; ++at) rx += advance_at(at);
             for (size_t at = ruby.start; at < ruby.start + ruby.count; ++at) rw += advance_at(at);
-            const int reading_width = font_->text_width(ruby.reading, 12);
+            const int reading_width = textbox_font_->text_width(ruby.reading, 12);
             const auto style = parsed.styles[ruby.start];
-            font_->rasterize_line(ruby.reading, 2 + rx + (rw - reading_width) / 2,
+            textbox_font_->rasterize_line(ruby.reading, 2 + rx + (rw - reading_width) / 2,
                 baseline - style.size, &text_img.rgba, text_img.w, text_img.h, 12, style.rgb);
         }
         if (shown_end > line.start) { last_x = x; last_y = int(line_index) * line_spacing; }

@@ -199,7 +199,10 @@ public:
     explicit SceneRunner(const std::string& data_dir);
     ~SceneRunner();
 
-    void set_font(const FontRenderer* font) { font_ = font; }
+    void set_font(const FontRenderer* font, const FontRenderer* textbox_font = nullptr) {
+        font_ = font;
+        textbox_font_ = textbox_font ? textbox_font : font;
+    }
     void set_debug(bool on) { debug_ = on; }
     void set_audio(dc4::AudioEngine* audio, dc4::VoiceArchive* voice) {
         audio_ = audio;
@@ -548,6 +551,7 @@ private:
     std::string next_script_;
     std::string last_error_;
     const FontRenderer* font_ = nullptr;
+    const FontRenderer* textbox_font_ = nullptr;
     dc4::AudioEngine* audio_ = nullptr;
     dc4::VoiceArchive* voice_ = nullptr;
     bool debug_ = false;

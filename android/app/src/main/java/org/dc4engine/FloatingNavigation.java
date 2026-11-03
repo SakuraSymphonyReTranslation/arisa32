@@ -51,6 +51,7 @@ final class FloatingNavigation {
             private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             @Override protected void onDraw(Canvas canvas) {
                 paint.setColor(ArisaUi.CYAN);
+                paint.setAlpha(isPressed() || isFocused() ? 255 : 102);
                 paint.setStyle(Paint.Style.FILL);
                 canvas.drawRoundRect(dp(2), dp(8), dp(8), getHeight()-dp(8), dp(3), dp(3), paint);
                 if (isFocused()) {
@@ -59,11 +60,14 @@ final class FloatingNavigation {
                     canvas.drawRoundRect(dp(1), dp(1), getWidth()-dp(1), getHeight()-dp(1), dp(6), dp(6), paint);
                 }
             }
+            @Override protected void drawableStateChanged() {
+                super.drawableStateChanged();
+                invalidate();
+            }
         };
         edge.setContentDescription(description);
         edge.setFocusable(true);
         edge.setOnClickListener(v -> show());
-        edge.setOnFocusChangeListener((v, focused) -> v.invalidate());
         edge.setVisibility(View.GONE);
         layout.addView(edge, new FrameLayout.LayoutParams(dp(48), dp(64)));
         edge.setOnTouchListener((v, event) -> edgeTouch(event));
@@ -88,6 +92,7 @@ final class FloatingNavigation {
     void setActive(boolean value) {
         active = value;
         touching = false;
+        edge.setPressed(false);
         schedule();
     }
 
@@ -190,6 +195,7 @@ final class FloatingNavigation {
     private boolean edgeTouch(MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                edge.setPressed(true);
                 downX = event.getRawX(); downY = event.getRawY();
                 moved = cancelled = false;
                 edgeAxis = 0;
@@ -197,6 +203,7 @@ final class FloatingNavigation {
                 edgeStartFraction = edgeFraction;
                 return true;
             case MotionEvent.ACTION_POINTER_DOWN:
+                edge.setPressed(false);
                 cancelled = true;
                 edgeFraction = edgeStartFraction;
                 clamp.run();
@@ -216,6 +223,7 @@ final class FloatingNavigation {
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
+                edge.setPressed(false);
                 float dx = event.getRawX()-downX, dy = event.getRawY()-downY;
                 if (cancelled || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                     edgeFraction = edgeStartFraction;
