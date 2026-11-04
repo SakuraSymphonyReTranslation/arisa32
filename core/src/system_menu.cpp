@@ -288,6 +288,11 @@ struct SystemMenu::Impl {
     std::vector<Chip> music_underlay;
     std::vector<Widget> music_underlay_widgets;
     bool dc4_profile = false;
+    dc4scene::SakuraSystem sakura;
+    std::string sakura_sheet;
+    dc4scene::FairyLightSystem fairy_lights;
+    uint32_t sakura_random = 1;
+    bool visual_effects_enabled = true;
     std::function<void()> confirmation_changed;
     int confirmation_index(ConfirmKind kind) const {
         if (!dc4_profile) return -1;
@@ -595,9 +600,44 @@ struct SystemMenu::Impl {
     }
 
     void menu_sheet(Opcode opcode, RunState& context, const Command& c) {
+        if (dc4_profile && opcode == Opcode::LOAD_SLOT && c.p1 == 28) {
+            sheets[28] = c.str;
+            image(c.str);
+            return;
+        }
         if ((c.p1 != 0 || (context.source->dc2dm && opcode == Opcode::LOAD_SHEET)) && c.p1 != 28) {
             sheets[c.p1 + (opcode == Opcode::LOAD_SHEET ? (context.source->dc2dm ? 21 : 37) : 0)] = c.str;
             image(c.str);
+        }
+    }
+
+    void menu_effect(Opcode, RunState&, const Command& c) {
+        if (!dc4_profile || c.p1 == 7 || c.p1 == 16) return;
+        if (c.p1 == 13 && c.p2 % 10 != 0 && image("SYSTEM/EFFYOUSEI")) {
+            if (fairy_lights.active && fairy_lights.parameter == c.p2) return;
+            sakura = {};
+            sakura_sheet.clear();
+            fairy_lights = {};
+            fairy_lights.active = true;
+            fairy_lights.parameter = c.p2;
+            fairy_lights.initialize(sakura_random);
+            return;
+        }
+        fairy_lights = {};
+        const auto sheet = sheets.find(28);
+        if ((c.p1 == 1 || c.p1 == 9 || c.p1 == 11) && c.p2 % 10 != 0 &&
+            sheet != sheets.end() && image(sheet->second)) {
+            if (sakura.active && sakura.type == c.p1 && sakura.parameter == c.p2 &&
+                sakura_sheet == sheet->second) return;
+            sakura = {};
+            sakura.active = true;
+            sakura.type = c.p1;
+            sakura.parameter = c.p2;
+            sakura_sheet = sheet->second;
+            sakura.initialize(sakura_random);
+        } else {
+            sakura = {};
+            sakura_sheet.clear();
         }
     }
 
@@ -952,6 +992,7 @@ struct SystemMenu::Impl {
                 {Opcode::ADD, &Impl::menu_add},
                 {Opcode::LOAD_SLOT, &Impl::menu_sheet},
                 {Opcode::LOAD_SHEET, &Impl::menu_sheet},
+                {Opcode::EFFECT_SETUP, &Impl::menu_effect},
                 {Opcode::BACKGROUND, &Impl::menu_background},
                 {Opcode::LEGACY_SHEET_1, &Impl::menu_legacy_sheet},
                 {Opcode::LEGACY_SHEET_2, &Impl::menu_legacy_sheet},
@@ -1937,9 +1978,15 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
 }
 
 void SystemMenu::update(uint32_t elapsed_ms) {
+    if (p_->visual_effects_enabled && p_->get(99,10) != 0) {
+        p_->sakura.update(elapsed_ms, p_->sakura_random);
+        p_->fairy_lights.update(elapsed_ms, p_->sakura_random);
+    }
     if (p_->dc2dm && p_->page == Page::Config)
         for (auto& caption : p_->captions) p_->update_preview(caption,elapsed_ms);
 }
+
+void SystemMenu::set_visual_effects_enabled(bool enabled) { p_->visual_effects_enabled = enabled; }
 
 void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
     if(!frame)return;
@@ -1951,6 +1998,12 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
         blit(*back,src,dst,frame);
     }
     if(p_->gallery_view)return;
+    if (p_->visual_effects_enabled && p_->get(99,10) != 0) {
+        if (p_->sakura.active)
+            if (auto* sheet = p_->image(p_->sakura_sheet)) p_->sakura.draw(*frame, *sheet);
+        if (p_->fairy_lights.active)
+            if (auto* sheet = p_->image("SYSTEM/EFFYOUSEI")) p_->fairy_lights.draw(*frame, *sheet);
+    }
     int hover=confirming()?-1:p_->hit(p_->input_x(mx),p_->input_y(my));
     auto state_for=[&](int control) {
         if(control<0)return 99;

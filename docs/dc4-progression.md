@@ -23,6 +23,16 @@ The first Arisu completion is written in `dc4_asa20200406a` in DC4 and
 `dc4_asa20190513c` in DC4PH. Flag 108 is written in `dc4_asu20190506b`.
 These checks use opcodes and script identifiers, independent of dialogue text.
 
+At the Sorane choice in `dc4_sor20190501a`, flag 107 = 0 exposes only
+`label01` (the installed Indonesian patch's "Aku tidak akan pernah menyerah.").
+Once Arisu Ending 1 sets flag 107, `label02` ("Kali ini aku pasti akan
+menyelamatkannya.") becomes available as the second option. The condition is
+the global completion flag, not a playthrough counter. Starting New Game or
+loading an older slot does not relock it on a completed profile. The user
+confirmed that the two-choice screenshot supplied on 2026-11-04 came from
+a profile with Arisu completion or imported PC progress, which is consistent
+with this behavior.
+
 The February 8, 9, 11 and 12 map scripts select the ordinary map artwork and
 three choices while flag 112 is zero. Once it is set, they select the `_ASA`
 artwork containing the extra character/location marker and offer four choices.
@@ -102,6 +112,17 @@ the ignored `build/dc4-progression/` directory.
   `build/dc4-progression/Arisa32-dc4-progression-test.apk`, retaining version
   0.6.4/code 11. SHA-256:
   `05ccd7ec9dc7f120ef5533a806d0e76a11f55299de7b4dee351a84b6cc0ec7b6`.
+
+## Sorane recheck (2026-11-04)
+
+Rebuilt `dc4_route_test` and `system_menu_test` against the current core.
+Both passed with `DC4_DATA` and `DC4PH_DATA` set to the installed game data.
+This includes the one/two-option Sorane gate, 1,348 map paths, ending awards,
+fresh/completed profiles, profile reload, settings reset and PC imports.
+Logs: `build/comu-video/route-final.log` and `profile-final.log`. No route
+implementation change was required. The guide URLs could not be fetched
+on this recheck (HTTPS hostname mismatch; HTTP connection refused), so the
+conclusion remains based on both installed MES scripts and executed tests.
 
 The graphical captures use the desktop renderer with installed game assets;
 the Android checks exercise production JNI with synthetic scripts. This does

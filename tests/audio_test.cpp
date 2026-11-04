@@ -118,6 +118,42 @@ static void dc2dm_voice_prefetch() {
     check(runner.advance_to_next_text() && runner.current_line() == "NEXT" &&
           runner.last_voice() == "next" && render(sequence_audio, 8)[0] == 17 * 256 && !runner.voice_playing(),
           "runner plays deferred voice once at its own dialogue");
+    for (uint8_t version : {0xAA, 0xAB}) {
+        std::filesystem::create_directories(directory / "MES");
+        const auto modern_path = directory / "MES/modern-voice-sequence.mes";
+        script = {1,0,0,0,3,0,0,0,0,0,0xB6,version,0};
+        const auto text = [&](uint8_t op, const std::string& line) {
+            script.push_back(op);
+            for (unsigned char ch : line) script.push_back(uint8_t(ch - 0x20));
+            script.push_back(0);
+        };
+        voice_command(0x4D, "current"); text(0x6A, "Nino"); text(0x6B, "VOICED");
+        script.insert(script.end(), {0x06,0,0}); text(0x6B, "NARRATION");
+        script.insert(script.end(), {0x06,0,0}); text(0x6A, "Ichito"); text(0x6B, "MC");
+        script.insert(script.end(), {0x06,0,0});
+        voice_command(0x4D, "next"); text(0x6A, "Nino"); text(0x6B, "NEXT");
+        script.push_back(0);
+        {
+            std::ofstream file(modern_path, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(script.data()), std::streamsize(script.size()));
+        }
+        AudioEngine mixer;
+        dc4scene::SceneRunner modern(directory.string());
+        modern.set_audio(&mixer, nullptr);
+        check(modern.load_script(modern_path.string()) && modern.advance_to_next_text(), "load modern voiced line");
+        check(modern.last_voice() == "current" && modern.replay_voice(), "voiced line can replay");
+        render(mixer, 2);
+        check(modern.advance_to_next_text() && modern.last_voice().empty() && !modern.replay_voice() &&
+              mixer.channel_position(8) == 2, "modern narration clears replay without cutting off playback");
+        std::vector<uint8_t> narration;
+        check(modern.capture_state(&narration), "save unvoiced narration");
+        check(modern.advance_to_next_text() && modern.speaker() == "Ichito" && modern.last_voice().empty(),
+              "unvoiced MC does not inherit Nino's voice");
+        check(modern.advance_to_next_text() && modern.last_voice() == "next" && modern.replay_voice(),
+              "next voiced line uses its own recording");
+        check(modern.restore_state(narration) && modern.last_voice().empty() && !modern.replay_voice(),
+              "restoring narration keeps replay unavailable");
+    }
     std::filesystem::remove_all(directory);
 }
 

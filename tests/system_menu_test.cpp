@@ -448,6 +448,27 @@ void progression(const std::string& data,const std::filesystem::path& scratch){
     Menu menu;std::string error;CHECK(menu.load(data,&error));
     CHECK(!has(menu,"dc"));CHECK(menu.activate("dc").type==Type::None);CHECK(!menu.confirming());
     for(int i=100;i<150;++i)CHECK(menu.variable(100,i)==0);
+    dc4::MesFile ending;CHECK(ending.load_file(data+"/MES/ed.mes",&error));
+    for(unsigned mask=0;mask<256;++mask){
+        dc4::MesVm vm(ending);
+        for(int i=0;i<8;++i)vm.write_variable(100,101+i,(mask>>i)&1);
+        dc4::MesCommand command;int steps=0;
+        while(vm.next(&command)&&++steps<1000){}
+        CHECK(steps<1000 && vm.error().empty() && vm.transferring());
+        CHECK(vm.read_variable(100,100)==int(mask==255));
+    }
+    // Nino and Hiyori set 101 and 103. Neither opening Extra nor restarting
+    // with this profile may promote the other six route completions.
+    menu.set_variable(100,101,1);menu.set_variable(100,103,1);
+    menu.set_variable(100,110,1);menu.set_variable(100,112,1);
+    menu.open(Page::Extras);menu.open(Page::Scenes);menu.open(Page::Title);
+    CHECK(!has(menu,"dc") && menu.activate("dc").type==Type::None);
+    const auto two_routes=(scratch/"two-routes.dat").string();
+    CHECK(menu.save_profile(two_routes,&error));
+    Menu two;CHECK(two.load(data,&error));CHECK(two.load_profile(two_routes,&error));
+    CHECK(!has(two,"dc") && two.variable(100,101)==1 && two.variable(100,103)==1);
+    for(int i:{102,104,105,106,107,108})CHECK(two.variable(100,i)==0);
+    for(int i=100;i<150;++i)menu.set_variable(100,i,0);
     const auto end_y=[&](){for(const auto& c:menu.controls())if(c.tag=="end")return c.y;return -1;};
     CHECK(end_y()==536);
     dc4scene::FontRenderer font;std::vector<uint8_t> locked,unlocked;
@@ -505,6 +526,30 @@ void progression(const std::string& data,const std::filesystem::path& scratch){
     CHECK(story.variable(100,101)==1);CHECK(story.variable(100,112)==0);
     std::cout<<"Fresh/completed progression, profile restart, settings reset and PC import checked: "<<data<<'\n';
 }
+void ambient_menu(const std::string& data,const std::filesystem::path& scratch){
+    Menu menu; std::string error;
+    CHECK(menu.load(data,&error));
+    dc4scene::FontRenderer font;
+    std::vector<uint8_t> first,moving,hidden,resumed;
+    menu.draw(-1,-1,false,font,&first);
+    menu.update(3200); menu.draw(-1,-1,false,font,&moving);
+    CHECK(first != moving);
+    std::filesystem::create_directories(scratch);
+    bmp(scratch/"title-on.bmp",moving);
+    menu.set_visual_effects_enabled(false); menu.draw(-1,-1,false,font,&hidden);
+    CHECK(hidden != moving);
+    menu.update(1000); menu.draw(-1,-1,false,font,&resumed); CHECK(hidden == resumed);
+    bmp(scratch/"title-off.bmp",hidden);
+    if (const char* capture = std::getenv("DC4_MENU_CAPTURES")) {
+        std::filesystem::create_directories(capture);
+        bmp(std::filesystem::path(capture)/"title-on.bmp",moving);
+        bmp(std::filesystem::path(capture)/"title-off.bmp",hidden);
+    }
+    menu.set_visual_effects_enabled(true); menu.draw(-1,-1,false,font,&resumed); CHECK(moving == resumed);
+    menu.update(400); menu.draw(-1,-1,false,font,&resumed); CHECK(moving != resumed);
+    menu.set_variable(99,10,0); menu.draw(-1,-1,false,font,&resumed); CHECK(hidden == resumed);
+    std::cout<<"Title sakura animation and On/Off checked: "<<data<<'\n';
+}
 void map_progression(const std::string& data){
     const char* maps[]={"dc4_kyo20190208c1_m0","dc4_kyo20190209b_m0",
         "dc4_kyo20190211b_m0","dc4_kyo20190212c_m0"};
@@ -552,6 +597,7 @@ int main(int argc,char** argv){
         const std::string mode=argc>2?argv[2]:"";
         if(mode=="--map-progression") map_progression(installed);
         else if(mode=="--progression") progression(installed,scratch/"progression");
+        else if(mode=="--sakura") ambient_menu(installed,scratch/"sakura");
         else if(mode=="--confirmations") confirmations(installed,scratch/"confirmations");
         else {
             if(mode!="--movie-modal")replay_policy_assets(installed,scratch/"installed");

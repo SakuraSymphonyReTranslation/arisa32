@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -58,6 +59,7 @@ void assets(const fs::path& root) {
     fixture_image(root / "GRP/MSK/MASK15B.CRX", 1280, 750, 2);
     fixture_image(root / "GRP/SYSTEM/EFFCHANGESCREEN1.CRX", 1024, 720, 3);
     fixture_image(root / "GRP/SYSTEM/EFFSAKURA01.CRX", 256, 168, 4);
+    fixture_image(root / "GRP/SYSTEM/EFFYOUSEI.CRX", 256, 164, 3);
 }
 void change(Script& script, const char* background, bool flowers, int duration, bool reload = true) {
     script.param(0x0F, 32, 0);
@@ -145,7 +147,7 @@ void ambient(const fs::path& root, uint16_t version, bool original = false) {
     std::vector<uint8_t> old_save; CHECK(legacy.capture_state(&old_save)); CHECK(old_save[8] == 5);
     Script script(version);
     script.slot(28,"SYSTEM\\EFFSAKURA01"); script.param(0x28,9,116); script.text("PETALS");
-    script.param(0x28,13,0); script.text("CONTINUE");
+    script.param(0x28,7,0); script.text("CONTINUE");
     script.param(0x28,1,0); script.text("STOP"); script.save(root,"ambient.mes");
     dc4scene::SceneRunner scene(root.string()), split(root.string());
     for (auto* s : {&scene, &split}) {
@@ -158,11 +160,17 @@ void ambient(const fs::path& root, uint16_t version, bool original = false) {
     const auto frame = scene.frame();
     CHECK(std::count_if(frame.begin(), frame.end(), [](uint8_t v) { return v != 0; }) > 1280 * 720);
     if (original) ppm(scene, root / "ambient-3200.ppm");
-    std::vector<uint8_t> saved; CHECK(scene.capture_state(&saved)); CHECK(saved[8] == 7);
+    std::vector<uint8_t> saved; CHECK(scene.capture_state(&saved)); CHECK(saved[8] == 9);
     scene.update(400); scene.draw(-1); CHECK(scene.frame() != frame);
     CHECK(scene.restore_state(saved)); scene.draw(-1); CHECK(scene.frame() == frame);
     scene.update(4800); split.update(4800); scene.draw(-1); split.draw(-1); CHECK(scene.frame() == split.frame());
     const auto later = scene.frame();
+    scene.set_visual_effects_enabled(false); scene.draw(-1);
+    const auto hidden = scene.frame(); CHECK(hidden != later);
+    scene.update(4000); scene.draw(-1); CHECK(scene.frame() == hidden);
+    CHECK(scene.restore_state(saved)); scene.draw(-1); CHECK(scene.frame() == hidden);
+    scene.set_visual_effects_enabled(true); scene.draw(-1); CHECK(scene.frame() == frame);
+    scene.update(4800); scene.draw(-1); CHECK(scene.frame() == later);
     scene.set_effects_enabled(false); scene.draw(-1); CHECK(scene.frame() != later);
     scene.update(4000); scene.set_effects_enabled(true); scene.draw(-1); CHECK(scene.frame() == later);
     CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame() == later);
@@ -211,6 +219,142 @@ void capture_dark(const fs::path& root) {
     std::cout << "Sakura software draw average: " << draw_ms/43 << "ms, baseline: " << baseline_ms
               << "ms, wipe: " << wipe_ms/30 << "ms, tails: " << tail_ms/13 << "ms\n";
 }
+
+void light_motion() {
+    dc4scene::FairyLightSystem lights;
+    lights.active = true; lights.parameter = 2;
+    uint32_t random = 1;
+    lights.initialize(random);
+    CHECK(lights.particles.size() == 15);
+    auto& p = lights.particles[0];
+    p.x = 640; p.y = 360; p.vy = .2f;
+    lights.update(500, random);
+    CHECK(std::abs(p.y - 354) < .01f && std::abs(p.alpha - .15f) < .0001f);
+    CHECK(p.cell == 0);
+    lights.update(17, random); CHECK(p.cell == 1);
+    lights.update(2183, random); CHECK(p.alpha > .78f && !p.brightening);
+    lights.update(2800, random); CHECK(p.alpha < .1f && p.brightening);
+    for (int density = 0; density <= 9; ++density) {
+        lights.parameter = density; lights.initialize(random);
+        const int counts[] = {0,1,3,6,9,12,20,20,20,20};
+        CHECK(lights.particles.size() == size_t(counts[density] * 5));
+    }
+}
+
+void visual_effects(const fs::path& root, uint16_t version, bool original = false) {
+    Script identity(version); identity.save(root,"main.mes"); identity.save(root,"dc4_start.mes");
+    Script script(version);
+    script.param(0x28,13,2); script.param(3,0,0); script.text("LIGHTS");
+    script.param(0x28,13,0); script.text("STOP");
+    script.slot(28,"SYSTEM\\EFFSAKURA01"); script.param(0x28,11,46); script.text("PETALS11");
+    script.param(0x28,13,0); script.text("CLEARPETALS");
+    script.save(root,"lights.mes");
+    dc4scene::SceneRunner scene(root.string()), split(root.string());
+    for (auto* s : {&scene, &split}) {
+        s->set_animation_enabled(true);
+        CHECK(s->load_script((root / "MES/lights.mes").string()));
+        CHECK(s->advance_to_next_text() && s->current_line() == "LIGHTS");
+        CHECK(!s->animating() && !s->waiting_for_time());
+    }
+    scene.update(2400);
+    for (int i = 0; i < 150; ++i) split.update(16);
+    scene.draw(-1); split.draw(-1); CHECK(scene.frame() == split.frame());
+    const auto frame = scene.frame();
+    std::vector<uint8_t> saved; std::string error;
+    CHECK(scene.capture_state(&saved, &error)); CHECK(saved[8] == 9);
+    if (original) ppm(scene, root / "lights-2400.ppm");
+    scene.set_visual_effects_enabled(false); scene.draw(-1);
+    const auto hidden = scene.frame(); CHECK(hidden != frame);
+    scene.update(6000); scene.draw(-1); CHECK(scene.frame() == hidden);
+    CHECK(scene.restore_state(saved, &error));
+    scene.set_visual_effects_enabled(true); scene.draw(-1); CHECK(scene.frame() == frame);
+    scene.update(18000); split.update(18000); scene.draw(-1); split.draw(-1);
+    CHECK(scene.frame() == split.frame());
+    std::vector<uint8_t> native;
+    CHECK(scene.capture_pc_save(&native, &error));
+    if (!error.empty()) std::cerr << error << '\n';
+    if (!native.empty()) {
+        CHECK(native[0x3C110] == 2);
+        CHECK(split.restore_pc_save(native, &error));
+        if (!error.empty()) std::cerr << error << '\n';
+        split.update(2400); split.draw(-1); CHECK(split.frame() == frame);
+    }
+    auto damaged = saved; damaged.back() ^= 1;
+    const auto before_damage = scene.frame();
+    CHECK(!scene.restore_state(damaged)); scene.draw(-1); CHECK(scene.frame() == before_damage);
+    damaged = saved; damaged[damaged.size() - 13] = 6;
+    uint64_t hash = 14695981039346656037ull;
+    for (size_t i = 24; i < damaged.size(); ++i) { hash ^= damaged[i]; hash *= 1099511628211ull; }
+    for (int i = 0; i < 8; ++i) damaged[16+i] = uint8_t(hash >> (i*8));
+    CHECK(!scene.restore_state(damaged)); scene.draw(-1); CHECK(scene.frame() == before_damage);
+    CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame() == hidden);
+    CHECK(scene.advance_to_next_text() && scene.current_line() == "PETALS11");
+    scene.update(3200); scene.draw(-1); CHECK(scene.frame() != hidden);
+    CHECK(scene.capture_state(&saved)); CHECK(scene.restore_state(saved));
+    CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame() == hidden);
+
+    for (int effect : {1,9,11,13}) {
+        Script replay(version);
+        replay.slot(28,"SYSTEM\\EFFSAKURA01"); replay.param(0x28,effect,2);
+        replay.param(3,0,0); replay.text("REPLAY"); replay.save(root,"replay.mes");
+        CHECK(scene.load_script((root / "MES/replay.mes").string()));
+        scene.set_variable(9,7,1);
+        CHECK(scene.advance_to_next_text() && !scene.save_load_allowed());
+        scene.update(3200); scene.draw(-1);
+        const auto active = scene.frame();
+        scene.set_visual_effects_enabled(false); scene.draw(-1); CHECK(scene.frame() != active);
+        scene.set_visual_effects_enabled(true);
+        CHECK(scene.capture_pc_save(&native, &error));
+        if (!native.empty()) {
+            CHECK(native[effect == 13 ? 0x3C110 : 0x3C104] == (effect == 13 ? 2 : effect));
+            CHECK(scene.restore_pc_save(native, &error));
+            scene.update(3200); scene.draw(-1);
+            const auto restored = scene.frame();
+            scene.set_visual_effects_enabled(false); scene.draw(-1); CHECK(scene.frame() != restored);
+            scene.set_visual_effects_enabled(true);
+        }
+        scene.finish_replay();
+    }
+}
+
+void native_saves(const std::string& data, const fs::path& output) {
+    for (const auto& entry : fs::directory_iterator(fs::path(data) / "SAVEDATA")) {
+        const auto filename = entry.path().filename().string();
+        if (filename != "DC4PHDL01.dat" && filename != "DC4PHDL07.dat" && filename != "DC4PHDL08.dat") continue;
+        std::ifstream file(entry.path(), std::ios::binary);
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), {});
+        dc4scene::SceneRunner scene(data); scene.set_animation_enabled(true);
+        scene.set_variable(100,112,0);
+        std::string error;
+        CHECK(scene.restore_pc_save(bytes, &error));
+        if (!error.empty()) { std::cerr << filename << ": " << error << '\n'; continue; }
+        CHECK(scene.variable(100,112) == 0);
+        scene.update(3200); scene.draw(-1); const auto active = scene.frame();
+        ppm(scene, output / (filename + "-on.ppm"));
+        scene.set_visual_effects_enabled(false); scene.draw(-1); CHECK(scene.frame() != active);
+        ppm(scene, output / (filename + "-off.ppm"));
+        std::cout << "Native ambient restored: " << filename << '\n';
+    }
+    for (const auto& script : {"dc4_asa20190429c1.mes", "dc4_mid20190402e.mes"}) {
+        dc4scene::SceneRunner scene(data); scene.set_animation_enabled(true);
+        CHECK(scene.load_sheets(data + "/MES/start.mes"));
+        CHECK(scene.load_script(data + "/MES/" + script));
+        scene.set_variable(9,7,1);
+        bool triggered = false;
+        scene.set_observer([&](const dc4::MesCommand& c, const std::string&) {
+            if (c.op == 0x28 && c.p2 % 10 && (c.p1 == 1 || c.p1 == 9 || c.p1 == 11 || c.p1 == 13)) triggered = true;
+        });
+        for (int i = 0; i < 1000 && !triggered && !scene.scene_ended() && !scene.waiting_for_choice(); ++i) {
+            scene.advance_to_next_text();
+            if (scene.waiting_for_time()) scene.finish_script_wait();
+            if (!scene.pending_movie().empty()) scene.finish_movie();
+        }
+        CHECK(triggered); CHECK(scene.last_error().empty());
+        scene.update(3200); scene.draw(-1); const auto active = scene.frame();
+        scene.set_visual_effects_enabled(false); scene.draw(-1); CHECK(scene.frame() != active);
+        std::cout << "Authored replay trigger: " << script << " found=" << triggered << '\n';
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -218,14 +362,19 @@ int main(int argc, char** argv) {
         ("arisa-dc4-effects-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         assets(root);
-        for (auto version : {uint16_t(0xAAB6), uint16_t(0xABB6)}) { transitions(root,version); ambient(root,version); }
+        light_motion();
+        for (auto version : {uint16_t(0xAAB6), uint16_t(0xABB6)}) {
+            transitions(root,version); ambient(root,version); visual_effects(root,version);
+        }
         if (argc > 1) {
             for (const char* variable : {"DC4_DATA", "DC4PH_DATA"}) if (const char* data = std::getenv(variable)) {
                 const auto original = root / variable; assets(original);
-                for (const char* name : {"SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFSAKURA01.CRX", "MSK/MASK15B.CRX"})
+                for (const char* name : {"SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFSAKURA01.CRX", "SYSTEM/EFFYOUSEI.CRX", "MSK/MASK15B.CRX"})
                     fs::copy_file(fs::path(data) / "GRP" / name, original / "GRP" / name, fs::copy_options::overwrite_existing);
                 transitions(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
                 ambient(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
+                visual_effects(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
+                if (variable == std::string("DC4PH_DATA")) native_saves(data, original);
                 if (variable == std::string("DC4_DATA")) capture_dark(original);
             }
         }

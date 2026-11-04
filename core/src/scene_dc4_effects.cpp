@@ -8,11 +8,16 @@ namespace {
 constexpr int kDensityCounts[] = {0, 1, 3, 6, 9, 12, 20};
 constexpr int kAtlasFrames[] = {7, 7, 6, 8, 5, 8};
 
+int native_random(uint32_t& state, int range) {
+    state = state * 214013u + 2531011u;
+    return int((state >> 16) & 0x7fff) % range;
+}
+
 void draw_atlas_sprite(std::vector<uint8_t>& dst, const Image& atlas,
                        int sx, int sy, int width, int height, float x, float y,
                        float pivot_x, float pivot_y, float scale, float angle, float opacity,
                        bool white = false) {
-    if (!atlas.valid() || scale <= 0 || opacity <= 0 || sx < 0 || sy < 0 ||
+    if (!atlas.valid() || width <= 0 || height <= 0 || scale <= 0 || opacity <= 0 || sx < 0 || sy < 0 ||
         sx + width > atlas.w || sy + height > atlas.h) return;
     const float cosine = std::cos(angle), sine = std::sin(angle);
     float min_x = float(kScreenW), min_y = float(kScreenH), max_x = 0, max_y = 0;
@@ -75,8 +80,7 @@ void draw_atlas_sprite(std::vector<uint8_t>& dst, const Image& atlas,
 } // namespace
 
 int SceneRunner::effect_random(int range) {
-    effect_random_state_ = effect_random_state_ * 214013u + 2531011u;
-    return int((effect_random_state_ >> 16) & 0x7fff) % range;
+    return native_random(effect_random_state_, range);
 }
 
 bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
@@ -86,57 +90,121 @@ bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
         start_screen_effect(c.p1, c.p2);
         return true;
     }
-    // Type 13 controls a separate overlay; it must not stop the ambient emitter.
-    if (c.p1 == 13) return false;
+    // Native 0x28 uses the same five particle layers for petals and fairy lights.
+    if (c.p1 == 7 || c.p1 == 16) return false;
     sakura_ = {};
     sakura_sheet_ = {};
-    if ((c.p1 == 1 || c.p1 == 9) && c.p2 % 10 != 0) {
+    fairy_lights_ = {};
+    fairy_light_sheet_ = {};
+    if (c.p1 == 13 && c.p2 % 10 != 0) {
+        if (load_grp_crx("SYSTEM/EFFYOUSEI", &fairy_light_sheet_, nullptr)) {
+            fairy_lights_.active = true;
+            fairy_lights_.parameter = c.p2;
+            fairy_lights_.initialize(effect_random_state_);
+        }
+    } else if ((c.p1 == 1 || c.p1 == 9 || c.p1 == 11) && c.p2 % 10 != 0) {
         const auto sheet = sheets_.find(28);
         if (sheet != sheets_.end() && sheet->second.valid()) {
             sakura_sheet_ = sheet->second;
             sakura_.active = true;
             sakura_.type = c.p1;
             sakura_.parameter = c.p2;
-            init_sakura_particles();
+            sakura_.initialize(effect_random_state_);
         }
     }
     scene_dirty_ = true;
     return true;
 }
 
-void SceneRunner::reset_sakura_particle(size_t index, int depth) {
-    auto& p = sakura_.particles[index];
+void FairyLightSystem::reset_particle(size_t index, int depth, uint32_t& random_state) {
+    const auto random = [&](int range) { return native_random(random_state, range); };
+    auto& p = particles[index];
+    p = {};
+    p.x = float(random(1280)); p.y = float(random(720));
+    p.vy = (random(4) + 1) * .2f;
+    if (random(2) == 0) p.vy = -p.vy;
+    p.amplitude = float(random(32) + 28);
+    p.drift = random(3);
+    if (random(2) == 0) p.drift = -p.drift;
+    p.row = depth + random(2);
+    p.phase = float(random(360));
+}
+
+void FairyLightSystem::initialize(uint32_t& random_state) {
+    const int count = kDensityCounts[std::clamp(parameter % 10, 0, 6)];
+    particles.resize(size_t(count) * 5);
+    tick_remainder = 0;
+    for (size_t i = 0; i < particles.size(); ++i)
+        reset_particle(i, 4 - int(i) / count, random_state);
+}
+
+void FairyLightSystem::update(uint32_t elapsed_ms, uint32_t& random_state) {
+    if (!active) return;
+    const int count = int(particles.size()) / 5;
+    tick_remainder += double(elapsed_ms) * 60;
+    while (tick_remainder >= 1000) {
+        tick_remainder -= 1000;
+        for (size_t i = 0; i < particles.size(); ++i) {
+            auto& p = particles[i];
+            p.phase = std::fmod(p.phase + .01f, 2 * 3.14159265358979323846f);
+            p.y -= p.vy;
+            p.alpha += p.brightening ? .005f : -.005f;
+            if (p.alpha >= .8f) { p.alpha = .8f; p.brightening = false; }
+            if (p.alpha <= 0) { p.alpha = 0; p.brightening = true; }
+            if (++p.cell_ticks > 30) {
+                p.cell_ticks = 0;
+                p.cell = (p.cell + 1) % kAtlasFrames[p.row];
+            }
+            const float x = p.x + std::sin(p.phase) * p.amplitude + p.drift / 10.f;
+            if (x < -28 || x > 1280 || p.y < -28 || p.y > 748)
+                reset_particle(i, 4 - int(i) / count, random_state);
+        }
+    }
+}
+
+void FairyLightSystem::draw(std::vector<uint8_t>& frame, const Image& sheet) const {
+    if (!active) return;
+    for (const auto& p : particles)
+        draw_atlas_sprite(frame, sheet, p.cell * 32, p.row * 28, 28,
+            std::min(28, sheet.h - p.row * 28),
+            p.x + std::sin(p.phase) * p.amplitude + p.drift / 10.f, p.y,
+            0, 0, 1, 0, p.alpha);
+}
+
+void SakuraSystem::reset_particle(size_t index, int depth, uint32_t& random_state) {
+    const auto random = [&](int range) { return native_random(random_state, range); };
+    auto& p = particles[index];
     p = {};
     p.scale = depth == 0 ? 1.f : (10 - depth) / 10.f;
-    p.x = float(effect_random(1280));
-    const int screen = effect_random(3);
+    p.x = float(random(1280));
+    const int screen = random(3);
     p.x += screen == 1 ? -1280 : screen == 2 ? 1280 : 0;
-    p.y = float(-effect_random(720));
-    p.vy = (effect_random(sakura_.parameter % 10 == 6 ? 4 : 10) + 2) / 1.5f;
-    p.amplitude = float(effect_random(32) + 28);
-    p.row = depth + effect_random(2);
-    p.phase = float(effect_random(360));
-    p.cell = effect_random(kAtlasFrames[p.row]);
-    p.alpha = uint8_t((.5f + effect_random(3) / 10.f - depth * .02f) * 255);
+    p.y = float(-random(720));
+    p.vy = (random(parameter % 10 == 6 ? 4 : 10) + 2) / 1.5f;
+    p.amplitude = float(random(32) + 28);
+    p.row = depth + random(2);
+    p.phase = float(random(360));
+    p.cell = random(kAtlasFrames[p.row]);
+    p.alpha = uint8_t((.5f + random(3) / 10.f - depth * .02f) * 255);
 }
 
-void SceneRunner::init_sakura_particles() {
-    const int count = kDensityCounts[std::min(sakura_.parameter % 10, 6)];
-    sakura_.particles.resize(size_t(count) * 5);
-    sakura_.tick_remainder = 0;
-    for (size_t i = 0; i < sakura_.particles.size(); ++i)
-        reset_sakura_particle(i, 4 - int(i) / count);
+void SakuraSystem::initialize(uint32_t& random_state) {
+    const int count = kDensityCounts[std::clamp(parameter % 10, 0, 6)];
+    particles.resize(size_t(count) * 5);
+    tick_remainder = 0;
+    for (size_t i = 0; i < particles.size(); ++i)
+        reset_particle(i, 4 - int(i) / count, random_state);
 }
 
-void SceneRunner::update_sakura(uint32_t elapsed_ms) {
-    if (!sakura_.active || !animation_enabled_ || !effects_enabled_) return;
-    const int count = int(sakura_.particles.size()) / 5;
-    const int wind = sakura_.parameter < 100 ? sakura_.parameter / 10 : -(sakura_.parameter % 100) / 10;
-    sakura_.tick_remainder += double(elapsed_ms) * 60;
-    while (sakura_.tick_remainder >= 1000) {
-        sakura_.tick_remainder -= 1000;
-        for (size_t i = 0; i < sakura_.particles.size(); ++i) {
-            auto& p = sakura_.particles[i];
+void SakuraSystem::update(uint32_t elapsed_ms, uint32_t& random_state) {
+    if (!active) return;
+    const int count = int(particles.size()) / 5;
+    const int wind = parameter < 100 ? parameter / 10 : -(parameter % 100) / 10;
+    tick_remainder += double(elapsed_ms) * 60;
+    while (tick_remainder >= 1000) {
+        tick_remainder -= 1000;
+        for (size_t i = 0; i < particles.size(); ++i) {
+            auto& p = particles[i];
             p.x += wind;
             p.phase += .05f;
             p.y += p.vy;
@@ -144,18 +212,30 @@ void SceneRunner::update_sakura(uint32_t elapsed_ms) {
                 p.cell_ticks = 0;
                 p.cell = (p.cell + 1) % kAtlasFrames[p.row];
             }
-            if (p.y >= 720) reset_sakura_particle(i, 4 - int(i) / count);
+            if (p.y >= 720) reset_particle(i, 4 - int(i) / count, random_state);
         }
     }
+}
+
+void SakuraSystem::draw(std::vector<uint8_t>& frame, const Image& sheet) const {
+    if (!active) return;
+    for (const auto& p : particles)
+        draw_atlas_sprite(frame, sheet, p.cell * 32, p.row * 28, 28, 28,
+                          p.x + std::sin(p.phase) * p.amplitude, p.y,
+                          0, 0, p.scale, 0, p.alpha / 255.f);
+}
+
+void SceneRunner::update_sakura(uint32_t elapsed_ms) {
+    if ((!sakura_.active && !fairy_lights_.active) || !animation_enabled_ || !effects_enabled_ || !visual_effects_enabled_) return;
+    sakura_.update(elapsed_ms, effect_random_state_);
+    fairy_lights_.update(elapsed_ms, effect_random_state_);
     scene_dirty_ = true;
 }
 
 void SceneRunner::draw_sakura() {
-    if (!sakura_.active || !animation_enabled_ || !effects_enabled_) return;
-    for (const auto& p : sakura_.particles)
-        draw_atlas_sprite(frame_, sakura_sheet_, p.cell * 28, p.row * 28, 28, 28,
-                          p.x + std::sin(p.phase) * p.amplitude, p.y,
-                          0, 0, p.scale, 0, p.alpha / 255.f);
+    if (!animation_enabled_ || !effects_enabled_ || !visual_effects_enabled_) return;
+    sakura_.draw(frame_, sakura_sheet_);
+    fairy_lights_.draw(frame_, fairy_light_sheet_);
 }
 
 void SceneRunner::start_screen_effect(int type, int duration) {

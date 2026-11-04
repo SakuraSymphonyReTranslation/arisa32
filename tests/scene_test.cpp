@@ -95,6 +95,70 @@ void fixture_round_trip(const fs::path& root) {
         CHECK(!scene.load_state((root / "saves/truncated.dc4sav").string())); CHECK(scene.current_line() == "THIRD");
     }
 }
+void dc4_sprite_priority_regressions(const fs::path& root) {
+    const auto data=root/"sprite-priority";
+    write_image(data/"GRP/BST/first.CRX",64,36);
+    write_image(data/"GRP/BST/second.CRX",64,36);
+    for (uint8_t version : {0xAA,0xAB}) {
+        Script script; script.bytes[11]=version;
+        script.words(0x8B,20,0,1,0);
+        script.slot(4,"BST\\first"); script.slot(5,"BST\\first"); script.text("DEFAULT");
+        script.words(0x8B,49,0,0,0x21); script.text("BEHIND");
+        script.slot(5,"BST\\second"); script.text("REPLACED");
+        script.words(0x8B,0,0,0,0x81); script.text("HIDDEN");
+        script.slot(5,"BST\\second"); script.text("RESHOWN");
+        script.words(0x8B,50,0,0,0x21); script.text("DEFAULT AGAIN");
+        script.words(0x8B,65535,0,0,0x21); script.text("CLAMPED");
+        script.bytes.push_back(0);
+        write_file(data/"MES/priority.mes",script.bytes);
+        dc4scene::SceneRunner scene(data.string());
+        CHECK(scene.load_script((data/"MES/priority.mes").string()));
+        CHECK(scene.advance_to_next_text()); scene.draw(-1);
+        const auto front=scene.frame();
+        CHECK(front[(10*1280+40)*4]==240);
+        CHECK(scene.advance_to_next_text()); scene.draw(-1);
+        const auto behind=scene.frame();
+        CHECK(behind[(10*1280+40)*4]==40 && behind!=front);
+        CHECK(scene.sprite(1).priority==49 && scene.sprite(0).priority==50);
+        CHECK(scene.advance_to_next_text()); scene.draw(-1);
+        CHECK(scene.frame()==behind && scene.sprite(1).priority==49);
+        std::vector<uint8_t> saved;
+        CHECK(scene.capture_state(&saved));
+        CHECK(scene.advance_to_next_text() && !scene.sprite(1).visible);
+        std::vector<uint8_t> hidden; CHECK(scene.capture_state(&hidden));
+        CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame()==behind);
+        CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame()==front);
+        CHECK(scene.advance_to_next_text() && scene.sprite(1).priority==100);
+        CHECK(scene.restore_state(saved)); scene.draw(-1);
+        CHECK(scene.sprite(1).priority==49 && scene.frame()==behind);
+        CHECK(scene.restore_state(hidden) && !scene.sprite(1).visible);
+        CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame()==behind);
+
+        Script native_script;
+        native_script.bytes={2,0,0,0,3,0,0,0,3,0,0,0,99,0,100,0,0xB6,version,0};
+        native_script.words(0x8B,20,0,1,0);
+        native_script.slot(4,"BST\\first");native_script.slot(5,"BST\\second");
+        native_script.words(0x8B,49,0,0,0x21);
+        native_script.bytes.insert(native_script.bytes.end(),{3,0,0});native_script.text("VISIBLE");
+        native_script.words(0x8B,0,0,0,0x81);
+        native_script.bytes.insert(native_script.bytes.end(),{3,1,0});native_script.text("HIDDEN");
+        native_script.slot(5,"BST\\second");native_script.text("RESHOWN");
+        native_script.bytes.push_back(0);
+        write_file(data/"MES/priority-native.mes",native_script.bytes);
+        CHECK(scene.load_script((data/"MES/priority-native.mes").string()));
+        CHECK(scene.advance_to_next_text());
+        std::vector<uint8_t> native;std::string error;
+        CHECK(scene.capture_pc_save(&native,&error));
+        CHECK(native.size()==0x56FE4 && native[0x18E20+20*960+0x380]==49);
+        CHECK(scene.restore_pc_save(native,&error));scene.draw(-1);
+        CHECK(scene.sprite(1).priority==49 && scene.frame()==behind);
+        CHECK(scene.advance_to_next_text() && !scene.sprite(1).visible);
+        CHECK(scene.capture_pc_save(&native,&error));
+        CHECK(scene.restore_pc_save(native,&error));
+        CHECK(!scene.sprite(1).visible && scene.sprite(1).priority==49);
+        CHECK(scene.advance_to_next_text());scene.draw(-1);CHECK(scene.frame()==behind);
+    }
+}
 void dc4_implicit_sprite_pivot_regressions(const fs::path& root) {
     const auto data = root / "implicit-pivot";
     write_image(data / "GRP/BST/loose.CRX", 64, 36);
@@ -382,6 +446,39 @@ void font_regression() {
     for (size_t i = 0; i < blank.size(); i += 4) if (blank[i] > 220 && blank[i + 3] > 200) ++whites;
     CHECK(whites > 20);
 #endif
+}
+void dialogue_size_regressions(const fs::path& root) {
+    const auto font_path = fs::current_path() / "android/app/src/main/assets/fonts/MSGOTHIC.TTC";
+    if (!fs::exists(font_path)) return;
+    dc4scene::FontRenderer font;
+    CHECK(font.load(font_path.string(), 0, 22));
+    for (const auto name : {"dc4", "dc4ph"}) {
+        const auto data = root / name;
+        Script script; script.bytes[11] = std::string(name) == "dc4ph" ? 0xAB : 0xAA;
+        script.text("Dialogue size and wrapping sample. Dialogue size and wrapping sample.");
+        script.bytes.push_back(0);
+        write_file(data / "MES/main.mes", script.bytes);
+        dc4scene::SceneRunner scene(data.string()); scene.set_font(&font);
+        CHECK(scene.load_script((data / "MES/main.mes").string()));
+        CHECK(scene.advance_to_next_text());
+        for (bool latin : {false, true}) {
+            scene.set_latin_mode(latin);
+            scene.set_dialogue_font_size(22); scene.draw(-1); const auto large = scene.frame();
+            auto previous = large;
+            for (int size = 21; size >= 18; --size) {
+                scene.set_dialogue_font_size(size); scene.draw(-1);
+                CHECK(scene.frame() != previous); previous = scene.frame();
+            }
+            std::vector<uint8_t> saved;
+            CHECK(scene.capture_state(&saved));
+            scene.set_dialogue_font_size(1); scene.draw(-1); CHECK(scene.frame() == previous);
+            scene.set_dialogue_font_size(90); scene.draw(-1); CHECK(scene.frame() == large);
+            CHECK(scene.restore_state(saved)); scene.draw(-1); CHECK(scene.frame() == large);
+            scene.set_dialogue_font_size(18); scene.draw(-1); CHECK(scene.frame() == previous);
+            CHECK(scene.load_script((data / "MES/main.mes").string()));
+            CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(scene.frame() == previous);
+        }
+    }
 }
 void game_round_trip(const fs::path& data, const fs::path& root) {
     dc4scene::FontRenderer font;
@@ -1229,13 +1326,16 @@ int main(int argc, char** argv) {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         if (argc > 1 && std::string(argv[1]) == "--dc4-sprites") {
+            dc4_sprite_priority_regressions(root);
             dc4_implicit_sprite_pivot_regressions(root);
             dc4_cutin_visibility_regressions(root);
             std::cout << (failures ? "DC4 sprite regressions FAILED\n" : "DC4 sprite regressions passed\n");
             return failures ? 1 : 0;
         }
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
+        dialogue_size_regressions(root);
         dc2pc_dialogue_regressions(root);native_save_regressions(root);native_sprite_placement_regressions(root);
+        dc4_sprite_priority_regressions(root);
         dc4_implicit_sprite_pivot_regressions(root);
         dc4_cutin_visibility_regressions(root);
         dc2dm_scene_regressions(root);

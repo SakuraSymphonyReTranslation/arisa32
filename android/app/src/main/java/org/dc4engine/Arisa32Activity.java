@@ -20,6 +20,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.*;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -89,8 +90,8 @@ import org.dc4engine.profile.GameProfileRegistry;
 /** Android presentation/input shell; scene execution stays in arisa32core. */
 public class Arisa32Activity extends Activity implements SurfaceHolder.Callback {
     private static final String TAG = "arisa32";
-    private static final int W = 1280;
-    private static final int H = 720;
+    private static final int W = ScreenViewport.WIDTH;
+    private static final int H = ScreenViewport.HEIGHT;
     private static final Charset SJIS = Charset.forName("windows-31j");
 
     static {
@@ -104,6 +105,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native boolean dc4Init(String dataDir);
     private native void dc4Quit();
     private native void dc4Configure(String saveDir, String overlayDir, String textEncoding, String fontPath, String language);
+    private native void dc4ConfigureDisplay(int fontSize, boolean visualEffectsEnabled);
     private native String dc4OpenMenu(String name);
     private native boolean dc4MenuActive();
     private native boolean dc4MenuFrame(Bitmap bitmap);
@@ -146,6 +148,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native void dc4MovieCompleted();
 
     private SurfaceView surface;
+    private boolean canvasOnlySurface = Build.VERSION.SDK_INT >= 33;
     private FrameLayout gameLayout;
     private TextView bubble;
     private TextView backSidemenu;
@@ -237,7 +240,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         float videoRatio = (float) videoWidth / (float) videoHeight;
         float viewRatio = (float) viewWidth / (float) viewHeight;
 
-        if (videoRatio > viewRatio) {
+        if (stretchToScreen) {
+            sx = sy = 1.0f;
+        } else if (videoRatio > viewRatio) {
             sy = viewRatio / videoRatio;
         } else {
             sx = videoRatio / viewRatio;
@@ -527,6 +532,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private Paint fpsPaint, fpsBgPaint;
     private volatile boolean showFps = true;
     private volatile int textureFilter = FrameFilter.DEFAULT;
+    private volatile boolean stretchToScreen;
     private volatile boolean autoCheckUpdate = true;
     private float currentFps = 60.0f;
     private static boolean updateCheckedThisSession = false;
@@ -655,8 +661,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         gameLayout.setFitsSystemWindows(true);
         surface = new SurfaceView(this);
         surface.getHolder().addCallback(this);
-        // Do not setFixedSize: a fixed 16:9 buffer is stretched by SurfaceView
-        // on other aspect ratios and breaks inverse-mapped choice hit testing.
+        // Keep the surface at its actual size so drawing and touch use the same viewport.
         surface.setOnTouchListener((v, event) -> {
             // Waiting on the storage grant: a tap re-opens the settings screen.
             if (!running && awaitingStorageAccess) {
@@ -676,9 +681,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             if (index < 0) action = MotionEvent.ACTION_CANCEL;
             RectF viewport = viewport(surface.getWidth(), surface.getHeight());
             int x = -1, y = -1;
-            if (index >= 0 && viewport.contains(event.getX(index), event.getY(index))) {
-                x = (int) ((event.getX(index) - viewport.left) * W / viewport.width());
-                y = (int) ((event.getY(index) - viewport.top) * H / viewport.height());
+            if (index >= 0) {
+                x = ScreenViewport.gameX(viewport, event.getX(index), event.getY(index));
+                y = ScreenViewport.gameY(viewport, event.getX(index), event.getY(index));
             }
             touches.offer(new Touch(action, x, y));
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) activePointerId = -1;
@@ -691,12 +696,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         setContentView(gameLayout);
     }
 
-    /** The same centered 16:9 rectangle is used by painting and touch mapping. */
-    private static RectF viewport(int width, int height) {
-        float scale = Math.min(width / (float) W, height / (float) H);
-        float w = W * scale, h = H * scale;
-        return new RectF((width - w) / 2, (height - h) / 2,
-                (width + w) / 2, (height + h) / 2);
+    private RectF viewport(int width, int height) {
+        return ScreenViewport.frame(width, height, stretchToScreen);
     }
 
     /**
@@ -998,6 +999,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             SaveArchive.recover(savesDir());
             savesDir().mkdirs();
             dc4Configure(savesDir().getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
+            dc4ConfigureDisplay(selected.fontSize, selected.visualEffectsEnabled);
             Log.i(TAG, "data dir: " + dataDir);
             initialized = dc4Init(dataDir);
             if (!initialized) {
@@ -1021,75 +1023,51 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         firstFramePending = launchOverlay != null;
         final View pendingOverlay = launchOverlay;
         renderThread = new Thread(() -> {
-            FrameFilter frameFilter = new FrameFilter();
+            SurfaceFrameRenderer renderer = new SurfaceFrameRenderer(surface.getHolder(), !canvasOnlySurface,
+                    (canvas, vp, dest, movie) -> drawOverlays(canvas, vp, getActiveFrameInVp(movie, dest, vp)));
             Bitmap movieBitmap = null;
-            boolean hardwareCanvas = Build.VERSION.SDK_INT >= 26;
             long fpsLastTime = SystemClock.uptimeMillis();
             int fpsFrameCount = 0;
-            while (running) {
-                long started = SystemClock.uptimeMillis();
-                if (showFps) {
-                    fpsFrameCount++;
-                    if (started - fpsLastTime >= 500) {
-                        currentFps = (fpsFrameCount * 1000.0f) / Math.max(1, started - fpsLastTime);
-                        fpsFrameCount = 0;
-                        fpsLastTime = started;
-                    }
-                }
-                Canvas canvas = null;
-                SurfaceHolder holder = surface.getHolder();
-                try {
-                    Runnable command;
-                    while ((command = menuCommands.poll()) != null) command.run();
-                    Touch touch;
-                    while ((touch = touches.poll()) != null) dispatchTouch(touch);
-                    if (dc4ConfirmActive()) dc4ConfirmFrame(frame);
-                    else if (dc4MenuActive()) dc4MenuFrame(frame);
-                    else if (slotMenuOpen) dc4SlotsFrame(frame);
-                    else if (backlogOpen) dc4LogFrame(frame);
-                    else dc4Render(frame);
-                    Bitmap displayBitmap = frame;
-                    int movieSize = dc4ConfirmActive() ? 0 : dc4MovieFrameSize();
-                    if (movieSize != 0) {
-                        int movieWidth = movieSize >>> 16, movieHeight = movieSize & 0xffff;
-                        boolean newBitmap = movieBitmap == null || movieBitmap.getWidth() != movieWidth ||
-                                movieBitmap.getHeight() != movieHeight;
-                        if (newBitmap) {
-                            // Drop the previous texture reference; the render thread owns this bitmap.
-                            movieBitmap = Bitmap.createBitmap(movieWidth, movieHeight, Bitmap.Config.ARGB_8888);
+            try {
+                while (running) {
+                    long started = SystemClock.uptimeMillis();
+                    if (showFps) {
+                        fpsFrameCount++;
+                        if (started - fpsLastTime >= 500) {
+                            currentFps = (fpsFrameCount * 1000.0f) / Math.max(1, started - fpsLastTime);
+                            fpsFrameCount = 0;
+                            fpsLastTime = started;
                         }
-                        if (dc4MovieFrame(movieBitmap, newBitmap)) displayBitmap = movieBitmap;
-                    } else movieBitmap = null;
-                    pollStatus();
-                    driveModes(SystemClock.uptimeMillis());
-                    if (hardwareCanvas) {
-                        try { canvas = holder.lockHardwareCanvas(); }
-                        catch (RuntimeException unavailable) { hardwareCanvas = false; }
                     }
-                    if (canvas == null) canvas = holder.lockCanvas();
-                    if (canvas != null) {
-                        canvas.drawColor(Color.BLACK);
-                        RectF vp = viewport(canvas.getWidth(), canvas.getHeight());
-                        RectF destination = vp;
-                        if (displayBitmap == movieBitmap) {
-                            float scale = Math.min(vp.width() / displayBitmap.getWidth(), vp.height() / displayBitmap.getHeight());
-                            float w = displayBitmap.getWidth() * scale, h = displayBitmap.getHeight() * scale;
-                            destination = new RectF(vp.centerX() - w / 2, vp.centerY() - h / 2,
-                                    vp.centerX() + w / 2, vp.centerY() + h / 2);
-                        }
+                    try {
+                        Runnable command;
+                        while ((command = menuCommands.poll()) != null) command.run();
+                        Touch touch;
+                        while ((touch = touches.poll()) != null) dispatchTouch(touch);
+                        if (dc4ConfirmActive()) dc4ConfirmFrame(frame);
+                        else if (dc4MenuActive()) dc4MenuFrame(frame);
+                        else if (slotMenuOpen) dc4SlotsFrame(frame);
+                        else if (backlogOpen) dc4LogFrame(frame);
+                        else dc4Render(frame);
+                        Bitmap displayBitmap = frame;
+                        int movieSize = dc4ConfirmActive() ? 0 : dc4MovieFrameSize();
+                        if (movieSize != 0) {
+                            int movieWidth = movieSize >>> 16, movieHeight = movieSize & 0xffff;
+                            boolean newBitmap = movieBitmap == null || movieBitmap.getWidth() != movieWidth ||
+                                    movieBitmap.getHeight() != movieHeight;
+                            if (newBitmap) {
+                                // Drop the previous texture reference; the render thread owns this bitmap.
+                                movieBitmap = Bitmap.createBitmap(movieWidth, movieHeight, Bitmap.Config.ARGB_8888);
+                            }
+                            if (dc4MovieFrame(movieBitmap, newBitmap)) displayBitmap = movieBitmap;
+                        } else movieBitmap = null;
+                        pollStatus();
+                        driveModes(SystemClock.uptimeMillis());
                         boolean isMovie = displayBitmap == movieBitmap && movieBitmap != null;
-                        frameFilter.draw(canvas, displayBitmap, destination, textureFilter);
-                        RectF activeFrame = getActiveFrameInVp(isMovie, destination, vp);
-                        drawOverlays(canvas, vp, activeFrame);
-                    }
-                } catch (RuntimeException error) {
-                    Log.e(TAG, "render loop failed", error);
-                    notifyUser("Rendering stopped. See logcat dc4.");
-                    running = false;
-                } finally {
-                    if (canvas != null) {
-                        holder.unlockCanvasAndPost(canvas);
-                        if (firstFramePending) {
+                        int applied = renderer.draw(displayBitmap, isMovie, stretchToScreen, textureFilter,
+                                autoMode || skipMode || showFps);
+                        canvasOnlySurface = !renderer.usesGles();
+                        if (applied >= 0 && firstFramePending) {
                             firstFramePending = false;
                             runOnUiThread(() -> {
                                 if (launchOverlay == pendingOverlay && !initializationFailed) {
@@ -1097,11 +1075,19 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                                 }
                             });
                         }
+                    } catch (RuntimeException error) {
+                        if (running) {
+                            Log.e(TAG, "render loop failed", error);
+                            notifyUser("Rendering stopped. See logcat dc4.");
+                        }
+                        running = false;
                     }
+                    try {
+                        Thread.sleep(Math.max(1, 16 - (SystemClock.uptimeMillis() - started)));
+                    } catch (InterruptedException ignored) { break; }
                 }
-                try {
-                    Thread.sleep(Math.max(1, 16 - (SystemClock.uptimeMillis() - started)));
-                } catch (InterruptedException ignored) { break; }
+            } finally {
+                renderer.close();
             }
         }, "dc4-render");
         renderThread.start();
@@ -1742,12 +1728,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private RectF getActiveFrameInVp(boolean isMovie, RectF movieDest, RectF vp) {
         if (isMovie && movieDest != null && vp != null && vp.width() > 0 && vp.height() > 0) {
-            float scale = (float) W / vp.width();
-            float left = (movieDest.left - vp.left) * scale;
-            float top = (movieDest.top - vp.top) * scale;
-            float right = (movieDest.right - vp.left) * scale;
-            float bottom = (movieDest.bottom - vp.top) * scale;
-            return new RectF(left, top, right, bottom);
+            return ScreenViewport.toGame(vp, movieDest);
         }
         GameProfile profile = currentProfile();
         if (profile != null) {
@@ -1761,8 +1742,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         ensurePaints();
         canvas.save();
         canvas.translate(vp.left, vp.top);
-        final float scale = vp.width() / (float) W;
-        canvas.scale(scale, scale);
+        canvas.scale(vp.width() / W, vp.height() / H);
         drawModeBadge(canvas, activeFrame);
         if (showFps) drawFpsMeter(canvas, activeFrame);
         canvas.restore();
@@ -2046,7 +2026,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         String[] descriptions = {
                 tr("Nearest pixels, no smoothing", "Piksel terdekat, tanpa penghalusan", "最近傍補間・スムージングなし"),
                 tr("Default · smooths image scaling", "Default · haluskan perubahan ukuran gambar", "標準・拡大縮小時に補間"),
-                tr("Light edge smoothing · Android 13+", "Penghalusan tepi ringan · Android 13+", "軽量な輪郭補正・Android 13以降")
+                tr("Smooths image edges", "Menghaluskan tepi gambar", "画像の輪郭をなめらかに補正")
         };
         int count = FrameFilter.supportsFxaa() ? 3 : 2;
         for (int mode = 0; mode < count; mode++) {
@@ -2652,6 +2632,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             Locale.setDefault(Locale.Category.FORMAT, Locale.JAPAN);
         }
         selected = game; inLibrary = false; initializationFailed = false; surfaceReady = false;
+        stretchToScreen = game.stretchToScreen;
         lastLineSerial = -1; wasEnded = wasRevealed = choiceNotified = false; pickerLatestFile = pickerLatestCopy = null;
         createGameSurface();
     }
@@ -2739,8 +2720,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         float minX = safeLeft + dp(4);
         float maxX = gameLayout.getWidth() - safeRight - navWidth - dp(4);
         if (backSidemenu != null && "dc2pc".equals(currentProfile().getId())) {
-            // DC2PC is fitted as 4:3; keep navigation in its left black margin.
+            // DC2PC keeps a native left margin inside the composed frame.
             float margin = (gameLayout.getWidth() - gameLayout.getHeight()*4f/3f)/2f;
+            if (surface != null && surface.getWidth() > 0) {
+                RectF vp = viewport(surface.getWidth(), surface.getHeight());
+                margin = surface.getLeft() + vp.left + currentProfile().getActiveFrameRect().left * vp.width() / W;
+            }
             if (margin >= safeLeft+navWidth+dp(8)) maxX = margin-navWidth-dp(4);
         }
         // The game's message-window buttons occupy the lower half of the viewport.
@@ -2804,6 +2789,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     }));
         }
         setting(body, tr("Manage game", "Kelola game", "ゲーム管理"), selected.title + " · " + contentName(selected.language), () -> showGameSettings(selected));
+        setting(body, screenModeTitle(), screenModeName(selected.stretchToScreen), () -> chooseScreenMode(selected));
+        if (isDc4DisplaySettings(selected))
+            setting(body, visualEffectTitle(), selected.visualEffectsEnabled ? "On" : "Off", () -> chooseVisualEffect(selected));
         addSessionSetting(body);
         addTextureFilterSetting(body);
         setting(body, tr("App language", "Bahasa aplikasi", "アプリの言語"), null, this::chooseUiLanguage);
@@ -2851,15 +2839,28 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
     }
     private void showGameSettings(GameLibrary.Entry game) {
-        settingsDialog = dialog().setTitle(game.title)
-                .setItems(new String[]{tr("Game language: ", "Bahasa game: ", "ゲーム言語：") + contentName(game.language),
+        boolean dc4 = isDc4DisplaySettings(game);
+        ArrayList<String> items = new ArrayList<>(Arrays.asList(tr("Game language: ", "Bahasa game: ", "ゲーム言語：") + contentName(game.language),
                         tr("Import language pack", "Impor paket bahasa", "翻訳パックを追加"),
                         tr("Choose dialogue font", "Pilih font dialog", "台詞フォントを選択"),
                         tr("Import font (.ttf / .otf / .ttc)", "Impor font (.ttf / .otf / .ttc)", "フォントを追加（.ttf / .otf / .ttc）"),
                         tr("Export saves", "Ekspor simpanan", "セーブをエクスポート"),
                         tr("Import saves", "Impor simpanan", "セーブをインポート"),
                         tr("Rename game", "Ubah nama game", "ゲーム名を変更"),
-                        tr("Remove from library", "Hapus dari koleksi", "ライブラリから削除")}, (d, which) -> {
+                        tr("Remove from library", "Hapus dari koleksi", "ライブラリから削除")));
+        if (dc4) {
+            items.add(4, tr("Dialogue font size: ", "Ukuran font dialog: ", "台詞フォントサイズ：")
+                    + game.fontSize);
+            items.add(5, visualEffectTitle() + ": " + (game.visualEffectsEnabled ? "On" : "Off"));
+        }
+        final int screenModeIndex = items.size();
+        items.add(screenModeTitle() + ": " + screenModeName(game.stretchToScreen));
+        settingsDialog = dialog().setTitle(game.title)
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which == screenModeIndex) { chooseScreenMode(game); return; }
+                    if (dc4 && which == 4) { chooseDialogueFontSize(game); return; }
+                    if (dc4 && which == 5) { chooseVisualEffect(game); return; }
+                    if (dc4 && which > 5) which -= 2;
                     switch (which) {
                         case 0: chooseContent(game); break;
                         case 1: chooseOverlayLanguage(game); break;
@@ -2871,6 +2872,63 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         case 7: removeGame(game); break;
                     }
                 }).show();
+    }
+
+    private String screenModeTitle() {
+        return tr("Screen mode", "Mode layar", "画面表示");
+    }
+    private String screenModeName(boolean stretch) {
+        return stretch ? "Stretch" : "Fit to Screen";
+    }
+    private void chooseScreenMode(GameLibrary.Entry game) {
+        settingsDialog = dialog().setTitle(screenModeTitle())
+                .setSingleChoiceItems(new String[]{
+                        tr("Fit to Screen (keep proportions)", "Fit to Screen (jaga proporsi)", "Fit to Screen（縦横比を維持）"),
+                        tr("Stretch (fill screen)", "Stretch (penuhi layar)", "Stretch（画面全体に拡大）")},
+                        game.stretchToScreen ? 1 : 0, (d, which) -> {
+                    game.stretchToScreen = which == 1;
+                    persistLibrary();
+                    if (selected == game) {
+                        stretchToScreen = game.stretchToScreen;
+                        activePointerId = -1;
+                        touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
+                        clampBubble();
+                        if (movieMediaPlayer != null)
+                            adjustTextureViewAspectRatio(movieMediaPlayer.getVideoWidth(), movieMediaPlayer.getVideoHeight());
+                    }
+                    d.dismiss();
+                    notifyUser(tr("Screen mode saved.", "Mode layar tersimpan.", "画面表示を保存しました。"));
+                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+    }
+
+    private boolean isDc4DisplaySettings(GameLibrary.Entry game) {
+        String id = GameProfileRegistry.resolveProfile(new File(game.path), game.title).getId();
+        return "dc4".equals(id) || "dc4ph".equals(id);
+    }
+    private void chooseDialogueFontSize(GameLibrary.Entry game) {
+        settingsDialog = dialog().setTitle(tr("Dialogue font size (next launch)", "Ukuran font dialog (buka ulang game)", "台詞フォントサイズ（次回起動時）"))
+                .setSingleChoiceItems(new String[]{"18", "19", "20", "21", "22"}, game.fontSize - 18, (d, which) -> {
+                    game.fontSize = 18 + which;
+                    persistLibrary();
+                    d.dismiss();
+                    notifyUser(tr("Size saved. Reopen the game to apply it.", "Ukuran tersimpan. Buka ulang game untuk menerapkannya.", "サイズを保存しました。ゲームを再起動すると適用されます。"));
+                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+    }
+    private String visualEffectTitle() {
+        return tr("Visual effect", "Visual effect", "視覚効果");
+    }
+    private void chooseVisualEffect(GameLibrary.Entry game) {
+        settingsDialog = dialog().setTitle(visualEffectTitle())
+                .setSingleChoiceItems(new String[]{"On", "Off"}, game.visualEffectsEnabled ? 0 : 1, (d, which) -> {
+                    game.visualEffectsEnabled = which == 0;
+                    persistLibrary();
+                    if (!inLibrary && selected == game) {
+                        final boolean enabled = game.visualEffectsEnabled;
+                        menuCommands.add(() -> dc4ConfigureDisplay(game.fontSize, enabled));
+                    }
+                    d.dismiss();
+                    notifyUser(tr("Visual effect saved.", "Pengaturan efek visual tersimpan.", "視覚効果の設定を保存しました。"));
+                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
     private void chooseContent(GameLibrary.Entry game) {
         ArrayList<String> codes = new ArrayList<>(); codes.add("jp");
@@ -3383,6 +3441,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 refreshSlots();
                 if (initialized && !inLibrary && selected != null) {
                     dc4Configure(savesDir().getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
+                    dc4ConfigureDisplay(selected.fontSize, selected.visualEffectsEnabled);
                 }
                 if (exporting) {
                     settingsDialog = dialog().setTitle(tr("Export complete", "Ekspor selesai", "エクスポート完了"))
@@ -3430,6 +3489,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
         if (surface == null || holder != surface.getHolder()) return;
+        canvasOnlySurface = Build.VERSION.SDK_INT >= 33;
         surfaceReady = true;
         startRendering();
     }

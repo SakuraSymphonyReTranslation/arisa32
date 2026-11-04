@@ -136,6 +136,34 @@ void capture(const fs::path& root) {
     CHECK(pixel(scene.frame(),1270,710)==(Color{10,200,70}));
     CHECK(scene.capture_thumbnail(0,72).empty());
 }
+void voice_associations(const fs::path& root) {
+    for (uint8_t version : {0xAA, 0xAB}) {
+        Script script; script.bytes[11] = version;
+        script.string(0x4D,"VOICE\\NIN001"); script.text("NINO");
+        script.bytes.insert(script.bytes.end(),{0x06,0,0}); script.text("NARRATION");
+        script.bytes.insert(script.bytes.end(),{0x06,0,0,0x6A});
+        for (unsigned char ch : std::string("Ichito")) script.bytes.push_back(uint8_t(ch-0x20));
+        script.bytes.push_back(0); script.text("MC");
+        script.bytes.insert(script.bytes.end(),{0x06,0,0});
+        script.string(0x4D,"VOICE\\NIN002"); script.text("NINO AGAIN"); script.bytes.push_back(0);
+        write(root/"MES/voices.mes",script.bytes);
+        dc4scene::SceneRunner scene(root.string());
+        CHECK(scene.load_script((root/"MES/voices.mes").string()));
+        std::vector<dc4ui::LogRow> rows;
+        for (int i=0;i<4;++i) { CHECK(scene.advance_to_next_text()); rows.push_back(dc4ui::capture_log_row(scene,i)); }
+        CHECK(rows[0].voice=="VOICE\\NIN001" && rows[3].voice=="VOICE\\NIN002");
+        CHECK(rows[1].voice.empty() && rows[2].voice.empty() && rows[2].name==u"Ichito");
+        CHECK(scene.restore_state(rows[2].snapshot) && scene.last_voice().empty());
+        dc4ui::LogScreen log; CHECK(log.load(root.string()));
+        const dc4scene::FontRenderer font;
+        std::vector<uint8_t> frame(1280*720*4,255);
+        log.draw(rows,0,false,-1,-1,font,&frame);
+        CHECK(pixel(frame,328,150)==atlas(362,12));
+        CHECK(pixel(frame,328,600)==atlas(362,12));
+        CHECK(pixel(frame,328,300)!=atlas(362,12));
+        CHECK(pixel(frame,328,450)!=atlas(362,12));
+    }
+}
 void dc2dm(const fs::path& root, const char* font_path) {
     write(root/"MES/main.mes",{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,0});
     Script palette;
@@ -283,7 +311,7 @@ int main(int argc, char** argv) {
         if (!fs::create_directory(root)) throw std::runtime_error("Cannot create isolated log fixture");
         crx(root/"GRP/SYSTEM/BKLOGBACK.CRX",1280,720,false);
         crx(root/"GRP/SYSTEM/BKLOGCHIP.CRX",1224,854,true);
-        text_layout(); row_art(root); capture(root); dc2dm(root,argv[1]);
+        text_layout(); row_art(root); capture(root); voice_associations(root); dc2dm(root,argv[1]);
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; ++failures; }
     std::error_code ec;
     if (fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)

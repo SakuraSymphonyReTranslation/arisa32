@@ -83,6 +83,22 @@ public class LibraryChecks {
    GameLibrary library=new GameLibrary(root);GameLibrary.Entry e=new GameLibrary.Entry();e.id=hash;e.title="D.C.4 日本語";e.path=dataA.getParent();e.english=dataB.getParent();e.language="en";e.enEncoding="UTF-8";e.enFingerprint=CONTENT;library.entries.add(e);library.save();
    GameLibrary loaded=new GameLibrary(root);check(loaded.entries.size()==1,"catalogue reload");check(loaded.entries.get(0).title.equals(e.title),"unicode title persists");check(loaded.entries.get(0).encoding().equals("UTF-8"),"content encoding persists");
    File catalogue=new File(root,"library.properties"), recovery=new File(root,"library.properties.backup");check(catalogue.renameTo(recovery),"simulate catalogue swap");check(new GameLibrary(root).entries.size()==1,"catalogue recovery");
+   GameLibrary defaults=new GameLibrary(root);
+   check(defaults.entries.get(0).fontSize==22 && defaults.entries.get(0).visualEffectsEnabled,"display defaults");
+   defaults.entries.get(0).fontSize=18;defaults.entries.get(0).visualEffectsEnabled=false;
+   GameLibrary.Entry other=new GameLibrary.Entry();other.id=CONTENT;other.title="Other game";other.path=dataB.getParent();defaults.entries.add(other);defaults.save();
+   GameLibrary display=new GameLibrary(root);
+   check(display.entries.get(0).fontSize==18 && !display.entries.get(0).visualEffectsEnabled,"display choices persist");
+   check(display.entries.get(1).fontSize==22 && display.entries.get(1).visualEffectsEnabled,"display choices are per game");
+   Properties props=new Properties();try(InputStream in=new FileInputStream(catalogue)){props.load(in);}
+   for(String size:new String[]{"missing","bad","5","90"}) {
+    if(size.equals("missing")){props.remove(hash+".fontSize");props.remove(hash+".visualEffectsEnabled");}
+    else props.setProperty(hash+".fontSize",size);
+    try(OutputStream out=new FileOutputStream(catalogue)){props.store(out,"");}
+    GameLibrary.Entry entry=new GameLibrary(root).entries.get(0);
+    check(entry.fontSize==(size.equals("5")?18:22),"font size bounds/default: "+size);
+    check(entry.visualEffectsEnabled,"older catalogue defaults sakura On");
+   }
    System.out.println("PASS: "+assertions+" archive/catalogue checks");
   }finally{SaveArchive.removeTree(root);}
  }

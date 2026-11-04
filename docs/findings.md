@@ -506,8 +506,11 @@ each entry: `"「name」text"` selects the contact row by the 11-name SJIS table
 at 0x492850..0x4928A8 — 有里栖, 二乃, 諳子, ひより, 詩名, 未羽, ちよ子, 有里咲,
 一登, 杉並, 叶方 — unknown senders fall back to row 1; the row chip
 (COMUCHIP crop x420..740, y 81·contact..+81) carries avatar, name plate and
-the blank bubble, and the text draws at x540 in dark gray, wrapped at 28 SJIS
-bytes. `"@dN"` stamps crop comustamp.CRX at (80·((N−1)/8), 64·((N−1)%8)),
+the blank bubble. Text starts at x540; the native renderer inserts one newline
+after 28 SJIS bytes, preserving padding rather than wrapping by words. The
+2026-11-04 PC recording shows outlined MS Gothic text with a 28px line pitch.
+See `comu-text-validation.md` for the corrected renderer and frame analysis.
+`"@dN"` stamps crop comustamp.CRX at (80·((N−1)/8), 64·((N−1)%8)),
 79×63 per cell (8 columns, 64px rows) — verified @d1 = ごはんだよ and
 @d2 = 了解 against dc4_sen20181213d. The timeline persists across AB 98 and
 clears with AB 65535; the queue holds 20 (type 1) / 200 (type 2) entries.

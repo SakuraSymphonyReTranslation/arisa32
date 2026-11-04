@@ -105,6 +105,10 @@ if(BUILD_TESTING)
     target_link_libraries(text_render_test PRIVATE dc4core)
     add_test(NAME text_render_test COMMAND text_render_test
         "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
+    add_executable(comu_text_test tests/comu_text_test.cpp)
+    target_link_libraries(comu_text_test PRIVATE arisa32_core)
+    add_test(NAME comu_text_test COMMAND comu_text_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
     add_executable(mesopcode_test tests/mesopcode_test.cpp)
     target_link_libraries(mesopcode_test PRIVATE dc4core)
     add_test(NAME mesopcode_test COMMAND mesopcode_test)

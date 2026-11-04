@@ -62,6 +62,7 @@ public:
                       bool fixed_grid = false, int tracking = 0) const;
     int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false,
                    bool fixed_grid = false, int tracking = 0) const;
+    std::pair<int, int> text_vertical_bounds(const std::u16string& text, float pixel_size = 0) const;
 
 private:
     struct Glyph {
@@ -86,6 +87,40 @@ struct Image {
     bool valid() const { return !rgba.empty(); }
 };
 
+struct SakuraSystem {
+    struct Particle {
+        float x = 0, y = 0, vy = 0, scale = 1, phase = 0, amplitude = 0;
+        int row = 0, cell = 0, cell_ticks = 0;
+        uint8_t alpha = 255;
+    };
+    bool active = false;
+    int type = 0, parameter = 0;
+    double tick_remainder = 0;
+    std::vector<Particle> particles;
+    void initialize(uint32_t& random_state);
+    void update(uint32_t elapsed_ms, uint32_t& random_state);
+    void draw(std::vector<uint8_t>& frame, const Image& sheet) const;
+private:
+    void reset_particle(size_t index, int depth, uint32_t& random_state);
+};
+
+struct FairyLightSystem {
+    struct Particle {
+        float x = 0, y = 0, vy = 0, phase = 0, amplitude = 0, alpha = 0;
+        int drift = 0, row = 0, cell = 0, cell_ticks = 0;
+        bool brightening = true;
+    };
+    bool active = false;
+    int parameter = 0;
+    double tick_remainder = 0;
+    std::vector<Particle> particles;
+    void initialize(uint32_t& random_state);
+    void update(uint32_t elapsed_ms, uint32_t& random_state);
+    void draw(std::vector<uint8_t>& frame, const Image& sheet) const;
+private:
+    void reset_particle(size_t index, int depth, uint32_t& random_state);
+};
+
 // One of the engine's BST sprite records.
 struct BstSprite {
     std::string name;      // last script name, for "--" reuse
@@ -104,6 +139,7 @@ struct BstSprite {
     int alpha = 255;
     bool visible = false;
     int z = 0;
+    int priority = 50;     // Native 0x8B mode 0x20; lower values draw first.
     // 0x8E slide-in/out motion: an offset from the 0x8B position that decays
     // to zero over the scripted duration (sub_447620/sub_447700).
     struct Slide {
@@ -228,6 +264,8 @@ public:
     bool effect_pck_active() const { return effect_pck_.active; }
     void set_window_opacity(int percent);
     void set_effects_enabled(bool enabled);
+    void set_visual_effects_enabled(bool enabled) { visual_effects_enabled_ = enabled; scene_dirty_ = true; }
+    void set_dialogue_font_size(int size);
     void set_effect_speed(int native_0_to_11);
     void set_character_volume(size_t id, int percent, bool muted = false) { scene_audio_.set_character_volume(id, percent, muted); }
     void set_latin_mode(bool latin);
@@ -373,12 +411,10 @@ private:
     void start_dc2pc_transition(int mode);
     void finish_dc2pc_transition();
     void draw_dc2pc_transition();
-    void init_sakura_particles();
     void update_sakura(uint32_t elapsed_ms);
     void draw_sakura();
     bool dispatch_dc4_effect_command(const dc4::MesCommand& c);
     int effect_random(int range);
-    void reset_sakura_particle(size_t index, int depth);
     void start_screen_effect(int type, int duration);
     void update_screen_effect(uint32_t elapsed_ms);
     void draw_screen_effect();
@@ -396,26 +432,11 @@ private:
     bool dispatch_text_command(const dc4::MesCommand& c);
     bool replay_action_disabled(const std::string& action) const;
 
-    struct SakuraParticle {
-        float x = 0;
-        float y = 0;
-        float vy = 0;
-        float scale = 1.0f;
-        float phase = 0;
-        float amplitude = 0;
-        int row = 0;
-        int cell = 0;
-        int cell_ticks = 0;
-        uint8_t alpha = 255;
-    };
-    struct SakuraSystem {
-        bool active = false;
-        int type = 0;
-        int parameter = 0;
-        double tick_remainder = 0;
-        std::vector<SakuraParticle> particles;
-    } sakura_;
+    using SakuraParticle = SakuraSystem::Particle;
+    SakuraSystem sakura_;
     Image sakura_sheet_;
+    FairyLightSystem fairy_lights_;
+    Image fairy_light_sheet_;
     uint32_t effect_random_state_ = 1;
     struct ScreenEffectSprite {
         float from_x = 0, to_x = 0, y = 0;
@@ -432,6 +453,8 @@ private:
     std::string pending_movie_, input_skip_label_;
     bool pending_movie_is_effect_ = false;
     bool is_dc4_or_dc4ph_ = false;
+    bool visual_effects_enabled_ = true;
+    int dialogue_font_size_ = 22;
     bool dc4_replay_profile_ = false;
     double script_wait_ms_ = 0;
     bool script_wait_pending_ = false;

@@ -47,6 +47,7 @@ final class FrameFilterChecks {
     int run() throws Exception {
         check((Integer) get("textureFilter") == FrameFilter.DEFAULT, "Fresh preference keeps bilinear default");
         verifySoftware();
+        checks += new GlesFrameChecks(host, activity).run();
         if (Build.VERSION.SDK_INT >= 33) verifyGpu();
         verifyFps();
         for (String language : new String[]{"en", "id", "jp"}) verifySettings(language);
@@ -132,7 +133,7 @@ final class FrameFilterChecks {
     }
 
     @android.annotation.TargetApi(33)
-    private Bitmap gpu(FrameFilter filter, Bitmap source, int mode, int width, int height) throws Exception {
+    Bitmap gpu(FrameFilter filter, Bitmap source, int mode, int width, int height) throws Exception {
         ImageReader reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2,
                 HardwareBuffer.USAGE_GPU_COLOR_OUTPUT | HardwareBuffer.USAGE_CPU_READ_OFTEN);
         HardwareRenderer renderer = new HardwareRenderer();

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.7 - 2026-11-05
+
+### Bahasa Indonesia
+
+- Memperbaiki COMU DC4/DC4PH: spasi manual patch dipertahankan, format Sakuramusubi dan nama pengirim Latin dikenali, serta font proporsional memakai teks lebih besar dan maksimal tiga baris.
+- Menyediakan FXAA Android 5 sampai 12 melalui OpenGL ES 2.0, dengan Bilinear sebagai cadangan; Android 13+ tetap memakai RuntimeShader.
+- Menambahkan Fit to Screen / Stretch per game dan ukuran dialog DC4/DC4PH 18 sampai 22 untuk MS Gothic, font sistem, dan font kustom.
+- Memulihkan sakura dan cahaya melayang sesuai skrip/aset asli, menambahkan Visual effect On/Off, serta mempertahankan keadaan efek dalam save yang didukung.
+- Memperbaiki referensi replay suara pada narasi/dialog tanpa suara dan prioritas sprite, termasuk Gen di belakang Mitsumi.
+- Menambah pemeriksaan progres ending dan kompatibilitas save. Syarat Sorane Ending 2 dan menu D.C. tetap mengikuti progres asli; data tamat tidak direset otomatis.
+
+### English
+
+- Fixes DC4/DC4PH COMU: preserves manual patch spacing, recognizes Sakuramusubi formatting and romanized senders, and uses larger proportional-font text with up to three lines.
+- Adds FXAA on Android 5 through 12 using OpenGL ES 2.0 with Bilinear fallback; Android 13+ retains RuntimeShader.
+- Adds per-game Fit to Screen / Stretch and DC4/DC4PH dialogue sizes from 18 to 22 for MS Gothic, system fonts, and custom fonts.
+- Restores script-driven sakura and floating lights using original assets, adds Visual effect On/Off, and retains supported effect state in saves.
+- Fixes voice replay references on narration/unvoiced dialogue and sprite priority, including Gen behind Mitsumi.
+- Extends ending progression and save compatibility checks. Sorane Ending 2 and D.C. menu requirements retain original progression; completion data is not automatically reset.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.6.7/id.md) | [English](docs/releases/v0.6.7/en.md).
+
 ## 0.6.6 - 2026-11-03
 
 - Memperbesar ukuran bawaan dialog Latin DC4/DC4PH dari 20 menjadi 22 piksel dan nama karakter dari 18 menjadi 22 piksel pada kanvas game. Jendela dialog Android memakai MS Gothic agar bentuk dan jarak huruf lebih mendekati versi PC.

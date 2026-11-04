@@ -42,7 +42,7 @@ def main():
         subprocess.run(adb + ["push", str(path), device + "/" + path.name], check=True, capture_output=True)
     env = ["LD_LIBRARY_PATH=" + device]
     if args.dc4_data:
-        for name in ["SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFSAKURA01.CRX", "MSK/MASK15B.CRX"]:
+        for name in ["SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFSAKURA01.CRX", "SYSTEM/EFFYOUSEI.CRX", "MSK/MASK15B.CRX"]:
             destination = device + "/original/GRP/" + name
             subprocess.run(adb + ["shell", "mkdir", "-p", destination.rsplit("/", 1)[0]], check=True)
             subprocess.run(adb + ["push", str(args.dc4_data / "GRP" / name), destination], check=True, capture_output=True)

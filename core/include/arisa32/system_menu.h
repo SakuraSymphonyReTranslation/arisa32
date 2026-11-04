@@ -65,6 +65,7 @@ public:
     void bind_confirmations(ConfirmDialog& dialog);
     void set_confirmation_changed_callback(std::function<void()> callback);
     void update(uint32_t elapsed_ms);
+    void set_visual_effects_enabled(bool enabled);
     void draw(int mouse_x, int mouse_y, bool down,
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;

@@ -1,0 +1,32 @@
+plugins { id 'com.android.application' version '8.5.2' }
+
+android {
+    namespace 'org.dc4engine'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'org.dc4engine.glesqa'
+        minSdk 21
+        targetSdk 36
+        testInstrumentationRunner 'org.dc4engine.GlesCompatChecks'
+    }
+    sourceSets {
+        main.java.srcDirs 'src/main/java', 'build/generated/renderer'
+        androidTest.java.srcDirs 'src/androidTest/java', 'build/generated/checks'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+tasks.register('copyRenderer', Sync) {
+    from('../../../android/app/src/main/java') {
+        include '**/FrameFilter.java', '**/GlesFrameRenderer.java', '**/SurfaceFrameRenderer.java', '**/ScreenViewport.java'
+    }
+    into 'build/generated/renderer'
+}
+tasks.register('copyChecks', Sync) {
+    from('../../../android/app/src/androidTest/java') { include '**/GlesFrameChecks.java' }
+    into 'build/generated/checks'
+}
+tasks.named('preBuild').configure { dependsOn 'copyRenderer', 'copyChecks' }

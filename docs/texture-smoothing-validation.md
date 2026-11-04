@@ -9,11 +9,12 @@ preferences. English, Indonesian, and Japanese labels are included.
 | --- | --- | --- |
 | Off | Nearest-neighbor bitmap scaling | All supported Android versions |
 | Bilinear | Bilinear bitmap scaling, matching the previous renderer | Default on all supported Android versions |
-| FXAA | A GPU shader detects luminance edges and samples along their direction | Android 13 or later with a hardware Canvas |
+| FXAA | A GPU shader detects luminance edges and samples along their direction | Android 5 or later; GLES2 on API 21–32 and hardware Canvas on API 33+ |
 
 FXAA keeps bilinear input sampling and skips its directional filtering in flat
-areas. It uses a single Canvas draw and no full-frame CPU filtering or temporary
-pixel buffers. Bilinear remains the default, so an unchanged installation keeps
+areas. Android 5–12 uses an EGL/OpenGL ES 2.0 surface; Android 13+ uses a Canvas
+RuntimeShader. Neither path runs a full-frame CPU FXAA pass. GLES uploads each
+finished native bitmap, including updates to the same Bitmap instance. Bilinear remains the default, so an unchanged installation keeps
 its previous rendering behavior. FXAA requires extra GPU samples; no battery or
 frame-rate improvement is claimed.
 
@@ -24,11 +25,21 @@ Android's scaling. App controls and overlays retain their normal text rendering.
 The filter softens existing edges; it does not replace the native font rasterizer
 or restore detail absent from the source image.
 
-On Android versions before 13, the chooser offers Off and Bilinear. A saved FXAA
-selection falls back to Bilinear on an older OS, a software Canvas, or a shader
-failure. A shader failure is logged once per renderer and does not stop the
-game. The shader and bitmap input are isolated behind an API-level check; the
-Android minimum remains API 21.
+All supported Android versions offer Off, Bilinear and FXAA. On Android 5–12,
+all three selections share one GLES surface so switching filters does not switch
+surface producers. GPU resources are released when the render thread stops.
+Overlays are composed after FXAA with premultiplied alpha. Fit/Stretch and movie
+placement share the existing ScreenViewport coordinates.
+
+A shader failure falls back to Bilinear. An EGL presentation failure retries the
+context once, then uses Canvas for the remainder of that Surface's lifetime.
+Software Canvas falls back from FXAA to Bilinear. Logs record these failures;
+the stored selection is retained. The API 33 RuntimeShader is still isolated
+behind its own version check; the Android minimum remains API 21.
+
+See [FXAA legacy validation](fxaa-legacy-validation.md) for the current build,
+GLES tests and actual operating-system coverage. The GPU measurements below
+are the earlier RuntimeShader evidence, not measurements from older Android.
 
 ## Verification
 
@@ -38,7 +49,8 @@ The isolated `org.dc4engine.updateqa` instrumentation supports:
 adb shell am instrument -w -e graphicsOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
 ```
 
-`FrameFilterChecks` verifies software fallback and nearest/bilinear pixels. On
+`FrameFilterChecks` verifies software fallback, nearest/bilinear pixels and
+`GlesFrameChecks` (GPU output, Fit/Stretch, movies, overlays and Surface lifecycle). On
 Android 13 or later it also renders through `HardwareRenderer`, `RenderNode`,
 and `ImageReader`, verifying real AGSL compilation, changed diagonal edge
 coverage, unchanged flat regions, updates to a reused bitmap, and switching

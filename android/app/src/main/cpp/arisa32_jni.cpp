@@ -113,7 +113,11 @@ struct Engine {
 // Java serializes native access: input/render on its render thread, lifecycle
 // only after joining that thread. The audio callback uses the core mixer lock.
 Engine* g_engine = nullptr;
-struct LaunchConfig { std::string saves, overlay, encoding = "windows-31j", font, language; } g_config;
+struct LaunchConfig {
+    std::string saves, overlay, encoding = "windows-31j", font, language;
+    int font_size = 22;
+    bool visual_effects_enabled = true;
+} g_config;
 
 std::string request_confirm(Engine* e,dc4ui::ConfirmKind kind,std::function<std::string()> accepted) {
     if(e->confirm.active())return {};
@@ -143,6 +147,7 @@ void sync_progress(Engine* e) {
 
 void apply_config(Engine* e) {
     const auto c = e->menu.config();
+    e->menu.set_visual_effects_enabled(g_config.visual_effects_enabled);
     e->audio.set_master_volume(c.master_enabled ? c.master_volume : 0);
     e->audio.set_user_volume(dc4::AudioGroup::Bgm, c.music_enabled ? c.music_volume : 0);
     e->audio.set_user_volume(dc4::AudioGroup::Se, c.se_enabled ? c.se_volume : 0);
@@ -152,6 +157,7 @@ void apply_config(Engine* e) {
     if (e->scene) {
         e->scene->set_window_opacity(c.window_opacity);
         e->scene->set_effects_enabled(c.effects != 0);
+        e->scene->set_visual_effects_enabled(g_config.visual_effects_enabled);
         e->scene->set_effect_speed(c.effect_speed);
         if (e->menu.scene_ui_script() == "start.mes") {
             e->scene->set_variable(99,12,e->menu.variable(99,12));
@@ -880,6 +886,17 @@ Java_org_dc4engine_Dc4Activity_dc4ValidateSaveFile(JNIEnv* env,jobject,jstring b
     return env->NewStringUTF("");
 }
 
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4ConfigureDisplay(JNIEnv*, jobject, jint font_size, jboolean visual_effects_enabled) {
+    g_config.visual_effects_enabled = visual_effects_enabled == JNI_TRUE;
+    if (g_engine) {
+        g_engine->menu.set_visual_effects_enabled(g_config.visual_effects_enabled);
+        if (g_engine->scene) g_engine->scene->set_visual_effects_enabled(g_config.visual_effects_enabled);
+        return;
+    }
+    g_config.font_size = std::clamp(int(font_size), 18, 22);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_dir) {
     if (g_engine) return JNI_TRUE;
@@ -1008,6 +1025,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene->set_use_system_menu(menu_ok);
     e->scene->set_latin_mode(dc4::is_latin());
     e->scene->set_font(&e->font, e->textbox_font.get());
+    e->scene->set_dialogue_font_size(e->textbox_font ? g_config.font_size : 22);
     e->scene->set_audio(&e->audio, &e->voice);
     e->scene->set_animation_enabled(true);
     e->scene->set_observer([e](const dc4::MesCommand& c,const std::string& script){e->menu.observe(c,script);});

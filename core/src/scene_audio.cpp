@@ -381,7 +381,8 @@ bool SceneAudio::dispatch(const MesCommand& c) {
             extension && c.words[0] ? ticks_ms(c.words[0]) : 500);
         if (extension) return true;
     }
-    if (c.dc2dm && c.kind == CmdKind::Param2 && c.raw_op == 0x06) {
+    if (c.kind == CmdKind::Param2 &&
+        ((c.dc2dm && c.raw_op == 0x06) || (!c.dc2dm && !c.dc2pc && c.op == 0x06))) {
         // The runner consumes this wait when advancing past the voiced line.
         state_.last_voice_name.clear();
         last_voice_.clear();

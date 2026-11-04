@@ -9,6 +9,9 @@ import java.util.*;
 final class GameLibrary {
     static final class Entry {
         String id, title, path, language = "jp", font = "";
+        int fontSize = 22;
+        boolean visualEffectsEnabled = true;
+        boolean stretchToScreen;
         String english = "", indonesian = "", enEncoding = "windows-31j", idEncoding = "windows-31j";
         String enFingerprint = "", idFingerprint = "";
         String overlay() { return language.equals("en") ? english : language.equals("id") ? indonesian : ""; }
@@ -64,6 +67,11 @@ final class GameLibrary {
             e.language = p.getProperty(id + ".language", "jp");
             if (!Arrays.asList("jp", "en", "id").contains(e.language)) e.language = "jp";
             e.font = p.getProperty(id + ".font", "");
+            try { e.fontSize = Math.max(18, Math.min(22, Integer.parseInt(p.getProperty(id + ".fontSize", "22")))); }
+            catch (NumberFormatException ignored) { e.fontSize = 22; }
+            e.visualEffectsEnabled = !"false".equals(p.getProperty(id + ".visualEffectsEnabled",
+                    p.getProperty(id + ".sakuraEnabled", "true")));
+            e.stretchToScreen = "true".equals(p.getProperty(id + ".stretchToScreen", "false"));
             e.english = p.getProperty(id + ".en", ""); e.indonesian = p.getProperty(id + ".id", "");
             e.enEncoding = p.getProperty(id + ".enEncoding", "windows-31j");
             e.idEncoding = p.getProperty(id + ".idEncoding", "windows-31j");
@@ -191,6 +199,9 @@ final class GameLibrary {
             if (ids.length() != 0) ids.append(','); ids.append(e.id);
             p.setProperty(e.id + ".path", e.path); p.setProperty(e.id + ".title", e.title);
             p.setProperty(e.id + ".language", e.language); p.setProperty(e.id + ".font", e.font);
+            p.setProperty(e.id + ".fontSize", Integer.toString(e.fontSize));
+            p.setProperty(e.id + ".visualEffectsEnabled", Boolean.toString(e.visualEffectsEnabled));
+            p.setProperty(e.id + ".stretchToScreen", Boolean.toString(e.stretchToScreen));
             p.setProperty(e.id + ".en", e.english); p.setProperty(e.id + ".id", e.indonesian);
             p.setProperty(e.id + ".enEncoding", e.enEncoding); p.setProperty(e.id + ".idEncoding", e.idEncoding);
             p.setProperty(e.id + ".enFingerprint", e.enFingerprint); p.setProperty(e.id + ".idFingerprint", e.idFingerprint);

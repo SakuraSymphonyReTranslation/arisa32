@@ -25,13 +25,13 @@ final class FrameFilter {
     }
 
     static boolean supportsFxaa() {
-        return Build.VERSION.SDK_INT >= 33;
+        return Build.VERSION.SDK_INT >= 21;
     }
 
     int draw(Canvas canvas, Bitmap bitmap, RectF destination, int requested) {
         int mode = normalize(requested);
         if (mode != FXAA) fxaa = null;
-        if (mode == FXAA && supportsFxaa() && canvas.isHardwareAccelerated() && !fxaaFailed) {
+        if (mode == FXAA && Build.VERSION.SDK_INT >= 33 && canvas.isHardwareAccelerated() && !fxaaFailed) {
             try {
                 if (fxaa == null) fxaa = new Fxaa();
                 fxaa.draw(canvas, bitmap, destination);

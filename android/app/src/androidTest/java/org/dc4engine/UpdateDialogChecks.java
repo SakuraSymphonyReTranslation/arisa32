@@ -34,6 +34,8 @@ public final class UpdateDialogChecks extends Instrumentation {
     private boolean sidebarOnly;
     private boolean graphicsOnly;
     private boolean navigationOnly;
+    private boolean displayOnly;
+    private boolean screenOnly;
     private boolean installerOnly;
     private String installMode;
 
@@ -43,6 +45,8 @@ public final class UpdateDialogChecks extends Instrumentation {
         sidebarOnly = arguments != null && "true".equals(arguments.getString("sidebarOnly"));
         graphicsOnly = arguments != null && "true".equals(arguments.getString("graphicsOnly"));
         navigationOnly = arguments != null && "true".equals(arguments.getString("navigationOnly"));
+        displayOnly = arguments != null && "true".equals(arguments.getString("displayOnly"));
+        screenOnly = arguments != null && "true".equals(arguments.getString("screenOnly"));
         installerOnly = arguments != null && "true".equals(arguments.getString("installerOnly"));
         installMode = arguments == null ? null : arguments.getString("installMode");
         start();
@@ -61,7 +65,7 @@ public final class UpdateDialogChecks extends Instrumentation {
             }
             getTargetContext().getSharedPreferences("launcher", 0).edit().putBoolean("autoCheckUpdate", false).commit();
             if (installerOnly) UpdateInstallChecks.prepare(this);
-            if (graphicsOnly || navigationOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
+            if (graphicsOnly || navigationOnly || screenOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
                     .remove(FrameFilter.PREFERENCE).putBoolean("retainSession", false)
                     .remove("pausedGame").remove("pausedLanguage").commit();
             IntentFilter storagePrompt = new IntentFilter(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
@@ -71,6 +75,18 @@ public final class UpdateDialogChecks extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (Arisa32Activity) startActivitySync(launch);
             waitForIdleSync();
+            if (screenOnly) {
+                int count = new ScreenModeChecks(this, activity).run();
+                result.putString("stream", "Screen mode checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (displayOnly) {
+                int count = new DisplaySettingsChecks(this, activity).run();
+                result.putString("stream", "Display settings checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if (installerOnly) {
                 int count = new UpdateInstallChecks(this, activity).run(installMode);
                 result.putString("stream", "In-app update checks passed: " + count + "\n");

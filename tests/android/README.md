@@ -247,6 +247,74 @@ previously extracted set of arm64 shared libraries. The library before the
 disabled-tap fix fails with `touch :qs returned: Not available on Android:
 :disabled`.
 
+## DC4 display settings
+
+Build and install the isolated QA application and instrumentation with
+`update-qa.init.gradle`, then run:
+
+```powershell
+adb shell am instrument -w -e displayOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+The checks open the actual per-game settings for DC4 and DC4PH. They exercise
+Visual effect On/Off (sakura and floating lights), custom font sizes 18 through 22, the fixed MS Gothic size,
+Choose font and Cancel actions, keyboard activation, persistence, and EN/ID/JP
+dialogs at 200% system text. They check visible row bounds, tap targets and
+untruncated labels. DC2DM must not receive these DC4 controls. Fixtures stay in
+the QA application's private directory. Screenshots are saved in
+`display-settings-checks/` under its external-files directory.
+
+With `-Pandroid.injected.build.abi=arm64-v8a`, this AGP configuration writes the
+QA APKs to `android/app/build/intermediates/apk/debug/app-debug.apk` and
+`android/app/build/intermediates/apk/androidTest/debug/app-debug-androidTest.apk`.
+Use the paths from Gradle's `apk_ide_redirect_file` listing redirects; older
+files can remain in `outputs/apk/`. Quote the complete `-P...` argument when
+invoking Gradle directly from PowerShell. Install these test-only APKs with
+`adb install -r -t`.
+
+Host preference checks use the same Java/Android SDK compile classpath as
+`LibraryChecks` above; include `tests/android/DisplayPreferencesChecks.java`
+in that compilation and run:
+
+```powershell
+java -cp build/java-check org.dc4engine.DisplayPreferencesChecks
+```
+
+These 20 checks cover defaults, per-game persistence, old libraries, malformed
+values, font-size limits and migration from the old sakura preference independently
+of the older archive harness. The device checks also open the in-game Visual
+effect entry and verify that a change is queued for the engine thread.
+See `docs/dc4-display-settings-validation.md` for native rendering, device
+results, recording analysis and the tested APK. The combined ambient-effect
+implementation, native save restoration and script replay evidence are recorded
+in `docs/dc4-visual-effects-validation.md`.
+
+## Fit to Screen and Stretch
+
+With the isolated QA app and instrumentation installed, run:
+
+```powershell
+adb shell am instrument -w -e screenOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+This checks Fit/Stretch geometry on wide, portrait, 4:3, 16:9 and fractional
+surface sizes, inverse touch coordinates, movie sizing, composed sprite/effect/UI
+markers, native overlays and the MediaPlayer TextureView transform. On API 33+
+it also renders nonuniform scaling through Off, Bilinear and FXAA on the GPU.
+The real Activity SurfaceView receives synthetic pointer events; no native game
+scenario is launched. Settings checks cover per-game defaults/persistence,
+immediate changes, Cancel, keyboard activation, the in-game entry, and EN/ID/JP
+at 200% text in a 380dp dialog.
+
+Screenshots are saved in the QA external-files `screen-mode-checks/` directory.
+Optionally place an existing 1280x720 game screenshot at
+`screen-mode-inputs/title.png` there to capture both presentation modes.
+
+Compile `tests/android/ScreenPreferencesChecks.java` alongside the same sources
+as `LibraryChecks`, then run `org.dc4engine.ScreenPreferencesChecks` for ten host
+checks of defaults, independent game settings, persistence and malformed values.
+See `docs/screen-mode-validation.md` for results and presentation scope.
+
 ## Original movie decoder probe
 
 Build FFmpeg first, then configure the Android CMake project with
@@ -311,3 +379,26 @@ and `--duration=20000`, and set `ARISA32_MOVIE_PROBE_PAUSE_AT_MS=5900` plus
 `ARISA32_MOVIE_PROBE_PAUSE_MS=6000`. Require `long_pause_ms=6000`, `pause_ok=1`,
 all 360 frames, and an empty error. Time spent paused must not expire the
 five-second decoder drain timeout.
+
+## GLES compatibility without native game libraries
+
+The standalone project copies the exact production FrameFilter,
+GlesFrameRenderer, SurfaceFrameRenderer and ScreenViewport sources at build time.
+It needs no ARM game libraries, so it can run on API 21+ x86 emulators as well
+as physical phones. Set ANDROID_HOME and use the repository Gradle wrapper:
+
+```powershell
+android/gradlew.bat -p tests/android/gles-compat assembleDebug assembleDebugAndroidTest lintDebug
+adb install -r -t tests/android/gles-compat/build/outputs/apk/debug/gles-compat-debug.apk
+adb install -r -t tests/android/gles-compat/build/outputs/apk/androidTest/debug/gles-compat-debug-androidTest.apk
+adb shell am instrument -w org.dc4engine.glesqa.test/org.dc4engine.GlesCompatChecks
+```
+
+GlesFrameChecks verifies actual GPU pixel changes, updates to a reused bitmap,
+Off/Bilinear/FXAA switching, shader failure, fit/stretch, movie aspect and texture
+resizing, premultiplied overlays, window presentation, context recovery, surface
+replacement and Canvas fallback across a renderer restart. GPU readback is
+confined to this test. Captures are in external-files/gles-frame-checks.
+Use an explicit adb serial when several devices are connected. Pull evidence
+before uninstalling org.dc4engine.glesqa.test and org.dc4engine.glesqa.
+See docs/fxaa-legacy-validation.md for observed coverage and limitations.

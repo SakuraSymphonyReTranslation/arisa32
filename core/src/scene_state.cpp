@@ -174,7 +174,15 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.str(item.text);
         }
         const bool save_effects = is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
-            (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || sheets_.count(28));
+            (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || fairy_lights_.active || sheets_.count(28));
+        const bool save_priority = std::any_of(sprites_.begin(), sprites_.end(),
+            [](const BstSprite& sprite) { return sprite.priority != 50; });
+        const bool extended = save_priority || save_effects;
+        if (extended) {
+            out.flag(!save_effects && dc2dm_ending_reference_valid_);
+            out.flag(save_effects);
+            for (const auto& sprite : sprites_) out.u32(uint32_t(sprite.priority));
+        }
         if (!save_effects && dc2dm_ending_reference_valid_) out.number(dc2dm_ending_reference_elapsed_ms_);
         if (save_effects) {
             for (const auto* image : {&mask_, &screen_effect_atlas_, &sakura_sheet_}) out.str(image->name);
@@ -189,11 +197,21 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
                 out.number(p.phase); out.number(p.amplitude);
                 out.u32(p.row); out.u32(p.cell); out.u32(p.cell_ticks); out.u32(p.alpha);
             }
+            out.str(fairy_light_sheet_.name);
+            out.flag(fairy_lights_.active); out.u32(fairy_lights_.parameter);
+            out.number(fairy_lights_.tick_remainder);
+            out.u32(uint32_t(fairy_lights_.particles.size()));
+            for (const auto& p : fairy_lights_.particles) {
+                out.number(p.x); out.number(p.y); out.number(p.vy);
+                out.number(p.phase); out.number(p.amplitude); out.number(p.alpha);
+                out.u32(p.drift); out.u32(p.row); out.u32(p.cell); out.u32(p.cell_ticks);
+                out.flag(p.brightening);
+            }
         }
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(save_effects ? 7 : dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
         header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
@@ -290,6 +308,16 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
             out[0x138B]=uint8_t(local.tm_hour);out[0x138C]=uint8_t(local.tm_min);out[0x138D]=uint8_t((local.tm_year+1900)%100);
         } else {
             u32(0xAF4,pc);u32(0xAFC,id);u32(0xB00,pc);
+            // Native slot data starts at game-state +0x4B80; ambient controls
+            // live at +0x40C84, +0x40C88 and +0x40C90 (DC4 and DC4PH).
+            if (sakura_.active) {
+                u32(0x3C104, uint32_t(sakura_.type));
+                u32(0x3C108, uint32_t(sakura_.parameter));
+                name(0xA8 + 28 * 48, 48, sakura_sheet_.name);
+            } else if (fairy_lights_.active) {
+                u32(0x3C110, uint32_t(fairy_lights_.parameter));
+                name(0xA8 + 28 * 48, 48, fairy_light_sheet_.name);
+            }
             if(id>=original.labels.size()) throw std::runtime_error("native checkpoint metadata is unavailable");
             u32(0xAF8,original.labels[id].id);
             for(int bank=0;bank<=10;++bank) for(int i=0;i<100;++i) out[0x184EC+bank*100+i]=uint8_t(variable(bank,i));
@@ -304,6 +332,7 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
                 for(int offset : {24,28,32,104,108,112}) number(at+offset,1);
                 for(int offset : {120,124}) number(at+offset,100);
                 u32(at+80,1280);u32(at+84,720);number(at+152,1280);number(at+156,720);u32(at+176,1);
+                u32(at+0x380,i==0?0:50);
             }
             // The background renderer also carries the scene camera when no
             // background asset is visible. Keep it for subsequent sprite moves.
@@ -332,6 +361,10 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
                 renderer(layer.first-1,layer.second,(1280-layer.second.w*scale)/2,
                          (720-layer.second.h*scale)/2,scale,1,0,0,true);
             }
+            const int priority_indices[]={0,1,2,3,4,12,13};
+            const int priority_records[]={10,20,30,40,50,63,65};
+            for(int i=0;i<7;++i)
+                u32(0x18E20+priority_records[i]*960+0x380,uint32_t(sprites_[priority_indices[i]].priority));
             for(size_t i=0;i<sprites_.size();++i) if(sprites_[i].visible && sprites_[i].img.valid()) {
                 const auto& sprite=sprites_[i];
                 int slot=-1,record=-1;
@@ -528,11 +561,14 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         const int indices[]={0,1,2,3,4,12,13};
         const int records[]={10,20,30,40,50,63,65};
         for(int i=0;i<7;++i) {
+            const size_t at=0x18E20+records[i]*960;
+            const auto priority=integer(at+0x380);
+            if(priority>100)throw std::runtime_error("invalid saved sprite priority");
+            candidate.sprites_[indices[i]].priority=int(priority);
             const auto resource=name(0xA8+slots[i]*48,48);if(resource.empty())continue;
             candidate.load_bst(indices[i],resource,slots[i]);
             auto& sprite=candidate.sprites_[indices[i]];
             if(!sprite.img.valid())throw std::runtime_error("saved sprite is unavailable: "+resource);
-            const size_t at=0x18E20+records[i]*960;
             const float raw_scale=number(at+120);
             const float scale=raw_scale/(raw_scale>=1000?10000.f:100.f);
             if(scale<=0 || scale>100)throw std::runtime_error("invalid saved sprite scale");
@@ -558,6 +594,22 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
             sprite.cur_x=int(std::lround(base_x-sprite.x*(1-sprite.scale)-crop_x*sprite.scale));
             sprite.cur_y=int(std::lround(base_y-sprite.y*(1-sprite.scale)-crop_y*sprite.scale));
             sprite.alpha=int(std::lround(std::clamp(number(at+104),0.f,1.f)*255));
+        }
+        const auto ambient_type = integer(0x3C104), ambient_parameter = integer(0x3C108);
+        const auto light_parameter = integer(0x3C110);
+        if (ambient_type > 255 || ambient_parameter > 255 || light_parameter > 255)
+            throw std::runtime_error("invalid native ambient effect");
+        const auto ambient_sheet = name(0xA8 + 28 * 48, 48);
+        if (!ambient_sheet.empty()) candidate.load_sheet(28, ambient_sheet);
+        dc4::MesCommand effect;
+        effect.op = 0x28;
+        if (ambient_type == 1 || ambient_type == 9 || ambient_type == 11) {
+            effect.p1 = uint8_t(ambient_type); effect.p2 = uint8_t(ambient_parameter);
+            candidate.dispatch_dc4_effect_command(effect);
+        }
+        if (light_parameter) {
+            effect.p1 = 13; effect.p2 = uint8_t(light_parameter);
+            candidate.dispatch_dc4_effect_command(effect);
         }
         auto audio=candidate.scene_audio_.capture_snapshot();
         auto normal=[](std::string value){std::replace(value.begin(),value.end(),'\\','/');std::transform(value.begin(),value.end(),value.begin(),[](unsigned char ch){return char(std::tolower(ch));});if(value.size()>4&&value.substr(value.size()-4)==".pcm")value.resize(value.size()-4);return value;};
@@ -590,6 +642,10 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         camera_scale_=candidate.camera_scale_;camera_x_=candidate.camera_x_;camera_y_=candidate.camera_y_;camera_motion_.clear();
         transition_type_=0;scene_dirty_=true;scene_end_=false;message_visible_=true;preserve_scene_=false;
         comu_visible_=comu_group_=false;comu_items_.clear();reset_restore_transients();
+        sakura_ = std::move(candidate.sakura_); sakura_sheet_ = std::move(candidate.sakura_sheet_);
+        fairy_lights_ = std::move(candidate.fairy_lights_); fairy_light_sheet_ = std::move(candidate.fairy_light_sheet_);
+        effect_random_state_ = candidate.effect_random_state_;
+        if (candidate.sheets_.count(28)) sheets_[28] = std::move(candidate.sheets_[28]);
         load_ui_script(data_+"/MES/win_size.mes");taskbar_visible_=true;
         if(restore_error)restore_error->clear();return true;
     } catch(const std::exception& error){if(restore_error)*restore_error=error.what();return false;}
@@ -736,7 +792,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 7)
+        if (version < 1 || version > 9)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -875,11 +931,15 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             restored_comu_visible = comu_visible;
             restored_comu = std::move(restored);
         }
-        const double ending_reference_elapsed = version == 6 ? in.number() : 0;
-        if (version == 6 && (candidate.mes_.dialect != dc4::MesDialect::ClassicDM ||
+        const bool has_ending_reference = version >= 8 ? in.flag() : version == 6;
+        const bool has_effects = version >= 8 ? in.flag() : version == 7;
+        if (version >= 8)
+            for (auto& sprite : candidate.sprites_) sprite.priority = int(in.count(100));
+        const double ending_reference_elapsed = has_ending_reference ? in.number() : 0;
+        if (has_ending_reference && (candidate.mes_.dialect != dc4::MesDialect::ClassicDM ||
             ending_reference_elapsed < 0 || ending_reference_elapsed > 500000))
             throw std::runtime_error("invalid saved ending timer");
-        if (version == 7) {
+        if (has_effects) {
             if (!is_dc4_or_dc4ph_ || (candidate.mes_.version != 0xAAB6 && candidate.mes_.version != 0xABB6))
                 throw std::runtime_error("saved effects require the DC4 profile");
             for (auto* image : {&candidate.mask_, &candidate.screen_effect_atlas_, &candidate.sakura_sheet_}) {
@@ -904,7 +964,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             constexpr int counts[] = {0, 1, 3, 6, 9, 12, 20};
             if (sakura.parameter < 0 || sakura.parameter > 255 ||
                 sakura.tick_remainder < 0 || sakura.tick_remainder >= 1000 ||
-                (sakura.active && ((sakura.type != 1 && sakura.type != 9) || !candidate.sakura_sheet_.valid() ||
+                (sakura.active && ((sakura.type != 1 && sakura.type != 9 && sakura.type != 11) || !candidate.sakura_sheet_.valid() ||
                     count != 5 * counts[std::min(sakura.parameter % 10, 6)])) ||
                 (!sakura.active && count != 0)) throw std::runtime_error("invalid saved sakura emitter");
             for (uint32_t i = 0; i < count; ++i) {
@@ -921,6 +981,32 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                     p.cell_ticks < 0 || p.cell_ticks > 18)
                     throw std::runtime_error("invalid saved sakura particle");
                 sakura.particles.push_back(p);
+            }
+            if (version >= 9) {
+                const auto name = in.str(255);
+                if (!name.empty() && (!resource_name(name) || !candidate.load_grp_crx(name, &candidate.fairy_light_sheet_, &error)))
+                    throw std::runtime_error("saved fairy-light asset is unavailable: " + name);
+                auto& lights = candidate.fairy_lights_;
+                lights.active = in.flag(); lights.parameter = in.integer(); lights.tick_remainder = in.number();
+                const auto count = in.count(100);
+                if (lights.parameter < 0 || lights.parameter > 255 || lights.tick_remainder < 0 || lights.tick_remainder >= 1000 ||
+                    (lights.active && (!candidate.fairy_light_sheet_.valid() || lights.parameter % 10 == 0 ||
+                        count != 5 * counts[std::min(lights.parameter % 10, 6)])) || (!lights.active && count != 0))
+                    throw std::runtime_error("invalid saved fairy-light emitter");
+                for (uint32_t i = 0; i < count; ++i) {
+                    FairyLightSystem::Particle p;
+                    p.x = float(in.number()); p.y = float(in.number()); p.vy = float(in.number());
+                    p.phase = float(in.number()); p.amplitude = float(in.number()); p.alpha = float(in.number());
+                    p.drift = in.integer(); p.row = in.integer(); p.cell = in.integer(); p.cell_ticks = in.integer();
+                    p.brightening = in.flag();
+                    constexpr int frames[] = {7, 7, 6, 8, 5, 8};
+                    if (p.x < 0 || p.x >= 1280 || p.y < -28 || p.y > 748 || std::abs(p.vy) > .81f ||
+                        std::abs(p.vy) < .19f || p.phase < 0 || p.phase > 360 || p.amplitude < 28 || p.amplitude > 59 ||
+                        p.alpha < 0 || p.alpha > .81f || p.drift < -2 || p.drift > 2 ||
+                        p.row < 0 || p.row > 5 || p.cell < 0 || p.cell >= frames[p.row] || p.cell_ticks < 0 || p.cell_ticks > 30)
+                        throw std::runtime_error("invalid saved fairy-light particle");
+                    lights.particles.push_back(p);
+                }
             }
         }
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
@@ -940,9 +1026,10 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         reset_restore_transients();
         mask_ = std::move(candidate.mask_); screen_effect_atlas_ = std::move(candidate.screen_effect_atlas_);
         sakura_ = std::move(candidate.sakura_); sakura_sheet_ = std::move(candidate.sakura_sheet_);
+        fairy_lights_ = std::move(candidate.fairy_lights_); fairy_light_sheet_ = std::move(candidate.fairy_light_sheet_);
         effect_random_state_ = candidate.effect_random_state_;
         if (candidate.sheets_.count(28)) sheets_[28] = std::move(candidate.sheets_[28]);
-        dc2dm_ending_reference_valid_ = version == 6;
+        dc2dm_ending_reference_valid_ = has_ending_reference;
         dc2dm_ending_reference_elapsed_ms_ = ending_reference_elapsed;
         if (restore_error) restore_error->clear();
         return true;
@@ -964,6 +1051,7 @@ void SceneRunner::reset_restore_transients() {
     dc2dm_ending_reference_valid_ = false; dc2dm_ending_reference_elapsed_ms_ = 0;
     effect_pck_.clear();
     sakura_ = {}; sakura_sheet_ = {}; sheets_.erase(28);
+    fairy_lights_ = {}; fairy_light_sheet_ = {};
     screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;

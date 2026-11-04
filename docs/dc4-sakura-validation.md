@@ -1,5 +1,10 @@
 # DC4 / DC4 Plus Harmony sakura effects, 2026-11-02
 
+Updated 2026-11-04: see `dc4-visual-effects-validation.md` for type 11,
+floating lights, shared ambient buffers, corrected atlas stride, native PC
+effect fields and snapshot version 9. The results below describe the earlier
+build and are retained as historical evidence.
+
 ## Cause and rendering
 
 The scene dispatcher did not execute the modern `0x28` ambient emitter or
@@ -16,7 +21,7 @@ version `0xAAB6` or `0xABB6`.
 
 | Behavior | DC4 executable address | Implemented behavior |
 | --- | --- | --- |
-| Ambient `0x28` | `0x42AB12`, initializer `0x41C620`, update `0x41D380` | Types 1/9 use slot 28 `EFFSAKURA01`, five depth layers, authored density/wind, 28px atlas cells and 60 Hz simulation. Type 13 leaves this independent emitter running. |
+| Ambient `0x28` | `0x42AB12`, initializer `0x41C620`, update `0x41D380` | Types 1/9/11 use slot 28 `EFFSAKURA01`, five depth layers, authored density/wind, 28px crops with 32px stride and 60 Hz simulation. Type 13 shares/replaces the ambient buffers; see the 2026-11-04 correction. |
 | Screen sprites `0x38` | `0x42F4AA`; PH `0x42F31A` | Types 0/1 use slot 22: a 732×720 large flower and 278×256 small flowers. Rotation spans 540 degrees. Type 1 has two opposing large flowers and 52 smaller flowers. |
 | Mask `0x0F(21,n)` | `0x42A574`; PH `0x42A3E4`; compositor `0x407860` / `0x407900` | Slot 21's blue channel determines the old screenshot alpha, clamped from `mask + 255 - 510*t`. The original mask is sampled at its native coordinates. |
 | Normal fade `0x0F(0/1,n)` | `0x429FF8`, speed scaler `0x40E1E0` | `20*(n+1)` frames, with the native 0..11 effect-speed scaling. |
@@ -44,10 +49,10 @@ Restoration validates a separate candidate before replacing the live scene.
 Loading old snapshots or a classic scenario clears stale effects. Versions
 5/6 remain readable; ClassicDM ending timers still use version 6.
 
-Native PC `.dat` ambient fields have not been mapped. Arisa's `.arisa`
-companion preserves this state for new saves. An older save without effect
-state cannot reconstruct an already-running emitter until the script starts
-one again. Finite transitions must finish before saving.
+Native PC `.dat` ambient fields were mapped and implemented on 2026-11-04.
+See the visual-effects report for offsets and native-save tests. An older
+Arisa save without any effect state still needs a subsequent script trigger.
+Finite transitions must finish before saving.
 
 ## Reproduction
 

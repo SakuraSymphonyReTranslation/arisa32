@@ -1,6 +1,7 @@
 #include "arisa32/scene.h"
 #include "arisa32/resource.h"
 #include "arisa32/mem_safe.h"
+#include "comu_text.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -375,6 +376,18 @@ int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool 
     return w;
 }
 
+std::pair<int, int> FontRenderer::text_vertical_bounds(const std::u16string& text, float pixel_size) const {
+    std::pair<int, int> bounds{0, 0};
+    if (!font_) return bounds;
+    for (char16_t ch : text) {
+        const auto& g = glyph(ch, int(pixel_size > 0 ? pixel_size : pixel_size_), false);
+        if (!g.h) continue;
+        bounds.first = std::min(bounds.first, g.y);
+        bounds.second = std::max(bounds.second, g.y + g.h);
+    }
+    return bounds;
+}
+
 // ---------------------------------------------------------------------------
 
 SceneRunner::SceneRunner(const std::string& data_dir)
@@ -402,16 +415,22 @@ void SceneRunner::set_latin_mode(bool latin) {
         layout_.line_spacing = latin ? 28 : 32;
         return;
     }
-    if (is_dc4_or_dc4ph_) layout_.name_font = 22;
+    if (is_dc4_or_dc4ph_) layout_.name_font = dialogue_font_size_;
     if (latin) {
-        layout_.font_size = is_dc4_or_dc4ph_ ? 22 : 20;
+        layout_.font_size = is_dc4_or_dc4ph_ ? dialogue_font_size_ : 20;
         layout_.text_w = 750;
         layout_.line_spacing = 34;
     } else {
-        layout_.font_size = 22;
+        layout_.font_size = is_dc4_or_dc4ph_ ? dialogue_font_size_ : 22;
         layout_.text_w = 660;
         layout_.line_spacing = 36;
     }
+}
+
+void SceneRunner::set_dialogue_font_size(int size) {
+    dialogue_font_size_ = std::clamp(size, 18, 22);
+    set_latin_mode(latin_mode_);
+    scene_dirty_ = true;
 }
 
 SceneRunner::~SceneRunner() = default;
@@ -523,6 +542,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     if (!entry_label.empty() && !vm_.jump(entry_label)) { last_error_ = vm_.error(); return false; }
     if (mes_.version != 0xAAB6 && mes_.version != 0xABB6) {
         sakura_ = {}; sakura_sheet_ = {};
+        fairy_lights_ = {}; fairy_light_sheet_ = {};
         screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
     }
 
@@ -2042,6 +2062,12 @@ void SceneRunner::set_sprite_transform(uint16_t scale_pct, uint16_t x, uint16_t 
         }
         return;
     }
+    if (mode & 0x20) {
+        const size_t index = mode & 0x0F;
+        if (index < sprites_.size()) sprites_[index].priority = std::min(int(scale_pct), 100);
+        scene_dirty_ = true;
+        return;
+    }
     if ((mode & 0x10) == 0) return;
     int idx = mode & 0xF;
     if (idx < 0 || idx >= int(sprites_.size())) return;
@@ -2249,6 +2275,12 @@ const char* const kComuNames[11] = {
     "\x8a\x90\x95\xfb",          // 叶方
 };
 
+// Sender table in Sakuramusubi's DC4PHDL.exe, VA 0x4ADABC.
+const char* const kComuRomanizedNames[11] = {
+    "Arisu", "Nino", "Sorane", "Hiyori", "Shiina", "Miu", "Chiyoko",
+    "Arisa", "Ichito", "Suginami", "Kanata"
+};
+
 Image crop_image(const Image& src, int rx, int ry, int rw, int rh) {
     Image out;
     if (!src.valid()) return out;
@@ -2265,24 +2297,25 @@ Image crop_image(const Image& src, int rx, int ry, int rw, int rh) {
     return out;
 }
 
-// Blends one chat text line: white text with dark outline matching textbox style and PC in-game COMU bubbles.
 void blend_chat_text(const FontRenderer& font, const std::u16string& text,
-                     int x, int baseline, std::vector<uint8_t>* frame) {
+                     int x, int y, std::vector<uint8_t>* frame, int size = 16,
+                     bool fixed_grid = true, int first_baseline = 30, int line_pitch = 28) {
     if (text.empty()) return;
-    const int size = 16;
-    int width = 8;
-    for (char16_t ch : text)
-        width += ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size;
-    width = std::min(width, kScreenW - x + 2);
-    const int height = size + 16;
-    if (width <= 0) return;
     Image img;
-    img.w = width;
-    img.h = height;
-    img.rgba.assign(size_t(width) * height * 4, 0);
-    font.rasterize_line(text, 2, size + 8, &img.rgba, width, height, float(size), 0xFFFFFF, false, 0x000000);
-    const int top = baseline - size - 8;
-    blit(frame, kScreenW, kScreenH, x - 2, top, img, 1.0f, 255);
+    img.w = 240;
+    img.h = 62;
+    img.rgba.assign(size_t(img.w) * img.h * 4, 0);
+    size_t start = 0;
+    for (int baseline = first_baseline; start < text.size() && baseline < img.h; baseline += line_pitch) {
+        const size_t end = text.find(u'\n', start);
+        auto line = text.substr(start, end == std::u16string::npos ? end : end - start);
+        line.erase(std::remove(line.begin(), line.end(), u'\r'), line.end());
+        font.rasterize_line(line, 2, baseline, &img.rgba, img.w, img.h,
+                            float(size), 0xFFFFFF, false, 0x000000, fixed_grid);
+        if (end == std::u16string::npos) break;
+        start = end + 1;
+    }
+    blit(frame, kScreenW, kScreenH, x - 2, y, img, 1.0f, 255);
 }
 
 }  // namespace
@@ -2327,7 +2360,9 @@ void SceneRunner::comu_message(const std::string& str) {
             const std::string name = str.substr(2, close - 2);
             item.contact = 1;  // native fallback for unknown senders
             for (int i = 0; i < 11; ++i)
-                if (name == kComuNames[i]) { item.contact = i; break; }
+                if (name == kComuNames[i] || name == kComuRomanizedNames[i]) {
+                    item.contact = i; break;
+                }
             item.text = str.substr(close + 2);
         } else {
             item.text = str;
@@ -2376,82 +2411,17 @@ void SceneRunner::draw_comu() {
         if (item.contact < 0 || item.contact > 10) continue;
         const Image row = crop_image(comu_chips_, 420, 81 * item.contact, 320, 81);
         if (row.valid()) blit(&frame_, kScreenW, kScreenH, 468, y, row, 1.0f, 255);
-        if (item.text.empty() || !font_) continue;
-        const std::u16string text = sjis_to_utf16(item.text);
-        std::u16string lines[2];
-        const int max_line_w = 210;
-
-        auto get_ch_width = [](char16_t ch) -> int {
-            if (ch < 0x80) {
-                if (ch == u' ' || ch == u'i' || ch == u'l' || ch == u'!' || ch == u'.' || ch == u',') return 4;
-                if (ch == u'm' || ch == u'w' || ch == u'M' || ch == u'W') return 12;
-                if (ch >= u'A' && ch <= u'Z') return 9;
-                return 7;
-            }
-            if (ch >= 0xFF61 && ch <= 0xFF9F) return 8;
-            return 16;
-        };
-
-        std::vector<std::u16string> paragraphs;
-        std::u16string cur;
-        for (char16_t ch : text) {
-            if (ch == u'\r') continue;
-            if (ch == u'\n') {
-                paragraphs.push_back(cur);
-                cur.clear();
-            } else {
-                cur.push_back(ch);
-            }
+        if (item.text.empty() || !textbox_font_) continue;
+        std::u16string decoded;
+        const bool utf8 = prefers_utf8_text() && decode_utf8(item.text, &decoded);
+        if (comu_prose_text(item.text)) {
+            const auto layout = comu_prose_layout(sjis_to_utf16(item.text), *textbox_font_);
+            blend_chat_text(*textbox_font_, layout.text, 552, y + 14, &frame_, layout.size,
+                            layout.fixed_grid, layout.baseline(), layout.line_pitch());
+        } else {
+            const auto text = sjis_to_utf16(comu_line_break(item.text, utf8));
+            blend_chat_text(*textbox_font_, text, 540, y + 14, &frame_);
         }
-        paragraphs.push_back(cur);
-
-        std::vector<std::u16string> wrapped;
-        for (const auto& p : paragraphs) {
-            std::u16string line_buf;
-            int cur_w = 0;
-            size_t i = 0;
-            while (i < p.size()) {
-                if (p[i] == u' ') {
-                    if (!line_buf.empty()) {
-                        line_buf.push_back(u' ');
-                        cur_w += get_ch_width(u' ');
-                    }
-                    ++i;
-                    continue;
-                }
-                size_t word_start = i;
-                int word_w = 0;
-                if (p[i] >= 0x3000 || (p[i] >= 0x4E00 && p[i] <= 0x9FFF)) {
-                    word_w = get_ch_width(p[i]);
-                    ++i;
-                } else {
-                    while (i < p.size() && p[i] != u' ' && p[i] < 0x3000) {
-                        word_w += get_ch_width(p[i]);
-                        ++i;
-                    }
-                }
-                std::u16string word = p.substr(word_start, i - word_start);
-                if (!line_buf.empty() && cur_w + word_w > max_line_w) {
-                    wrapped.push_back(line_buf);
-                    line_buf = word;
-                    cur_w = word_w;
-                } else {
-                    line_buf += word;
-                    cur_w += word_w;
-                }
-            }
-            if (!line_buf.empty()) wrapped.push_back(line_buf);
-        }
-        if (wrapped.size() > 0) lines[0] = wrapped[0];
-        if (wrapped.size() > 1) {
-            lines[1] = wrapped[1];
-            for (size_t k = 2; k < wrapped.size(); ++k) lines[1] += u" " + wrapped[k];
-        }
-
-        const int line_count = lines[1].empty() ? 1 : 2;
-        const int base = y + 14 + (62 - 22 * line_count) / 2 + 16;
-        blend_chat_text(*font_, lines[0], 545, base, &frame_);
-        if (!lines[1].empty()) blend_chat_text(*font_, lines[1], 545, base + 22, &frame_);
     }
 }
 
@@ -2644,10 +2614,16 @@ void SceneRunner::compose_scene() {
              sc, 255);
     }
     const bool dc2dm = mes_.dialect == dc4::MesDialect::ClassicDM;
+    std::array<size_t, 16> draw_order{};
+    for (size_t i = 0; i < draw_order.size(); ++i)
+        draw_order[i] = dc2dm && i < 8 ? i / 2 + (i % 2) * 4 : i;
+    std::stable_sort(draw_order.begin(), draw_order.end(), [&](size_t a, size_t b) {
+        return sprites_[a].priority < sprites_[b].priority;
+    });
     for (int pass = 0; pass < 3; ++pass) {
         for (size_t layer = 0; layer < sprites_.size(); ++layer) {
             // DC2DM draws each accessory immediately after its parent body.
-            const size_t index = dc2dm && layer < 8 ? layer / 2 + (layer % 2) * 4 : layer;
+            const size_t index = draw_order[layer];
             if (dc2dm && (index == 8 || index == 9)) continue;
             const BstSprite& s = sprites_[index];
             if (!s.visible || !s.img.valid() || s.z != pass) continue;
