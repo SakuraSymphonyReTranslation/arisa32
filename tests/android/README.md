@@ -311,9 +311,12 @@ Optionally place an existing 1280x720 game screenshot at
 `screen-mode-inputs/title.png` there to capture both presentation modes.
 
 Compile `tests/android/ScreenPreferencesChecks.java` alongside the same sources
-as `LibraryChecks`, then run `org.dc4engine.ScreenPreferencesChecks` for ten host
-checks of defaults, independent game settings, persistence and malformed values.
-See `docs/screen-mode-validation.md` for results and presentation scope.
+as `LibraryChecks`, then run `org.dc4engine.ScreenPreferencesChecks` for twenty host
+checks of Fit/Stretch and fullscreen defaults, independent game settings,
+persistence and malformed values. The device suite also covers fullscreen
+navigation visibility, touch mapping, focus regain and return to the library.
+See `docs/screen-mode-validation.md` and `docs/fullscreen-comu-gear-validation.md`
+for results and presentation scope.
 
 ## Original movie decoder probe
 

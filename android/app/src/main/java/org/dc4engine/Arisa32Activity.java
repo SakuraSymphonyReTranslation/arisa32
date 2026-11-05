@@ -61,6 +61,8 @@ import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.Toast;
 
 import java.io.BufferedReader;
@@ -546,7 +548,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private int stLine;
     private boolean stChoice, stVoice, stAnim, stRevealed, stVisible, stEnded;
     private boolean stReviewing, stSidebar;
-    private boolean gameFullscreen = true;
     private int autoDelayMs = 1200;
     private boolean waitVoice = true, stopAutoChoice = true, stopSkipChoice = true, skipAllowed = true;
 
@@ -694,6 +695,52 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         addSettingsBubble();
         showLaunchOverlay(null);
         setContentView(gameLayout);
+        applyFullscreen();
+    }
+
+    private void applyFullscreen() {
+        boolean fullscreen = !inLibrary && selected != null && selected.fullscreen;
+        Window window = getWindow();
+        View decor = window.getDecorView();
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.layoutInDisplayCutoutMode = fullscreen
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            window.setAttributes(attributes);
+        }
+        if (!inLibrary && gameLayout != null) {
+            gameLayout.setFitsSystemWindows(!fullscreen);
+            gameLayout.setPadding(0, 0, 0, 0);
+            gameLayout.requestApplyInsets();
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(WindowInsets.Type.statusBars());
+                if (fullscreen) controller.hide(WindowInsets.Type.navigationBars());
+                else controller.show(WindowInsets.Type.navigationBars());
+            }
+        } else {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | (fullscreen ? View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY : 0));
+        }
+    }
+
+    private void setFullscreen(GameLibrary.Entry game, boolean enabled) {
+        game.fullscreen = enabled;
+        persistLibrary();
+        if (!inLibrary && selected == game) applyFullscreen();
+    }
+
+    private void updateViewport() {
+        activePointerId = -1;
+        touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
+        clampBubble();
+        if (movieMediaPlayer != null)
+            adjustTextureViewAspectRatio(movieMediaPlayer.getVideoWidth(), movieMediaPlayer.getVideoHeight());
     }
 
     private RectF viewport(int width, int height) {
@@ -1170,12 +1217,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 autoMode = skipMode = false;
                 dc4SetSidebarVisible(false);
                 runOnUiThread(() -> {
-                    gameFullscreen = !gameFullscreen;
-                    if (gameFullscreen) getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                    else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                    getWindow().getDecorView().setSystemUiVisibility(gameFullscreen
-                            ? View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            : View.SYSTEM_UI_FLAG_VISIBLE);
+                    if (selected != null) setFullscreen(selected, !selected.fullscreen);
                 });
                 break;
             case ":qs":
@@ -1845,6 +1887,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void showLibrary() {
         if (destroyed || library == null) return;
         inLibrary = true;
+        applyFullscreen();
         FrameLayout root = ArisaUi.backdrop(this);
         LinearLayout shell = ArisaUi.column(this); shell.setPadding(dp(24), dp(14), dp(24), dp(12));
         root.addView(shell, new FrameLayout.LayoutParams(-1, -1));
@@ -2790,6 +2833,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         setting(body, tr("Manage game", "Kelola game", "ゲーム管理"), selected.title + " · " + contentName(selected.language), () -> showGameSettings(selected));
         setting(body, screenModeTitle(), screenModeName(selected.stretchToScreen), () -> chooseScreenMode(selected));
+        setting(body, fullscreenTitle(), fullscreenName(selected.fullscreen), () -> chooseFullscreen(selected));
         if (isDc4DisplaySettings(selected))
             setting(body, visualEffectTitle(), selected.visualEffectsEnabled ? "On" : "Off", () -> chooseVisualEffect(selected));
         addSessionSetting(body);
@@ -2853,11 +2897,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     + game.fontSize);
             items.add(5, visualEffectTitle() + ": " + (game.visualEffectsEnabled ? "On" : "Off"));
         }
+        final int fullscreenIndex = items.size();
+        items.add(fullscreenTitle() + ": " + fullscreenName(game.fullscreen));
         final int screenModeIndex = items.size();
         items.add(screenModeTitle() + ": " + screenModeName(game.stretchToScreen));
         settingsDialog = dialog().setTitle(game.title)
                 .setItems(items.toArray(new String[0]), (d, which) -> {
                     if (which == screenModeIndex) { chooseScreenMode(game); return; }
+                    if (which == fullscreenIndex) { chooseFullscreen(game); return; }
                     if (dc4 && which == 4) { chooseDialogueFontSize(game); return; }
                     if (dc4 && which == 5) { chooseVisualEffect(game); return; }
                     if (dc4 && which > 5) which -= 2;
@@ -2872,6 +2919,24 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         case 7: removeGame(game); break;
                     }
                 }).show();
+    }
+
+    private String fullscreenTitle() {
+        return tr("Full screen", "Layar penuh", "全画面表示");
+    }
+    private String fullscreenName(boolean enabled) {
+        return enabled ? tr("On", "Aktif", "オン") : tr("Off", "Nonaktif", "オフ");
+    }
+    private void chooseFullscreen(GameLibrary.Entry game) {
+        settingsDialog = dialog().setTitle(fullscreenTitle())
+                .setSingleChoiceItems(new String[]{
+                        tr("On (hide navigation bar)", "Aktif (sembunyikan bilah navigasi)", "オン（ナビゲーションバーを隠す）"),
+                        tr("Off (show navigation bar)", "Nonaktif (tampilkan bilah navigasi)", "オフ（ナビゲーションバーを表示）")},
+                        game.fullscreen ? 0 : 1, (d, which) -> {
+                    setFullscreen(game, which == 0);
+                    d.dismiss();
+                    notifyUser(tr("Full screen setting saved.", "Pengaturan layar penuh tersimpan.", "全画面表示の設定を保存しました。"));
+                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
 
     private String screenModeTitle() {
@@ -2890,11 +2955,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     persistLibrary();
                     if (selected == game) {
                         stretchToScreen = game.stretchToScreen;
-                        activePointerId = -1;
-                        touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
-                        clampBubble();
-                        if (movieMediaPlayer != null)
-                            adjustTextureViewAspectRatio(movieMediaPlayer.getVideoWidth(), movieMediaPlayer.getVideoHeight());
+                        updateViewport();
                     }
                     d.dismiss();
                     notifyUser(tr("Screen mode saved.", "Mode layar tersimpan.", "画面表示を保存しました。"));
@@ -3494,7 +3555,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         startRendering();
     }
 
-    @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { }
+    @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (surface != null && holder == surface.getHolder()) updateViewport();
+    }
 
     @Override public void surfaceDestroyed(SurfaceHolder holder) {
         if (surface == null || holder != surface.getHolder()) return;
@@ -3505,6 +3568,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        applyFullscreen();
         if (updateUi != null) updateUi.resume();
         if (navigation != null) navigation.setActive(hasWindowFocus());
         if (moviePlaying) {
@@ -3517,6 +3581,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applyFullscreen();
         if (navigation != null) navigation.setActive(resumed && hasFocus);
     }
 

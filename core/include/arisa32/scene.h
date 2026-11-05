@@ -443,6 +443,7 @@ private:
         float pivot_x = 0, pivot_y = 0, scale = 1, alpha = 1;
         int sx = 0, sy = 0, width = 0, height = 0;
         double elapsed_ms = 0, duration_ms = 0;
+        double scale_phase_ms = 0;
         bool fade = false;
     };
     std::vector<ScreenEffectSprite> screen_effect_;

@@ -19,6 +19,7 @@ import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.ListView;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -45,6 +46,7 @@ final class ScreenModeChecks {
         movieTexture();
         settings();
         surfaceTouches();
+        fullscreen();
         ui(() -> { set("running", false); activity.finish(); });
         return checks;
     }
@@ -237,6 +239,88 @@ final class ScreenModeChecks {
             dialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
         });
         touches.clear();
+    }
+
+    private void fullscreen() throws Exception {
+        GameLibrary.Entry game = (GameLibrary.Entry) get("selected");
+        SurfaceView surface = (SurfaceView) get("surface");
+        int normalWidth = surface.getWidth();
+        for (boolean stretch : new boolean[]{false, true}) {
+            ui(() -> { set("stretchToScreen", stretch); call("chooseFullscreen", new Class<?>[]{GameLibrary.Entry.class}, game); });
+            tapRow(0); SystemClock.sleep(700); host.waitForIdleSync();
+            check(game.fullscreen, "fullscreen enabled");
+            check(surface.getWidth() >= normalWidth, "fullscreen expands surface");
+            check((Boolean) get("stretchToScreen") == stretch, "fullscreen preserves Fit/Stretch");
+            checkBars(false);
+            RectF vp = ScreenViewport.frame(surface.getWidth(), surface.getHeight(), stretch);
+            if (stretch) rect(vp, 0, 0, surface.getWidth(), surface.getHeight(), "fullscreen Stretch fills surface");
+            else near(vp.width()/vp.height(), 1280f/720, "fullscreen Fit keeps proportions");
+            Queue<?> touches = (Queue<?>) get("touches"); touches.clear();
+            ui(() -> {
+                set("running", true);
+                long time = SystemClock.uptimeMillis();
+                for (int action : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
+                    MotionEvent event = MotionEvent.obtain(time,time,action,vp.centerX(),vp.centerY(),0);
+                    surface.dispatchTouchEvent(event); event.recycle();
+                }
+                set("running", false);
+            });
+            check(touches.size() == 2, "fullscreen touch queued");
+            for (Object touch : touches) {
+                check((Integer) field(touch,"x") == 640 && (Integer) field(touch,"y") == 360, "fullscreen native touch coordinates");
+            }
+            save(host.getUiAutomation().takeScreenshot(), "fullscreen-" + (stretch ? "stretch" : "fit"));
+            ui(() -> call("chooseFullscreen", new Class<?>[]{GameLibrary.Entry.class}, game));
+            tapRow(1); SystemClock.sleep(700); checkBars(true);
+            check(!game.fullscreen, "fullscreen disabled");
+        }
+        for (String lang : new String[]{"en", "id", "jp"}) {
+            ui(() -> {
+                set("uiLanguage", lang);
+                Configuration config = new Configuration(activity.getResources().getConfiguration()); config.fontScale = 2;
+                activity.getResources().updateConfiguration(config, activity.getResources().getDisplayMetrics());
+                call("showGameSettings", new Class<?>[]{GameLibrary.Entry.class}, game);
+            });
+            tapRow(dialog().getListView().getCount() - 2);
+            ui(() -> dialog().getWindow().setLayout(dp(380), -2));
+            tapRow(0); SystemClock.sleep(500);
+            ui(() -> { call("chooseFullscreen", new Class<?>[]{GameLibrary.Entry.class}, game); dialog().getWindow().setLayout(dp(380), -2); });
+            save(host.getUiAutomation().takeScreenshot(), "fullscreen-" + lang + "-large-text");
+            host.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK); host.waitForIdleSync();
+            check(game.fullscreen, "Back preserves fullscreen");
+            ui(() -> call("chooseFullscreen", new Class<?>[]{GameLibrary.Entry.class}, game));
+            ui(() -> dialog().getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            check(game.fullscreen, "Cancel preserves fullscreen");
+        }
+        ui(() -> {
+            set("uiLanguage", "en");
+            call("showExtras", new Class<?>[]{boolean.class}, false);
+            View row = findText(dialog().getWindow().getDecorView(), "Full screen");
+            check(row != null, "in-game fullscreen entry exists");
+            while (!row.isClickable()) row = (View) row.getParent(); row.performClick();
+        });
+        host.sendKeyDownUpSync(KeyEvent.KEYCODE_TAB);
+        ui(() -> { dialog().getListView().requestFocus(); dialog().getListView().setSelection(1); });
+        SystemClock.sleep(150); host.waitForIdleSync();
+        host.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER); host.waitForIdleSync();
+        check(!game.fullscreen, "keyboard disables fullscreen");
+        ui(() -> call("setFullscreen", new Class<?>[]{GameLibrary.Entry.class, boolean.class}, game, true));
+        ui(() -> { activity.onWindowFocusChanged(false); activity.onWindowFocusChanged(true); });
+        SystemClock.sleep(700); checkBars(false);
+        GameLibrary restored = new GameLibrary(activity.getFilesDir());
+        check(restored.entries.get(0).fullscreen && !restored.entries.get(1).fullscreen, "fullscreen persisted independently");
+        ui(() -> call("showLibrary", new Class<?>[]{}));
+        SystemClock.sleep(700); checkBars(true);
+        check(game.fullscreen, "return to library preserves game preference");
+    }
+
+    private void checkBars(boolean visible) {
+        if (Build.VERSION.SDK_INT >= 30)
+            check(activity.getWindow().getDecorView().getRootWindowInsets().isVisible(WindowInsets.Type.navigationBars()) == visible,
+                    "navigation bar visibility = " + visible);
+        else
+            check(((activity.getWindow().getDecorView().getSystemUiVisibility() & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) == visible,
+                    "legacy navigation bar flag = " + visible);
     }
 
     private TextView findText(View view, String label) {

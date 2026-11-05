@@ -12,6 +12,7 @@ final class GameLibrary {
         int fontSize = 22;
         boolean visualEffectsEnabled = true;
         boolean stretchToScreen;
+        boolean fullscreen;
         String english = "", indonesian = "", enEncoding = "windows-31j", idEncoding = "windows-31j";
         String enFingerprint = "", idFingerprint = "";
         String overlay() { return language.equals("en") ? english : language.equals("id") ? indonesian : ""; }
@@ -72,6 +73,7 @@ final class GameLibrary {
             e.visualEffectsEnabled = !"false".equals(p.getProperty(id + ".visualEffectsEnabled",
                     p.getProperty(id + ".sakuraEnabled", "true")));
             e.stretchToScreen = "true".equals(p.getProperty(id + ".stretchToScreen", "false"));
+            e.fullscreen = "true".equals(p.getProperty(id + ".fullscreen", "false"));
             e.english = p.getProperty(id + ".en", ""); e.indonesian = p.getProperty(id + ".id", "");
             e.enEncoding = p.getProperty(id + ".enEncoding", "windows-31j");
             e.idEncoding = p.getProperty(id + ".idEncoding", "windows-31j");
@@ -202,6 +204,7 @@ final class GameLibrary {
             p.setProperty(e.id + ".fontSize", Integer.toString(e.fontSize));
             p.setProperty(e.id + ".visualEffectsEnabled", Boolean.toString(e.visualEffectsEnabled));
             p.setProperty(e.id + ".stretchToScreen", Boolean.toString(e.stretchToScreen));
+            p.setProperty(e.id + ".fullscreen", Boolean.toString(e.fullscreen));
             p.setProperty(e.id + ".en", e.english); p.setProperty(e.id + ".id", e.indonesian);
             p.setProperty(e.id + ".enEncoding", e.enEncoding); p.setProperty(e.id + ".idEncoding", e.idEncoding);
             p.setProperty(e.id + ".enFingerprint", e.enFingerprint); p.setProperty(e.id + ".idFingerprint", e.idFingerprint);

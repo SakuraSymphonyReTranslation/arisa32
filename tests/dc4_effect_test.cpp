@@ -46,6 +46,13 @@ void fixture_image(const fs::path& path, int width, int height, int kind) {
         if (kind == 2) p[0] = p[1] = p[2] = uint8_t(255 - x * 255 / (width - 1));
         if (kind == 3) p[0] = p[1] = p[2] = 255;
         if (kind == 4) { p[(x / 28) % 3] = uint8_t(100 + y / 28 * 25); }
+        if (kind == 6) {
+            const int dx = x - 360, dy = y - 355, radius = dx * dx + dy * dy;
+            if (radius >= 260 * 260 && radius <= 330 * 330) {
+                p[2] = 255;
+                if (y >= 200) p[0] = p[1] = 255;
+            }
+        }
     }
     for (size_t i = 0; i < pixels.size(); i += 8) {
         bytes.push_back(255);
@@ -58,6 +65,7 @@ void assets(const fs::path& root) {
     fixture_image(root / "GRP/BG/blue.CRX", 64, 36, 1);
     fixture_image(root / "GRP/MSK/MASK15B.CRX", 1280, 750, 2);
     fixture_image(root / "GRP/SYSTEM/EFFCHANGESCREEN1.CRX", 1024, 720, 3);
+    fixture_image(root / "GRP/SYSTEM/EFFCHANGESCREEN2.CRX", 1024, 720, 6);
     fixture_image(root / "GRP/SYSTEM/EFFSAKURA01.CRX", 256, 168, 4);
     fixture_image(root / "GRP/SYSTEM/EFFYOUSEI.CRX", 256, 164, 3);
 }
@@ -138,6 +146,57 @@ void transitions(const fs::path& root, uint16_t version, bool original = false) 
         const int duration = speed == 0 ? 5500 : speed == 5 ? 3667 : 1834;
         scene.update(duration - 1); CHECK(!scene.script_ready());
         scene.update(1); CHECK(scene.script_ready());
+    }
+}
+void gear(const fs::path& root, uint16_t version, bool original = false) {
+    for (int duration : {2, 5}) {
+        Script script(version);
+        script.slot(22, "SYSTEM\\EFFCHANGESCREEN2"); script.text("BEFORE");
+        script.param(0x38, 2, duration); script.param(0x15, 254, 0); script.text("AFTER");
+        script.save(root, "gear.mes");
+        for (int speed : {0, 5, 11}) {
+            dc4scene::SceneRunner scene(root.string());
+            scene.set_animation_enabled(true); scene.set_effect_speed(speed);
+            scene.set_visual_effects_enabled(false);
+            CHECK(scene.load_script((root / "MES/gear.mes").string()));
+            CHECK(scene.advance_to_next_text());
+            std::vector<uint8_t> saved; CHECK(scene.capture_state(&saved));
+            CHECK(!scene.advance_to_next_text() && scene.waiting_for_time());
+            const int phase = duration * 200;
+            scene.update(phase / 5); scene.draw(-1);
+            CHECK(white_pixels(scene) > 10000);
+            if (!original) {
+                CHECK(pixel(scene, 640, 55, 0) == 255 && pixel(scene, 640, 55, 1) == 0);
+                CHECK(pixel(scene, 940, 355, 1) == 255);
+                CHECK(pixel(scene, 640, 355, 0) == 0);
+            }
+            if (original && speed == 5) ppm(scene, root / ("gear-" + std::to_string(duration) + "-growing.ppm"));
+            scene.update(phase - phase / 5); scene.draw(-1);
+            CHECK(!scene.script_ready() && white_pixels(scene) == 0);
+            scene.update(500); scene.draw(-1);
+            CHECK(!scene.script_ready() && white_pixels(scene) == 0);
+            scene.update(phase * 4 / 5); scene.draw(-1);
+            CHECK(!scene.script_ready() && white_pixels(scene) > 10000);
+            if (original && speed == 5) ppm(scene, root / ("gear-" + std::to_string(duration) + "-shrinking.ppm"));
+            scene.update(phase / 5 - 1); CHECK(!scene.script_ready());
+            scene.update(1); CHECK(scene.script_ready() && !scene.animating());
+            scene.draw(-1); CHECK(white_pixels(scene) == 0);
+            CHECK(scene.advance_to_next_text() && scene.current_line() == "AFTER");
+            CHECK(scene.restore_state(saved)); CHECK(!scene.advance_to_next_text());
+            scene.update(phase / 5); scene.draw(-1); CHECK(white_pixels(scene) > 10000);
+            scene.finish_script_wait(); scene.draw(-1);
+            CHECK(!scene.animating() && white_pixels(scene) == 0);
+            CHECK(scene.advance_to_next_text() && scene.current_line() == "AFTER");
+        }
+    }
+    for (bool missing : {false, true}) {
+        Script script(version);
+        script.slot(22, missing ? "SYSTEM\\EFFCHANGESCREEN_MISSING" : "SYSTEM\\EFFCHANGESCREEN2");
+        script.param(0x38, 2, missing ? 5 : 0); script.param(0x15, 254, 0); script.text("AFTER");
+        script.save(root, "gear-empty.mes");
+        dc4scene::SceneRunner scene(root.string()); scene.set_animation_enabled(true);
+        CHECK(scene.load_script((root / "MES/gear-empty.mes").string()));
+        CHECK(scene.advance_to_next_text() && scene.current_line() == "AFTER" && !scene.animating());
     }
 }
 void ambient(const fs::path& root, uint16_t version, bool original = false) {
@@ -364,14 +423,18 @@ int main(int argc, char** argv) {
         assets(root);
         light_motion();
         for (auto version : {uint16_t(0xAAB6), uint16_t(0xABB6)}) {
-            transitions(root,version); ambient(root,version); visual_effects(root,version);
+            Script identity(version); identity.save(root,"main.mes"); identity.save(root,"dc4_start.mes");
+            transitions(root,version); gear(root,version); ambient(root,version); visual_effects(root,version);
         }
         if (argc > 1) {
             for (const char* variable : {"DC4_DATA", "DC4PH_DATA"}) if (const char* data = std::getenv(variable)) {
                 const auto original = root / variable; assets(original);
-                for (const char* name : {"SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFSAKURA01.CRX", "SYSTEM/EFFYOUSEI.CRX", "MSK/MASK15B.CRX"})
+                Script identity(variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6);
+                identity.save(original,"main.mes"); identity.save(original,"dc4_start.mes");
+                for (const char* name : {"SYSTEM/EFFCHANGESCREEN1.CRX", "SYSTEM/EFFCHANGESCREEN2.CRX", "SYSTEM/EFFSAKURA01.CRX", "SYSTEM/EFFYOUSEI.CRX", "MSK/MASK15B.CRX"})
                     fs::copy_file(fs::path(data) / "GRP" / name, original / "GRP" / name, fs::copy_options::overwrite_existing);
                 transitions(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
+                gear(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
                 ambient(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
                 visual_effects(original, variable == std::string("DC4_DATA") ? 0xAAB6 : 0xABB6, true);
                 if (variable == std::string("DC4PH_DATA")) native_saves(data, original);

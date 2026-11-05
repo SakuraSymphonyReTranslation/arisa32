@@ -241,7 +241,17 @@ void SceneRunner::draw_sakura() {
 void SceneRunner::start_screen_effect(int type, int duration) {
     screen_effect_.clear();
     if (!animation_enabled_ || !effects_enabled_ || !screen_effect_atlas_.valid() ||
-        (type != 0 && type != 1) || duration <= 0) return;
+        (type < 0 || type > 2) || duration <= 0) return;
+    if (type == 2) {
+        ScreenEffectSprite sprite;
+        sprite.from_x = sprite.to_x = 280;
+        sprite.pivot_x = 360; sprite.pivot_y = 355;
+        sprite.width = 732; sprite.height = 720;
+        sprite.scale_phase_ms = duration * 200.0;
+        sprite.duration_ms = sprite.scale_phase_ms * 2 + 500;
+        screen_effect_.push_back(sprite);
+        return;
+    }
     const auto large = [&](float from, float to) {
         ScreenEffectSprite sprite;
         sprite.from_x = from; sprite.to_x = to;
@@ -291,9 +301,18 @@ void SceneRunner::draw_screen_effect() {
     }
     for (const auto& sprite : screen_effect_) {
         const float t = float(sprite.elapsed_ms / sprite.duration_ms);
+        float scale = sprite.scale, angle = t * 3 * 3.14159265358979323846f;
+        if (sprite.scale_phase_ms > 0) {
+            // Native type 2 queues 1% -> 500% -> 550% -> 0%, with a 30-frame middle phase.
+            const double phase = sprite.scale_phase_ms, elapsed = sprite.elapsed_ms;
+            if (elapsed < phase) scale = .01f + 4.99f * float(elapsed / phase);
+            else if (elapsed < phase + 500) scale = 5.f + .5f * float((elapsed - phase) / 500);
+            else scale = 5.5f * float(1 - (elapsed - phase - 500) / phase);
+            angle = 0;
+        }
         draw_atlas_sprite(frame_, screen_effect_atlas_, sprite.sx, sprite.sy, sprite.width, sprite.height,
             sprite.from_x + (sprite.to_x - sprite.from_x) * t, sprite.y,
-            sprite.pivot_x, sprite.pivot_y, sprite.scale, t * 3 * 3.14159265358979323846f,
+            sprite.pivot_x, sprite.pivot_y, scale, angle,
             sprite.alpha * (sprite.fade ? 1 - t : 1), white);
     }
 }

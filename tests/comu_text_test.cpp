@@ -132,6 +132,10 @@ struct Script {
         bytes.push_back(0xAB); bytes.push_back(uint8_t(value)); bytes.push_back(uint8_t(value >> 8));
         bytes.insert(bytes.end(), 6, 0);
     }
+    void param(uint8_t op, uint8_t a, uint8_t b) { bytes.insert(bytes.end(), {op, a, b}); }
+    void str(uint8_t op, const std::string& value) {
+        bytes.push_back(op); bytes.insert(bytes.end(), value.begin(), value.end()); bytes.push_back(0);
+    }
     void text(uint8_t opcode, const std::string& value) {
         bytes.push_back(opcode);
         for (unsigned char ch : patch_spaces(value)) bytes.push_back(uint8_t(ch - 0x20));
@@ -189,6 +193,9 @@ void scene_tests(const fs::path& root, const dc4scene::FontRenderer& ui, const d
     write_sheet(root / "GRP/SYSTEM/COMUCHIP.CRX", 740, 891);
     write_sheet(root / "GRP/SYSTEM/comustamp.CRX", 640, 512);
     for (uint8_t version : {0xAA, 0xAB}) {
+        Script identity; identity.bytes[11] = version;
+        write_file(root / "MES/main.mes", identity.bytes);
+        write_file(root / "MES/dc4_start.mes", identity.bytes);
         const auto plain = render(root, version, {"WiMi "}, ui, &text);
         const auto padded = render(root, version, {"  WiMi"}, ui, &text);
         CHECK(ink(crop(plain, 540, 94, 50, 34)));
@@ -271,6 +278,36 @@ void scene_tests(const fs::path& root, const dc4scene::FontRenderer& ui, const d
         CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(!ink(crop(scene.frame(), 440, 16, 372, 518)));
         CHECK(scene.advance_to_next_text()); scene.draw(-1); CHECK(ink(crop(scene.frame(), 480, 96, 79, 63)));
         CHECK(scene.restore_state(saved)); scene.draw(-1); CHECK(scene.frame() == visible);
+        for (bool preserve : {false, true}) {
+            Script commit; commit.bytes[11] = version;
+            commit.group({"  WiMi"});
+            commit.str(0x49, preserve ? ":n" : ":r");
+            commit.bytes.push_back(0x3C); commit.str(1, "BG\\BLACK");
+            commit.text(0x6B, "PRELOADED");
+            commit.param(0x0F, 32, 0);
+            commit.param(0x37, 0, 0); commit.str(0x49, "BG\\BLACK");
+            commit.bytes.push_back(0xB4); commit.bytes.insert(commit.bytes.end(), 8, 0);
+            commit.param(0x28, 13, 0); commit.param(0x0F, 0, 0); commit.param(0x15, 254, 0);
+            commit.text(0x6B, "NARRATION"); commit.group({});
+            write_file(root / "MES/commit.mes", commit.bytes);
+            dc4scene::SceneRunner cleared(root.string()); cleared.set_font(&ui, &text);
+            cleared.set_animation_enabled(true);
+            CHECK(cleared.load_script((root / "MES/commit.mes").string()));
+            CHECK(cleared.advance_to_next_text()); cleared.draw(-1);
+            const auto phone = crop(cleared.frame(), 440, 16, 372, 518);
+            CHECK(cleared.advance_to_next_text() && cleared.current_line() == "PRELOADED");
+            cleared.draw(-1); CHECK(crop(cleared.frame(), 440, 16, 372, 518) == phone);
+            CHECK(!cleared.advance_to_next_text() && cleared.waiting_for_time());
+            cleared.draw(-1); CHECK(crop(cleared.frame(), 440, 16, 372, 518) == phone);
+            cleared.update(334); CHECK(cleared.script_ready());
+            CHECK(cleared.advance_to_next_text() && cleared.current_line() == "NARRATION");
+            cleared.draw(-1); CHECK(!ink(crop(cleared.frame(), 440, 16, 372, 518)));
+            std::vector<uint8_t> cleared_save; CHECK(cleared.capture_state(&cleared_save));
+            CHECK(cleared.advance_to_next_text()); cleared.draw(-1);
+            CHECK(!ink(crop(cleared.frame(), 440, 16, 372, 518)));
+            CHECK(cleared.restore_state(cleared_save)); cleared.draw(-1);
+            CHECK(!ink(crop(cleared.frame(), 440, 16, 372, 518)));
+        }
         const auto rows = render(root, version, {"WiMi ", "WiMi ", "WiMi ", "WiMi ", "WiMi ", "WiMi "}, ui, &text);
         for (int slot = 0; slot < 5; ++slot)
             CHECK(crop(rows, 538, 94 + slot * 81, 100, 62) == crop(plain, 538, 94, 100, 62));

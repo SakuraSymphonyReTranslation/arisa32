@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.8 - 2026-11-05
+
+### Bahasa Indonesia
+
+- Menambahkan toggle Layar penuh per game untuk menyembunyikan navigation bar Android, dengan Fit to Screen / Stretch, koordinat sentuhan, kontrol mengambang, dan video mengikuti area layar.
+- Memperbaiki kotak HP dan riwayat COMU DC4/DC4PH yang tertinggal setelah background berganti. Gambar transisi keluar mempertahankan HP hingga adegan berikutnya terlihat; preload dan narasi biasa tidak menutup COMU lebih awal.
+- Memulihkan transisi gear membesar dan mengecil sesuai skrip dan aset asli DC4/DC4PH, termasuk durasi, skip, penantian skrip, dan pemulihan save.
+- Memperluas pengujian dengan 440 pemeriksaan layar pada Android 16, 20 pemeriksaan preferensi host, dan regresi COMU, efek, serta scene. Seluruh perbaikan 0.6.7 tetap disertakan.
+
+### English
+
+- Adds a per-game Full screen toggle to hide Android navigation, with Fit to Screen / Stretch, touch coordinates, floating controls, and video following the display area.
+- Fixes the DC4/DC4PH phone frame and COMU history remaining after background changes. The outgoing transition image retains the phone until the next scene appears; preloading and ordinary narration do not dismiss COMU early.
+- Restores expanding and shrinking gear transitions from DC4/DC4PH scripts and original assets, including timing, skipping, script waits, and save restoration.
+- Extends testing with 440 screen checks on Android 16, 20 host preference checks, and COMU, effect, and scene regressions. All 0.6.7 fixes remain included.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.6.8/id.md) | [English](docs/releases/v0.6.8/en.md).
+
 ## 0.6.7 - 2026-11-05
 
 ### Bahasa Indonesia

@@ -1039,6 +1039,9 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
         if (c.str == ":n") { preserve_scene_ = true; return true; }
         if (c.str == ":r") { preserve_scene_ = false; return true; }
         if (c.str.empty() || c.str[0] == ':') return true;
+        // Native background commit calls sub_425DB0, which resets the COMU timeline.
+        if (modern_dc4 && (c.opcode() == dc4::Opcode::BACKGROUND || c.opcode() == dc4::Opcode::LEGACY_BACKGROUND))
+            comu_command(65535, 0, 0, 0);
         if (c.str.find('\\') != std::string::npos || c.str.find('/') != std::string::npos) {
             if (c.opcode() == dc4::Opcode::LEGACY_BACKGROUND || c.opcode() == dc4::Opcode::BACKGROUND) {
                 load_layer(1, c.str);
