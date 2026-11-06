@@ -48,6 +48,8 @@ public:
     // Restore the character tab and page from the last selected replay.
     void resume_scenes();
     SystemMenuPage page() const;
+    bool gallery_preview_active() const;
+    bool draw_gallery(int width, int height, std::vector<uint8_t>* frame) const;
     void set_in_game(bool value);
     void set_save_available(bool latest, bool quick, bool automatic = false);
     void set_config_page(int zero_based_page);

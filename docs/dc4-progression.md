@@ -28,10 +28,8 @@ At the Sorane choice in `dc4_sor20190501a`, flag 107 = 0 exposes only
 Once Arisu Ending 1 sets flag 107, `label02` ("Kali ini aku pasti akan
 menyelamatkannya.") becomes available as the second option. The condition is
 the global completion flag, not a playthrough counter. Starting New Game or
-loading an older slot does not relock it on a completed profile. The user
-confirmed that the two-choice screenshot supplied on 2026-11-04 came from
-a profile with Arisu completion or imported PC progress, which is consistent
-with this behavior.
+loading an older slot does not relock it on a completed profile. A PC screenshot
+is reference material and does not establish the phone profile's completion.
 
 The February 8, 9, 11 and 12 map scripts select the ordinary map artwork and
 three choices while flag 112 is zero. Once it is set, they select the `_ASA`
@@ -40,7 +38,11 @@ Rendering and input both use that same branch of the original script.
 
 `main.mes` tests flag 100 before constructing the D.C. button. With that flag
 zero, END occupies y=536. With it set, D.C. occupies that row and END moves to
-y=592. No replacement artwork or custom title layout is needed.
+y=592. The host now exposes flag 100 as zero if any ending flag 101-108 is
+missing, so an inconsistent old profile cannot display or activate D.C.
+Profile serialization and scene initialization use the same validated flag.
+All eight endings alone still do not manufacture flag 100; `ed.mes` awards it.
+No replacement artwork or custom title layout is needed.
 
 The supplied Seiya-Saiga URLs returned empty bodies in this environment.
 The conditions above were checked against both games' installed MES files;
@@ -65,15 +67,19 @@ profiles keep their compatibility behavior.
 
 ## Existing profiles
 
-No existing completion flag is erased. The user confirmed that their current
-profile is already 100% complete, so all its unlocked routes remain available.
-Native PC `system.dat` completion flags remain supported.
+The user's 2026-11-06 clarification establishes that only Nino and Hiyori are
+complete on the phone, with Arisu in progress. The earlier claim in this document
+that the phone profile was 100% complete was incorrect. Native PC `system.dat`
+completion flags remain supported.
 
-Profiles previously saved with fabricated completion flags cannot be reliably
-distinguished from genuinely completed profiles. This fix does not silently
-reset those profiles or claim to reconstruct their true progress. A locked
-profile starts correctly; restoring an authoritative PC profile into a fresh
-emulator profile can recover known partial progress without altering save slots.
+Profiles with all eight fabricated ending flags cannot be reliably distinguished
+from genuinely completed profiles. The engine does not guess which endings to
+erase. The phone's profile contained ones throughout 100-119, matching the old
+default-unlock bug. Its targeted repair follows the user's stated progress:
+preserve 101 (Nino), 103 (Hiyori) and 110 (ending credits/Extra); clear 100,
+102, 104-109 and 112. Flag 109 is awarded at the end of the D.C. scenario, and
+112 requires all four initial heroines. Unrelated flags, seen assets, read lines
+and story slots are preserved. The full save directory is backed up first.
 
 ## Regression coverage
 
@@ -88,6 +94,10 @@ native title rendering, fresh/partial/completed profiles, profile reload,
 settings reset, PC import ordering, and restoring global progress over stale
 slot state without changing map scores. The default test run includes both
 games when `DC4_DATA` and `DC4PH_DATA` are set.
+Regression cases also cover a stale D.C. flag with only Nino/Hiyori complete,
+native imports missing each of the eight endings, persistence of the corrected
+flag, a pending confirmation after prerequisites change, and restoring global
+progress over a slot whose old 100-119 flags were all one.
 `system_menu_test --map-progression` renders each map with the flag off and on
 and checks that every touch target belongs to an available choice.
 
@@ -130,3 +140,50 @@ not represent a complete heroine playthrough on the phone. Feature validation
 did not change the installed app, user saves or published v0.6.4 release.
 The subsequent v0.6.5 packages are covered by
 [release verification](release-qa-0.6.5.md).
+
+## Phone profile correction (2026-11-06)
+
+The connected phone's Plus Harmony save directory was backed up to
+`build/dc4-unlock-audit/phone-backup-20261106-170531/` (319 files, with a SHA-256
+manifest). The targeted nine-flag repair was applied to `system-profile.dat`.
+All 318 other files remained byte-identical. The original profile hash is
+`f6e2a446eadab5b89c684920db32ab88b98523219c17c499970606c417f45a67`;
+the repaired profile hash before app startup is
+`88e03aef2667955ad45e48eb362bfe229c18c4c9bb8906215792434b4151bc08`.
+
+- Both installed datasets passed `dc4_route_test` and
+  `system_menu_test --progression`, including the new inconsistent-profile cases.
+- All 63 native phone slots and their `.arisa` companions loaded through
+  `SceneRunner::load_state` from the backup. Applying the repaired global profile
+  preserved each script, instruction position, current line and local variables
+  in banks 0-9; syncing each restored slot kept D.C. locked.
+- Locked/completed title captures for both games were visually checked. The
+  locked title ends at END; the completed title inserts D.C. above END.
+- Android `assembleRelease` passed for arm64-v8a and armeabi-v7a. The resulting
+  production arm64 JNI library passed nine replay cases, 24 map-routing cases,
+  four fresh/save-restart progression cases and the CP932 translation check.
+- The signed APK matched the installed app's signing certificate and was
+  installed successfully with `adb install -r`, retaining version 0.6.8/code 15.
+  Launching Plus Harmony on the phone showed CONFIG followed by END, with no
+  D.C. entry. Evidence: `build/dc4-unlock-audit/phone-title.png`.
+
+The APK also contains the sprite-motion changes documented in
+[sprite-motion validation](dc4-sprite-motion-validation.md). These checks do not
+claim a complete heroine playthrough or visual parity for every animation.
+
+### Delivery gate for this change
+
+- Hard gate PASS (R-17/R-18/R-23/R-36/R-38): captures come from installed game
+  data and the connected phone; completion comes from the user's clarification.
+- Interaction PASS (R-26/R-35/C-2/C-4): locked D.C. rejects activation, completed
+  D.C. starts its authored scenario, and confirmation rechecks prerequisites.
+  Builds, desktop regressions and production JNI checks passed.
+- Purpose and direction PASS (R-31/R-37/C-1/C-3): the requested PC behavior uses
+  the original title script and artwork; no replacement visual design was added.
+- Evidence and source PASS (R-33/C-5): the guard is implemented in the menu
+  source, tests cover old profile/slot imports, and save repair has a full backup
+  and before/after hashes. The new comments explain the legacy flag constraint.
+
+Logs, captures, repair manifests and the APK are under
+`build/dc4-unlock-audit/`. The APK SHA-256 is
+`5805b683669edcfa629769efa4dbd8017524f552116b29144c4f775cdf72bcdd`.

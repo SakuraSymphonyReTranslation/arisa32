@@ -36,6 +36,9 @@ public final class UpdateDialogChecks extends Instrumentation {
     private boolean navigationOnly;
     private boolean displayOnly;
     private boolean screenOnly;
+    private boolean galleryOnly;
+    private boolean cursorOnly;
+    private boolean gameDataOnly;
     private boolean installerOnly;
     private String installMode;
 
@@ -47,6 +50,9 @@ public final class UpdateDialogChecks extends Instrumentation {
         navigationOnly = arguments != null && "true".equals(arguments.getString("navigationOnly"));
         displayOnly = arguments != null && "true".equals(arguments.getString("displayOnly"));
         screenOnly = arguments != null && "true".equals(arguments.getString("screenOnly"));
+        galleryOnly = arguments != null && "true".equals(arguments.getString("galleryOnly"));
+        cursorOnly = arguments != null && "true".equals(arguments.getString("cursorOnly"));
+        gameDataOnly = arguments != null && "true".equals(arguments.getString("gameDataOnly"));
         installerOnly = arguments != null && "true".equals(arguments.getString("installerOnly"));
         installMode = arguments == null ? null : arguments.getString("installMode");
         start();
@@ -65,7 +71,7 @@ public final class UpdateDialogChecks extends Instrumentation {
             }
             getTargetContext().getSharedPreferences("launcher", 0).edit().putBoolean("autoCheckUpdate", false).commit();
             if (installerOnly) UpdateInstallChecks.prepare(this);
-            if (graphicsOnly || navigationOnly || screenOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
+            if (graphicsOnly || navigationOnly || screenOnly || galleryOnly || cursorOnly || gameDataOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
                     .remove(FrameFilter.PREFERENCE).putBoolean("retainSession", false)
                     .remove("pausedGame").remove("pausedLanguage").commit();
             IntentFilter storagePrompt = new IntentFilter(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
@@ -75,6 +81,24 @@ public final class UpdateDialogChecks extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (Arisa32Activity) startActivitySync(launch);
             waitForIdleSync();
+            if (gameDataOnly) {
+                int count = new GameDataChecks(this, activity).run();
+                result.putString("stream", "Game data checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (cursorOnly) {
+                int count = new CursorModeChecks(this, activity).run();
+                result.putString("stream", "Cursor mode checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if (galleryOnly) {
+                int count = new GalleryPreviewChecks(this, activity).run();
+                result.putString("stream", "Gallery preview checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if (screenOnly) {
                 int count = new ScreenModeChecks(this, activity).run();
                 result.putString("stream", "Screen mode checks passed: " + count + "\n");
@@ -125,7 +149,7 @@ public final class UpdateDialogChecks extends Instrumentation {
             result.putString("stream", "Update dialog checks passed: " + checks + "\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable error) {
-            result.putString("stream", (navigationOnly ? "Floating navigation" : graphicsOnly ? "Frame filter" : sidebarOnly ? "Sidebar navigation" : "Update dialog")
+            result.putString("stream", (gameDataOnly ? "Game data" : cursorOnly ? "Cursor mode" : galleryOnly ? "Gallery preview" : navigationOnly ? "Floating navigation" : graphicsOnly ? "Frame filter" : sidebarOnly ? "Sidebar navigation" : "Update dialog")
                     + " checks FAILED (" + scenario + "): " + error + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }

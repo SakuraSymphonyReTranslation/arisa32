@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.6.8](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.8)**. This release adds an Android fullscreen toggle with Fit/Stretch support, fixes COMU remaining after scene changes, and restores DC4/DC4PH gear transitions. All 0.6.7 fixes remain included. Read the [release notes](docs/releases/v0.6.8/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.6.9](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.9)**. This release fixes DC4/DC4PH sprite animation, D.C. unlock requirements, dialogue portraits, and the CG gallery, and adds Android cursor mode. All 0.6.8 fixes remain included. Read the [release notes](docs/releases/v0.6.9/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.

@@ -682,6 +682,7 @@ int run(const Options& o) {
             scene->set_window_opacity(cfg.window_opacity);
             scene->set_effects_enabled(cfg.effects!=0);
             scene->set_effect_speed(cfg.effect_speed);
+            scene->set_text_speed(cfg.text_speed);
             for(size_t i=0;i<cfg.character_volume.size();++i)
                 scene->set_character_volume(i,cfg.character_volume[i],cfg.character_muted[i]);
         }

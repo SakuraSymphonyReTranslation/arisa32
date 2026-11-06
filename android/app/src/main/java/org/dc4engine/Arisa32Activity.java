@@ -38,6 +38,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
@@ -110,6 +111,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native void dc4ConfigureDisplay(int fontSize, boolean visualEffectsEnabled);
     private native String dc4OpenMenu(String name);
     private native boolean dc4MenuActive();
+    private native boolean dc4GalleryPreviewActive();
+    private native boolean dc4GalleryFrame(Bitmap bitmap);
     private native boolean dc4MenuFrame(Bitmap bitmap);
     private native String dc4MenuTouch(int action, int x, int y);
     private native String dc4PlaybackSettings();
@@ -154,6 +157,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private FrameLayout gameLayout;
     private TextView bubble;
     private TextView backSidemenu;
+    private Button galleryBack;
+    private volatile boolean galleryPreviewActive;
     private FloatingNavigation navigation;
     private FrameLayout movieContainer;
     private TextureView movieTextureView;
@@ -185,6 +190,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             }
 
             moviePlaying = true;
+            updateCursorActivity();
             movieStartTime = SystemClock.uptimeMillis();
 
             if (!isKotoriSongMovie(path)) {
@@ -363,6 +369,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void onMovieFinished() {
         if (!moviePlaying) return;
         moviePlaying = false;
+        updateCursorActivity();
         releaseMoviePlayer();
         if (movieContainer != null) {
             movieContainer.setVisibility(View.GONE);
@@ -497,6 +504,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private String tr(String en, String id, String jp) { return uiLanguage.equals("id") ? id : uiLanguage.equals("jp") ? jp : en; }
     private int dp(float value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
     private Bitmap frame;
+    private Bitmap galleryFrame;
     private Thread renderThread;
     private volatile boolean running;
     // Lifecycle flags are owned by the UI thread, not the render thread.
@@ -509,6 +517,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private String pauseCheckpoint;
     private boolean retainSession = true, restorePausedSession;
     private int activePointerId = -1;
+    private CursorOverlay cursorOverlay;
+    private boolean cursorMovieFrame;
+    private boolean cursorWindowFocused;
     private final ConcurrentLinkedQueue<Touch> touches = new ConcurrentLinkedQueue<>();
     // Dialog callbacks enqueue work; every native call still runs on the render thread.
     private final ConcurrentLinkedQueue<Runnable> menuCommands = new ConcurrentLinkedQueue<>();
@@ -670,6 +681,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 return true;
             }
             if (!running) return true;
+            if (cursorOverlay != null && cursorOverlay.handleTouch(event)) {
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) v.performClick();
+                return true;
+            }
             int action = event.getActionMasked();
             // Only the finger that began the gesture participates.
             if (action == MotionEvent.ACTION_DOWN) activePointerId = event.getPointerId(0);
@@ -692,6 +707,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             return true;
         });
         gameLayout.addView(surface, new FrameLayout.LayoutParams(-1, -1));
+        cursorMovieFrame = false;
+        cursorOverlay = new CursorOverlay(this, (action, x, y) -> touches.offer(new Touch(action, x, y)));
+        cursorOverlay.setCursorEnabled(selected != null && selected.cursorEnabled);
+        gameLayout.addView(cursorOverlay, new FrameLayout.LayoutParams(-1, -1));
+        surface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (cursorOverlay != null) cursorOverlay.setViewport(viewport(r-l, b-t));
+        });
         addSettingsBubble();
         showLaunchOverlay(null);
         setContentView(gameLayout);
@@ -738,6 +760,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void updateViewport() {
         activePointerId = -1;
         touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
+        if (cursorOverlay != null && surface != null) {
+            cursorOverlay.cancelGesture();
+            cursorOverlay.setViewport(viewport(surface.getWidth(), surface.getHeight()));
+        }
         clampBubble();
         if (movieMediaPlayer != null)
             adjustTextureViewAspectRatio(movieMediaPlayer.getVideoWidth(), movieMediaPlayer.getVideoHeight());
@@ -745,6 +771,22 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private RectF viewport(int width, int height) {
         return ScreenViewport.frame(width, height, stretchToScreen);
+    }
+
+    private void updateCursorActivity() {
+        if (cursorOverlay != null) cursorOverlay.setActive(running && resumed && cursorWindowFocused
+                && !inLibrary && launchOverlay == null && !moviePlaying && !cursorMovieFrame);
+    }
+
+    private void setCursorEnabled(GameLibrary.Entry game, boolean enabled) {
+        game.cursorEnabled = enabled;
+        persistLibrary();
+        if (!inLibrary && selected == game && cursorOverlay != null) {
+            activePointerId = -1;
+            touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
+            cursorOverlay.setCursorEnabled(enabled);
+            updateCursorActivity();
+        }
     }
 
     /**
@@ -913,7 +955,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 mesDir = new File(adv, "MES");
             }
         }
-        if (!mesDir.isDirectory()) return null;
+        if (!mesDir.isDirectory() || GameLibrary.baseDataError(target) != null) return null;
         File startMes = new File(mesDir, "start.mes");
         if (startMes.isFile()) {
             try (InputStream in = new FileInputStream(startMes)) {
@@ -1067,12 +1109,16 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         touches.clear();
         running = true;
+        cursorMovieFrame = false;
+        updateCursorActivity();
         firstFramePending = launchOverlay != null;
         final View pendingOverlay = launchOverlay;
         renderThread = new Thread(() -> {
             SurfaceFrameRenderer renderer = new SurfaceFrameRenderer(surface.getHolder(), !canvasOnlySurface,
                     (canvas, vp, dest, movie) -> drawOverlays(canvas, vp, getActiveFrameInVp(movie, dest, vp)));
             Bitmap movieBitmap = null;
+            boolean cursorMovie = false;
+            final CursorOverlay renderingCursor = cursorOverlay;
             long fpsLastTime = SystemClock.uptimeMillis();
             int fpsFrameCount = 0;
             try {
@@ -1091,12 +1137,26 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         while ((command = menuCommands.poll()) != null) command.run();
                         Touch touch;
                         while ((touch = touches.poll()) != null) dispatchTouch(touch);
-                        if (dc4ConfirmActive()) dc4ConfirmFrame(frame);
-                        else if (dc4MenuActive()) dc4MenuFrame(frame);
-                        else if (slotMenuOpen) dc4SlotsFrame(frame);
-                        else if (backlogOpen) dc4LogFrame(frame);
-                        else dc4Render(frame);
                         Bitmap displayBitmap = frame;
+                        boolean galleryRendered = false;
+                        if (dc4GalleryPreviewActive() && !dc4ConfirmActive()) {
+                            Rect bounds = surface.getHolder().getSurfaceFrame();
+                            RectF viewport = ScreenViewport.frame(bounds.width(), bounds.height(), stretchToScreen);
+                            int units = Math.max(1, Math.min(240,
+                                    (int) Math.ceil(Math.max(viewport.width() / 16, viewport.height() / 9))));
+                            int width = units * 16, height = units * 9;
+                            if (galleryFrame == null || galleryFrame.getWidth() != width || galleryFrame.getHeight() != height)
+                                galleryFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                            galleryRendered = dc4GalleryFrame(galleryFrame);
+                            if (galleryRendered) displayBitmap = galleryFrame;
+                        } else galleryFrame = null;
+                        if (!galleryRendered) {
+                            if (dc4ConfirmActive()) dc4ConfirmFrame(frame);
+                            else if (dc4MenuActive()) dc4MenuFrame(frame);
+                            else if (slotMenuOpen) dc4SlotsFrame(frame);
+                            else if (backlogOpen) dc4LogFrame(frame);
+                            else dc4Render(frame);
+                        }
                         int movieSize = dc4ConfirmActive() ? 0 : dc4MovieFrameSize();
                         if (movieSize != 0) {
                             int movieWidth = movieSize >>> 16, movieHeight = movieSize & 0xffff;
@@ -1111,6 +1171,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         pollStatus();
                         driveModes(SystemClock.uptimeMillis());
                         boolean isMovie = displayBitmap == movieBitmap && movieBitmap != null;
+                        if (cursorMovie != isMovie) {
+                            cursorMovie = isMovie;
+                            runOnUiThread(() -> {
+                                if (cursorOverlay != renderingCursor) return;
+                                cursorMovieFrame = isMovie;
+                                updateCursorActivity();
+                            });
+                        }
                         int applied = renderer.draw(displayBitmap, isMovie, stretchToScreen, textureFilter,
                                 autoMode || skipMode || showFps);
                         canvasOnlySurface = !renderer.usesGles();
@@ -1119,9 +1187,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                             runOnUiThread(() -> {
                                 if (launchOverlay == pendingOverlay && !initializationFailed) {
                                     gameLayout.removeView(launchOverlay); launchOverlay = null;
+                                    updateCursorActivity();
                                 }
                             });
                         }
+                        updateGalleryBack(!firstFramePending && !moviePlaying && dc4GalleryPreviewActive());
                     } catch (RuntimeException error) {
                         if (running) {
                             Log.e(TAG, "render loop failed", error);
@@ -1135,6 +1205,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
             } finally {
                 renderer.close();
+                galleryFrame = null;
+                updateGalleryBack(false);
+                runOnUiThread(() -> {
+                    if (cursorOverlay == renderingCursor) updateCursorActivity();
+                });
             }
         }, "dc4-render");
         renderThread.start();
@@ -1142,6 +1217,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void stopRendering() {
         running = false;
+        updateCursorActivity();
         Thread thread = renderThread;
         if (thread != null) {
             thread.interrupt();
@@ -1158,6 +1234,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         pendingSaveSlot = -1;
         ++saveRequestToken;
         activePointerId = -1;
+        updateGalleryBack(false);
         if (initialized) notifyUser(dc4SetPaused(true, retainSession ? pauseCheckpoint : ""));
     }
 
@@ -2134,6 +2211,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     preferences.edit().putString("uiLanguage", uiLanguage).apply();
                     if (inLibrary) showLibrary(); else if (bubble != null) {
                         bubble.setContentDescription(settingsTitle());
+                        if (galleryBack != null) galleryBack.setText(galleryBackLabel());
                         if (navigation != null) navigation.setDescription(navigationDescription());
                     }
                 }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
@@ -2658,6 +2736,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
     private void launchGame(GameLibrary.Entry game) {
         if (ioBusy) return;
+        String dataError = GameLibrary.baseDataError(new File(game.path));
+        if (dataError != null) {
+            settingsDialog = dialog().setTitle(tr("Incomplete game folder", "Folder game tidak lengkap", "ゲームデータが不足しています"))
+                    .setMessage(incompleteBaseMessage(dataError))
+                    .setPositiveButton(tr("Add folder", "Tambah folder", "フォルダーを追加"), (d,w) -> chooseAddMethod())
+                    .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+            return;
+        }
         if (probeDir(new File(game.path)) == null) {
             settingsDialog = dialog().setTitle(tr("Reconnect your game", "Hubungkan kembali game", "ゲームを再登録"))
                     .setMessage(tr("Game files are unavailable. Add the folder again to reconnect it. Your saves are kept.", "Berkas game tidak tersedia. Tambahkan ulang folder untuk menghubungkannya. Simpanan Anda tetap tersimpan.", "ゲームデータを読み取れません。フォルダーを再追加してください。セーブは保持されます。"))
@@ -2735,14 +2821,31 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 if (!ioBusy) menuCommands.add(this::backOrSidemenu);
             });
         }
+        bubble.setOnClickListener(v -> { if (!ioBusy) showExtras(); });
+        galleryPreviewActive = false;
+        galleryBack = new Button(this);
+        galleryBack.setText(galleryBackLabel());
+        galleryBack.setTextSize(14);
+        galleryBack.setTextColor(ArisaUi.CYAN);
+        galleryBack.setAllCaps(false);
+        galleryBack.setMinHeight(dp(48));
+        galleryBack.setMinimumHeight(dp(48));
+        galleryBack.setPadding(dp(16), dp(8), dp(16), dp(8));
+        galleryBack.setBackground(navigationBackground());
+        galleryBack.setVisibility(View.GONE);
+        FrameLayout.LayoutParams galleryParams = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.RIGHT);
+        galleryParams.rightMargin = galleryParams.bottomMargin = dp(12);
+        gameLayout.addView(galleryBack, galleryParams);
+        galleryBack.setOnClickListener(v -> {
+            if (!ioBusy) menuCommands.add(this::closeGalleryPreview);
+        });
         if (navigation != null) navigation.dispose();
-        navigation = new FloatingNavigation(this, gameLayout, bubble, backSidemenu, this::clampBubble,
+        navigation = new FloatingNavigation(this, gameLayout, bubble, backSidemenu, galleryBack, this::clampBubble,
                 preferences,
                 () -> ioBusy || launchOverlay != null || settingsDialog != null && settingsDialog.isShowing(),
                 navigationDescription());
         navigation.setAutoHide(preferences.getBoolean(FloatingNavigation.PREFERENCE, false));
         navigation.setActive(resumed && hasWindowFocus());
-        bubble.setOnClickListener(v -> { if (!ioBusy) showExtras(); });
         gameLayout.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> clampBubble());
         gameLayout.post(this::clampBubble);
     }
@@ -2757,6 +2860,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 safeRight = Math.max(safeRight, cutout.getSafeInsetRight());
                 safeTop = Math.max(safeTop, cutout.getSafeInsetTop());
                 safeBottom = Math.max(safeBottom, cutout.getSafeInsetBottom());
+            }
+        }
+        if (galleryBack != null) {
+            int maxWidth = Math.max(dp(48), gameLayout.getWidth()-safeLeft-safeRight-dp(24));
+            if (galleryBack.getMaxWidth() != maxWidth) galleryBack.setMaxWidth(maxWidth);
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) galleryBack.getLayoutParams();
+            int right = dp(12) + safeRight-gameLayout.getPaddingRight();
+            int bottom = dp(12) + safeBottom-gameLayout.getPaddingBottom();
+            if (params.rightMargin != right || params.bottomMargin != bottom) {
+                params.rightMargin = right; params.bottomMargin = bottom;
+                galleryBack.setLayoutParams(params);
             }
         }
         float navWidth = dp(backSidemenu == null ? 48 : 64);
@@ -2782,6 +2896,27 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final String action = dc4BackOrSidemenu(slotMenuOpen, backlogOpen);
         if ("close".equals(action)) closeMenus();
         else if (action != null && !action.isEmpty()) notifyUser(action);
+    }
+    private String galleryBackLabel() {
+        return tr("Back to gallery", "Kembali ke galeri", "CG一覧に戻る");
+    }
+    private void updateGalleryBack(boolean visible) {
+        if (galleryPreviewActive == visible) return;
+        galleryPreviewActive = visible;
+        final Button button = galleryBack;
+        runOnUiThread(() -> {
+            if (button != null && button == galleryBack) {
+                if (navigation != null) navigation.setGalleryPreviewActive(galleryPreviewActive);
+                else button.setVisibility(View.GONE);
+            }
+        });
+    }
+    private boolean closeGalleryPreview() {
+        if (!dc4GalleryPreviewActive()) return false;
+        touches.clear();
+        notifyUser(dc4OpenMenu("back"));
+        updateGalleryBack(false);
+        return true;
     }
     private void showExtras() {
         menuCommands.add(() -> {
@@ -2834,6 +2969,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         setting(body, tr("Manage game", "Kelola game", "ゲーム管理"), selected.title + " · " + contentName(selected.language), () -> showGameSettings(selected));
         setting(body, screenModeTitle(), screenModeName(selected.stretchToScreen), () -> chooseScreenMode(selected));
         setting(body, fullscreenTitle(), fullscreenName(selected.fullscreen), () -> chooseFullscreen(selected));
+        setting(body, cursorTitle(), fullscreenName(selected.cursorEnabled) + ". " + cursorHelp(),
+                () -> chooseCursorMode(selected));
         if (isDc4DisplaySettings(selected))
             setting(body, visualEffectTitle(), selected.visualEffectsEnabled ? "On" : "Off", () -> chooseVisualEffect(selected));
         addSessionSetting(body);
@@ -2901,8 +3038,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         items.add(fullscreenTitle() + ": " + fullscreenName(game.fullscreen));
         final int screenModeIndex = items.size();
         items.add(screenModeTitle() + ": " + screenModeName(game.stretchToScreen));
+        final int cursorIndex = items.size();
+        items.add(cursorTitle() + ": " + fullscreenName(game.cursorEnabled));
         settingsDialog = dialog().setTitle(game.title)
                 .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which == cursorIndex) { chooseCursorMode(game); return; }
                     if (which == screenModeIndex) { chooseScreenMode(game); return; }
                     if (which == fullscreenIndex) { chooseFullscreen(game); return; }
                     if (dc4 && which == 4) { chooseDialogueFontSize(game); return; }
@@ -2919,6 +3059,29 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         case 7: removeGame(game); break;
                     }
                 }).show();
+    }
+
+    private String cursorTitle() {
+        return tr("Cursor mode", "Mode kursor", "カーソルモード");
+    }
+    private String cursorHelp() {
+        return tr("Slide to move, tap to click. Hold, then slide to drag. Hides after 4 seconds of inactivity.",
+                "Geser untuk bergerak, ketuk untuk klik. Tahan, lalu geser untuk menyeret. Menghilang setelah 4 detik tanpa input.",
+                "スライドで移動、タップでクリック。長押し後にスライドでドラッグ。4秒間操作しないと隠れます。");
+    }
+    private void chooseCursorMode(GameLibrary.Entry game) {
+        settingsDialog = dialog().setTitle(cursorTitle())
+                .setSingleChoiceItems(new String[]{
+                        tr("Off (touch directly)", "Nonaktif (sentuh langsung)", "オフ（直接タッチ）"),
+                        tr("On (slide to move, tap to click)", "Aktif (geser untuk bergerak, ketuk untuk klik)",
+                                "オン（スライドで移動、タップでクリック）")},
+                        game.cursorEnabled ? 1 : 0, (d, which) -> {
+                    setCursorEnabled(game, which == 1);
+                    d.dismiss();
+                    if (which == 1) notifyUser(tr("Cursor enabled. Hold, then slide to drag.",
+                            "Kursor aktif. Tahan, lalu geser untuk menyeret.",
+                            "カーソルを有効にしました。長押し後にスライドでドラッグできます。"));
+                }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
 
     private String fullscreenTitle() {
@@ -3331,8 +3494,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void registerGame(File path, String overlayLanguage, GameLibrary.Entry target, boolean owned) throws IOException {
         registerGame(path, overlayLanguage, target, owned, null);
     }
+    private String incompleteBaseMessage(String missingFile) {
+        return tr("The title menu cannot load because " + missingFile + " is missing or invalid. Add the complete game's AdvData folder. Add translation patches through the game's language settings.",
+                "Menu utama tidak dapat dimuat karena " + missingFile + " tidak ada atau tidak valid. Tambahkan folder AdvData dari game lengkap. Tambahkan patch terjemahan melalui pengaturan bahasa game.",
+                missingFile + " がないか無効なため、タイトル画面を読み込めません。完全なゲームの AdvData フォルダーを追加してください。翻訳パッチはゲームの言語設定から追加できます。");
+    }
     private void registerGame(File path, String overlayLanguage, GameLibrary.Entry target, boolean owned, String titleHint) throws IOException {
         File root = GameLibrary.dataRoot(path, overlayLanguage != null);
+        if (overlayLanguage == null) {
+            String dataError = GameLibrary.baseDataError(root);
+            if (dataError != null) throw new IOException(incompleteBaseMessage(dataError));
+        }
         if (overlayLanguage == null && probeDir(root) == null) throw new IOException("Cannot read MES/start.mes. Use the folder picker or grant storage access.");
         String fingerprint = GameLibrary.fingerprint(root);
         if (importCancelled != null && importCancelled.get()) throw new IOException("Import cancelled.");
@@ -3568,6 +3740,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        cursorWindowFocused = hasWindowFocus();
         applyFullscreen();
         if (updateUi != null) updateUi.resume();
         if (navigation != null) navigation.setActive(hasWindowFocus());
@@ -3581,19 +3754,28 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        cursorWindowFocused = hasFocus;
         if (hasFocus) applyFullscreen();
         if (navigation != null) navigation.setActive(resumed && hasFocus);
+        updateCursorActivity();
+        if (!hasFocus) {
+            activePointerId = -1;
+            touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
+        }
     }
 
     @Override public void onBackPressed() {
         if (ioBusy) return;
+        if (cursorOverlay != null) cursorOverlay.cancelGesture();
         if (moviePlaying) {
             stopMovie();
             return;
         }
         if (inLibrary) super.onBackPressed();
         else if (hasNativeSidebar()) menuCommands.add(this::backOrSidemenu);
-        else menuCommands.add(() -> {if(!dc4CancelConfirmation())runOnUiThread(this::showExtras);});
+        else menuCommands.add(() -> {
+            if (!dc4CancelConfirmation() && !closeGalleryPreview()) runOnUiThread(this::showExtras);
+        });
     }
 
     @Override protected void onPause() {

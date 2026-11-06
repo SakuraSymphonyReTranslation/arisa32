@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.9 - 2026-11-06
+
+### Bahasa Indonesia
+
+- Memperbaiki gerakan, antrean animasi, waktu kemunculan/penghilangan, dan pemulihan sprite DC4/DC4PH melalui sistem bersama yang berlaku untuk karakter lain, termasuk Nino dan Sorane.
+- Memperketat pembukaan menu D.C. pada kedua game: penanda D.C. harus disertai delapan ending heroine. Pemeriksaan juga berlaku pada profil lama, impor PC, pemuatan slot, dan konfirmasi masuk.
+- Memulihkan portrait kotak dialog dari aset FACE asli, termasuk posisi, aksesori, pembersihan saat pergantian adegan, dan save baru.
+- Memperbaiki galeri CG dengan gambar utuh, pratinjau sesuai resolusi layar, urutan gambar terbuka, mask transisi asli, dan kontrol kembali ke galeri.
+- Menambahkan mode kursor Android per game dengan geser relatif, ketuk untuk klik, tahan lalu geser, serta sembunyi otomatis setelah empat detik.
+- Mendeteksi folder dasar DC4/DC4PH yang tidak lengkap tanpa menolak overlay terjemahan parsial, dan menampilkan `??????` untuk judul musik terkunci.
+- Memperluas regresi sprite, portrait, galeri, progres, dan kompatibilitas save. Seluruh perbaikan 0.6.8 tetap disertakan; dukungan DC2DM tetap beta.
+
+### English
+
+- Fixes DC4/DC4PH movement, animation queues, entrance/exit timing, and sprite restoration through the shared system used by other characters, including Nino and Sorane.
+- Tightens D.C. menu requirements in both games: the D.C. marker must be accompanied by all eight heroine endings. Checks also cover older profiles, PC imports, slot loading, and entry confirmation.
+- Restores textbox portraits from the original FACE assets, including positioning, accessories, scene-change cleanup, and new saves.
+- Improves the CG gallery with whole-image fitting, previews sized for the display, unlocked image order, original transition masks, and controls to return to the gallery.
+- Adds a per-game Android cursor mode with relative movement, tap to click, hold then drag, and four-second auto-hide.
+- Detects incomplete DC4/DC4PH base folders while allowing partial translation overlays, and shows `??????` for locked music titles.
+- Extends sprite, portrait, gallery, progression, and save compatibility regressions. All 0.6.8 fixes remain included; DC2DM support remains beta.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.6.9/id.md) | [English](docs/releases/v0.6.9/en.md).
+
 ## 0.6.8 - 2026-11-05
 
 ### Bahasa Indonesia

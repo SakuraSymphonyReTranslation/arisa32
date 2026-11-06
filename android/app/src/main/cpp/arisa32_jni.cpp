@@ -159,6 +159,7 @@ void apply_config(Engine* e) {
         e->scene->set_effects_enabled(c.effects != 0);
         e->scene->set_visual_effects_enabled(g_config.visual_effects_enabled);
         e->scene->set_effect_speed(c.effect_speed);
+        e->scene->set_text_speed(c.text_speed);
         if (e->menu.scene_ui_script() == "start.mes") {
             e->scene->set_variable(99,12,e->menu.variable(99,12));
             e->scene->set_variable(99,20,e->menu.variable(99,20));
@@ -357,17 +358,18 @@ const char* kFontCandidates[] = {
 };
 
 // Copies a scene or menu frame into an ARGB_8888 Bitmap.
-bool blit_rgba(JNIEnv* env, jobject bitmap, const std::vector<uint8_t>& frame) {
-    if (frame.size() != size_t(dc4scene::kScreenW) * dc4scene::kScreenH * 4) return false;
+bool blit_rgba(JNIEnv* env, jobject bitmap, const std::vector<uint8_t>& frame,
+               int width = dc4scene::kScreenW, int height = dc4scene::kScreenH) {
+    if (frame.size() != size_t(width) * height * 4) return false;
     AndroidBitmapInfo info{};
     if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        info.width != dc4scene::kScreenW || info.height != dc4scene::kScreenH ||
+        info.width != uint32_t(width) || info.height != uint32_t(height) ||
         info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.stride < info.width * 4) return false;
     void* pixels = nullptr;
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) return false;
     // ARGB_8888 uses RGBA memory on little-endian Android. Respect row stride.
-    const size_t row_bytes = size_t(dc4scene::kScreenW) * 4;
-    for (int row = 0; row < dc4scene::kScreenH; ++row)
+    const size_t row_bytes = size_t(width) * 4;
+    for (int row = 0; row < height; ++row)
         std::memcpy(static_cast<uint8_t*>(pixels) + size_t(row) * info.stride,
                     frame.data() + size_t(row) * row_bytes, row_bytes);
     AndroidBitmap_unlockPixels(env, bitmap);
@@ -1851,6 +1853,25 @@ Java_org_dc4engine_Arisa32Activity_dc4OpenMenu(JNIEnv* env, jobject thiz, jstrin
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4MenuActive(JNIEnv* env, jobject thiz) {
     return Java_org_dc4engine_Dc4Activity_dc4MenuActive(env, thiz);
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4GalleryPreviewActive(JNIEnv*, jobject) {
+    Engine* e = g_engine;
+    return e && !e->paused && e->menu_open && !e->presentation.active() &&
+        !e->menu.confirming() && e->menu.gallery_preview_active();
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4GalleryFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
+    if (!Java_org_dc4engine_Arisa32Activity_dc4GalleryPreviewActive(env, thiz)) return JNI_FALSE;
+    AndroidBitmapInfo info{};
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return JNI_FALSE;
+    Engine* e = g_engine;
+    tick_engine(e);
+    std::vector<uint8_t> frame;
+    if (!e->menu.draw_gallery(info.width, info.height, &frame)) return JNI_FALSE;
+    e->save_frame_visible = false;
+    return blit_rgba(env, bitmap, frame, info.width, info.height);
 }
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4MenuFrame(JNIEnv* env, jobject thiz, jobject bitmap) {

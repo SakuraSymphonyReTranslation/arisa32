@@ -564,6 +564,9 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     next_script_.clear();
     current_line_.clear();
     speaker_.clear();
+    dialogue_actions_.clear(); dialogue_batches_ = {};
+    collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
+    reset_sprite_motion_batch();
     if (!preserving_dialogue_history_) reset_dialogue_history();
     sidebar_visible_ = false;
     pending_movie_.clear();
@@ -630,7 +633,9 @@ void SceneRunner::finish_script_wait() {
 }
 
 bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
+    if (collect_dialogue_command(c)) return true;
     if (dispatch_dc2dm_message_face(c)) return true;
+    if (dc4_message_faces() && dispatch_dc4_message_face(c)) return true;
     using Handler = bool (SceneRunner::*)(const MesCommand&);
     static const auto handlers = [] {
         std::array<std::array<Handler, 256>, 6> table{};
@@ -1063,7 +1068,7 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
                     }
                 } else if (!preserve_scene_) {
                     for (size_t i = 0; i < sprites_.size(); ++i) {
-                        if (c.dc2dm && (i == 8 || i == 9)) continue;
+                        if ((c.dc2dm || dc4_message_faces()) && (i == 8 || i == 9)) continue;
                         if (!pending_sprites_[i]) {
                             if (c.dc2dm) { release_dc2dm_sprite(i); continue; }
                             sprites_[i].visible = false;
@@ -1267,6 +1272,7 @@ bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
         return true;
     }
     current_line_ = c.str;
+    schedule_dialogue_actions();
     if (c.dc2pc) dc2pc_present_pending_ = dc2pc_black_ = false;
     return true;
 }
@@ -1281,10 +1287,16 @@ bool SceneRunner::advance_to_next_text() {
     script_wait_pending_ = false;
     script_wait_skippable_ = true;
     finish_animations(false);
+    reset_sprite_motion_batch();
+    if (!current_line_.empty()) {
+        dialogue_batches_ = {}; collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
+    }
     if (dc2pc) dc2pc_present_pending_ = true;
     scene_dirty_ = true;
     std::string prev_speaker = speaker_;
     std::string prev_line = current_line_;
+    // Native DC4 0x4352D7 releases slot 31 when accepting the current line.
+    if (dc4_message_faces() && !current_line_.empty()) release_dc4_message_face(8);
     speaker_.clear();
     current_line_.clear();
     std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
@@ -1336,6 +1348,8 @@ bool SceneRunner::load_sheets(const std::string& mes_path) {
     while (stream.next(&c)) {
         c = dc4::mes_engine_command(c);
         if (c.dc2dm && c.raw_op == 0x6C) dispatch_dc2dm_message_face(c);
+        if (is_dc4_or_dc4ph_ && (ui.version == 0xAAB6 || ui.version == 0xABB6) && c.op == 0x8D)
+            dispatch_dc4_message_face(c);
         if (c.kind == dc4::CmdKind::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
             Image img;
             std::string lower = c.str;
@@ -1734,6 +1748,23 @@ void SceneRunner::load_layer(int layer, const std::string& path) {
 
 void SceneRunner::load_slot(int slot, const std::string& raw) {
     if (raw.empty()) return;
+    if (dc4_message_faces() && (slot == 31 || slot == 32)) {
+        const int index = slot - 23;
+        if (raw == "-") release_dc4_message_face(index);
+        else {
+            const std::string name = raw == "--" ? sprites_[index].name : raw;
+            if (name.empty()) return;
+            load_bst(index, name, slot);
+            auto& face = sprites_[index];
+            face.x = 0;
+            face.y = slot == 31 ? 225 - (face.canvas_h > 0 ? face.canvas_h : face.img.h) : sprites_[8].y;
+            if (slot == 32) {
+                face.cur_x = sprites_[8].cur_x;
+                face.cur_y = sprites_[8].cur_y;
+            }
+        }
+        return;
+    }
     const bool dc2dm = mes_.dialect == dc4::MesDialect::ClassicDM;
     if (dc2dm && slot == 0) return;
     if (dc2dm && (slot == 18 || slot == 19)) {
@@ -1800,7 +1831,7 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
         reset_camera();
         effect_pck_.clear();
         for (size_t i = 0; i < sprites_.size(); ++i) {
-            if (dc2dm && (i == 8 || i == 9)) continue;
+            if ((dc2dm || dc4_message_faces()) && (i == 8 || i == 9)) continue;
             if (!pending_sprites_[i]) {
                 if (dc2dm) { release_dc2dm_sprite(i); continue; }
                 sprites_[i].visible = false;
@@ -1845,6 +1876,40 @@ void SceneRunner::release_dc2dm_sprite(size_t index) {
     sprite.fade = BstSprite::Fade{};
     pending_sprites_[index] = false;
     if (index < 4) release_dc2dm_sprite(index + 4);
+}
+
+bool SceneRunner::dc4_message_faces() const {
+    return is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6);
+}
+
+void SceneRunner::release_dc4_message_face(size_t index) {
+    release_dc2dm_sprite(index);
+    sprites_[index].name.clear();
+}
+
+bool SceneRunner::dispatch_dc4_message_face(const dc4::MesCommand& c) {
+    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.dc2pc) return false;
+    if (c.op == 0x8D && c.kind == dc4::CmdKind::Words4) {
+        sprites_[8].cur_x = int16_t(c.words[0]);
+        sprites_[8].cur_y = int16_t(c.words[1]);
+        return true;
+    }
+    if (c.op == 0x64 && c.kind == dc4::CmdKind::Str) {
+        if (c.str == "-") for (size_t i : {8u, 9u}) release_dc4_message_face(i);
+        return true;
+    }
+    return false;
+}
+
+void SceneRunner::draw_dc4_message_face() {
+    if (vm_.read_variable(99, 234) != 0) return;
+    for (size_t i : {8u, 9u}) {
+        const auto& face = sprites_[i];
+        if (!face.visible || !face.img.valid()) continue;
+        const int left = face.cur_x + face.x + int(face.frame_cx - face.img.w / 2.f);
+        const int top = face.cur_y + face.y + int(face.frame_cy - face.img.h / 2.f);
+        blit(&frame_, kScreenW, kScreenH, left, top, face.img, 1, face.alpha);
+    }
 }
 
 bool SceneRunner::dispatch_dc2dm_message_face(const dc4::MesCommand& c) {
@@ -1909,11 +1974,11 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     CrxInfo info;
     std::string err;
     const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
-    const bool dc2dm_face = mes_.dialect == dc4::MesDialect::ClassicDM && (idx == 8 || idx == 9);
+    const bool message_face = (mes_.dialect == dc4::MesDialect::ClassicDM || dc4_message_faces()) && (idx == 8 || idx == 9);
     s.visible = false;
     s.img = Image{};
-    if (!bst_load(data_ + (dc2dm_face ? "/GRP/FACE" : "/GRP/BST"), name, &s.img.rgba, &info, &err, dc2pc) &&
-        (dc2dm_face || !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc))) {
+    if (!bst_load(data_ + (message_face ? "/GRP/FACE" : "/GRP/BST"), name, &s.img.rgba, &info, &err, dc2pc) &&
+        (message_face || !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc))) {
         if (debug_) printf("  bst: %s\n", err.c_str());
         return;
     }
@@ -1922,8 +1987,8 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     s.img.h = info.height;
     // The canvas sits at (inner, inner+size) inside a 1280-tall registration
     // frame; its centre is what the placement math anchors around.
-    const int shift_x = (info.canvas_width > 1024) ? int(info.canvas_width - 1024) / 2 : 0;
-    const int shift_y = (info.canvas_height > 2048) ? int(info.canvas_height - 2048) / 2 : 0;
+    const int shift_x = (!message_face && info.canvas_width > 1024) ? int(info.canvas_width - 1024) / 2 : 0;
+    const int shift_y = (!message_face && info.canvas_height > 2048) ? int(info.canvas_height - 2048) / 2 : 0;
     s.frame_cx = (info.offset_x - shift_x) + float(info.width) / 2;
     s.frame_cy = (info.offset_y - shift_y) + float(info.height) / 2;
     s.canvas_w = info.canvas_width; s.canvas_h = info.canvas_height;
@@ -2042,6 +2107,12 @@ void SceneRunner::set_sprite_transform(uint16_t scale_pct, uint16_t x, uint16_t 
         return;
     }
     if ((mode & 0xFF) == 0xFF) return;
+    if (dc4_message_faces() && (mode & 0xC0) == 0x40 && scale_pct < 3) {
+        const size_t index = mode & 15;
+        if (index >= sprites_.size()) return;
+        queue_sprite_entrance(index, scale_pct, 12);
+        return;
+    }
     if (mode & 0x80) {
         const size_t index = mode & 0x0F;
         if (index < sprites_.size()) {
@@ -2057,6 +2128,8 @@ void SceneRunner::set_sprite_transform(uint16_t scale_pct, uint16_t x, uint16_t 
         // snapshots it. This is what actually moves a sprite at scale 1.
         if (y < sprites_.size()) {
             BstSprite& s = sprites_[y];
+            s.finish_motion(); s.relative_origin_valid = false;
+            scene_dirty_ = true;
             s.cur_x = int(int16_t(scale_pct));
             s.cur_y = int(int16_t(x));
             if (debug_)
@@ -2191,42 +2264,6 @@ void SceneRunner::mark_transition_frame(int kind) {
     // 0x36 precedes new character batches: redraw boundary only.
 }
 
-// 0x8E: sprite slide (MesVM 0x42DA46 -> sub_447620/sub_447700).
-// operand0 = duration in 60 Hz ticks; operand1/2 = signed start offset from
-// the 0x8B position; operand3 = sprite slot (see 0x8B mode bits), minus one.
-// sub_447620 itself divides (end-start) by duration; the slot and direction
-// assignment are split between sub_447620 (sprite A) and sub_447700 (sprite B).
-void SceneRunner::queue_sprite_slide(uint16_t scale_pct, uint16_t x, uint16_t y,
-                                     uint16_t mode) {
-    int idx = -1;
-    int16_t from_dx = int16_t(x);
-    int16_t from_dy = int16_t(y);
-    double duration_ms = double(uint32_t(scale_pct)) * 1000.0 / 60.0;
-    if (y & 0x40) {
-        idx = int(y & 0x0F);
-        if (scale_pct == 0) duration_ms = 12.0 * 1000.0 / 60.0;
-        if (mode == 1 || mode == 2) from_dy = -12;
-        else if (mode == 3) from_dy = 12;
-        else if (mode == 4) from_dy = 8;
-        else if (mode == 6) from_dy = 4;
-        else from_dy = 0;
-    } else {
-        idx = int(mode & 0x0F) - 1;
-    }
-    if (idx < 0 || idx >= int(sprites_.size())) return;
-    BstSprite& s = sprites_[size_t(idx)];
-    s.slide.from_dx = from_dx;
-    s.slide.from_dy = from_dy;
-    s.slide.duration_ms = duration_ms;
-    s.slide.elapsed_ms = animation_enabled_ && effects_enabled_ ? 0.0 : duration_ms;
-    if (!animation_enabled_ || !effects_enabled_ || duration_ms <= 0) {
-        // Headless/screenshots: settle instantly at the 0x8B position.
-        s.slide.from_dx = 0; s.slide.from_dy = 0; s.slide.duration_ms = 0;
-        s.slide.elapsed_ms = 0;
-    }
-    scene_dirty_ = true;
-}
-
 // 0x8C (MesVM case 140 at 0x42D6CF): mode 0x80 fades the effect layer — the
 // BST\CUT* cut-in whose sheet the script loaded last (native VM+0x688) — out
 // through its wipe mask. sub_447B00 queues alpha 255 -> 0 at 510/(w1*12)
@@ -2234,10 +2271,24 @@ void SceneRunner::queue_sprite_slide(uint16_t scale_pct, uint16_t x, uint16_t y,
 // path (VM_VarRead) removes the layer outright instead of animating.
 void SceneRunner::queue_sprite_effect(uint16_t w0, uint16_t w1, uint16_t w2,
                                       uint16_t w3) {
-    (void)w0; (void)w2;
+    (void)w2;
+    if (dc4_message_faces()) {
+        if (w3 == 0) {
+            auto& s = sprites_[12];
+            s.finish_motion(); s.relative_origin_valid = false;
+            s.cur_x = int16_t(w0); s.cur_y = int16_t(w1);
+            scene_dirty_ = true;
+            return;
+        }
+        if ((w3 & 0xC0) == 0x40 && w0 < 3) {
+            queue_sprite_entrance(12, w0, w0 ? 6 : 20);
+            return;
+        }
+    }
     if ((w3 & 0x80) == 0) return;
-    if (effect_sprite_ < 0 || effect_sprite_ >= int(sprites_.size())) return;
-    BstSprite& s = sprites_[size_t(effect_sprite_)];
+    const int index = dc4_message_faces() ? 12 : effect_sprite_;
+    if (index < 0 || index >= int(sprites_.size())) return;
+    BstSprite& s = sprites_[size_t(index)];
     const double frames = double(w1) * 12.0;
     if (!animation_enabled_ || !effects_enabled_ || frames <= 0) {
         s.fade = BstSprite::Fade{};
@@ -2246,6 +2297,7 @@ void SceneRunner::queue_sprite_effect(uint16_t w0, uint16_t w1, uint16_t w2,
         scene_dirty_ = true;
         return;
     }
+    s.fade = BstSprite::Fade{};
     s.fade.rate_per_frame = -510.0 / frames;
     s.fade.elapsed_frames = 0;
     s.fade.duration_frames = frames;
@@ -2511,28 +2563,7 @@ void SceneRunner::update(uint32_t elapsed_ms) {
                              int(dc2pc_transition_target_[i+c]) * weight) / 16);
         }
     }
-    // 0x8E slide clocks.
-    for (BstSprite& s : sprites_) {
-        if (!s.slide.active()) continue;
-        s.slide.elapsed_ms += remaining;
-        if (s.slide.elapsed_ms >= s.slide.duration_ms) {
-            s.slide.from_dx = 0; s.slide.from_dy = 0;
-            s.slide.duration_ms = 0; s.slide.elapsed_ms = 0;
-        }
-        scene_dirty_ = true;
-    }
-    // 0x8C effect-layer fade clocks (60 fps frame domain, like sub_447B00).
-    for (BstSprite& s : sprites_) {
-        if (!s.fade.active()) continue;
-        s.fade.elapsed_frames += double(remaining) * 60.0 / 1000.0;
-        s.alpha = int(std::max(0.0, 255.0 + s.fade.rate_per_frame * s.fade.elapsed_frames));
-        if (s.alpha <= 0 || !s.fade.active()) {
-            s.alpha = 255;
-            s.visible = false;
-            s.fade = BstSprite::Fade{};
-        }
-        scene_dirty_ = true;
-    }
+    update_dialogue_actions(elapsed_ms);
     update_sakura(elapsed_ms);
     update_screen_effect(elapsed_ms);
     if (transition_active_) {
@@ -2569,15 +2600,12 @@ void SceneRunner::finish_animations(bool finish_screen_effect) {
     if (finish_screen_effect) screen_effect_.clear();
     scene_dirty_ = true;
     finish_dc2pc_transition();
+    finish_dialogue_actions();
     for (BstSprite& s : sprites_) {
-        if (s.slide.active()) {
-            s.slide.from_dx = 0; s.slide.from_dy = 0;
-            s.slide.duration_ms = 0; s.slide.elapsed_ms = 0;
-        }
-        // A fade cut short by skip/headless mode dismisses the layer.
+        s.finish_motion();
         if (s.fade.active()) {
+            s.visible = s.fade.end_alpha != 0;
             s.alpha = 255;
-            s.visible = false;
             s.fade = BstSprite::Fade{};
         }
     }
@@ -2627,7 +2655,7 @@ void SceneRunner::compose_scene() {
         for (size_t layer = 0; layer < sprites_.size(); ++layer) {
             // DC2DM draws each accessory immediately after its parent body.
             const size_t index = draw_order[layer];
-            if (dc2dm && (index == 8 || index == 9)) continue;
+            if ((dc2dm || dc4_message_faces()) && (index == 8 || index == 9)) continue;
             const BstSprite& s = sprites_[index];
             if (!s.visible || !s.img.valid() || s.z != pass) continue;
             if (dc2dm) {
@@ -2645,14 +2673,6 @@ void SceneRunner::compose_scene() {
             // offset, then compose their own scale/position with the zoom.
             const int pivot_x = 512 + int((camera_x_ - 512) * 80 / 100);
             const int pivot_y = 288 + int((camera_y_ - 288) * 80 / 100);
-            // 0x8E slide: the offset decays from from_dx/from_dy to zero.
-            int slide_dx = 0, slide_dy = 0;
-            if (s.slide.active()) {
-                const double t = s.slide.elapsed_ms / s.slide.duration_ms;
-                const double ease = 1.0 - t;  // linear decay matches sub_447620
-                slide_dx = int(std::lround(s.slide.from_dx * ease));
-                slide_dy = int(std::lround(s.slide.from_dy * ease));
-            }
             // Native placement: the frame point (tgt) sits at screen
             // (cur + tgt); the canvas centre then lands at
             // cur + tgt*(1-s) + frame_centre*s. At scale 1 the 0x8B target
@@ -2664,10 +2684,10 @@ void SceneRunner::compose_scene() {
                 !s.canvas_w && !s.canvas_h;
             const float anchor_x = implicit_pivot && s.x == 0 ? s.img.w / 2.f : float(s.x);
             const float anchor_y = implicit_pivot && s.y == 0 ? s.img.h / 2.f : float(s.y);
-            const float centre_x = float(s.cur_x + slide_dx)
+            const float centre_x = float(s.position(0))
                                  + anchor_x * (1.0f - s.scale)
                                  + s.frame_cx * s.scale;
-            const float centre_y = float(s.cur_y + slide_dy)
+            const float centre_y = float(s.position(1))
                                  + anchor_y * (1.0f - s.scale)
                                  + s.frame_cy * s.scale;
             const int base_x = int(std::lround(centre_x - float(s.img.w) * s.scale / 2));
@@ -2731,6 +2751,7 @@ void SceneRunner::draw(int reveal_chars) {
     if (!sidebar_visible_ && message_visible_ && (!dc2dm_ui_ || !current_line_.empty()) && !script_wait_pending_ && !effect_pck_.active && pending_movie_.empty()) {
         draw_message_window(reveal_chars);
         if (dc2dm_ui_) draw_dc2dm_message_face();
+        if (dc4_message_faces()) draw_dc4_message_face();
         if (taskbar_visible_) {
             for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
             for (const UiButton& b : buttons_) {
@@ -3228,7 +3249,6 @@ DisplayText display_text(const std::string& sjis, int default_size = 22, bool dc
         if (raw[i] == u'\r') { ++i; continue; }
         if (raw[i] == u'@' && i + 1 < raw.size()) {
             // 0x41FD70 consumes these commands before glyph rendering.
-            // Their animation/audio scheduling is not yet implemented here.
             // Match longest first, so @muf and @bt1 are not font tags.
             static const std::u16string controls[] = {
                 u"cmd", u"muf", u"lse", u"re1", u"re2",

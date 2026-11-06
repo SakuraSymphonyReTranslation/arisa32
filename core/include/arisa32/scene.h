@@ -23,6 +23,7 @@
 #include "arisa32/voice.h"
 
 #include <cstdint>
+#include <array>
 #include <deque>
 #include <functional>
 #include <map>
@@ -140,17 +141,28 @@ struct BstSprite {
     bool visible = false;
     int z = 0;
     int priority = 50;     // Native 0x8B mode 0x20; lower values draw first.
-    // 0x8E slide-in/out motion: an offset from the 0x8B position that decays
-    // to zero over the scripted duration (sub_447620/sub_447700).
-    struct Slide {
-        int from_dx = 0, from_dy = 0;
-        double elapsed_ms = 0, duration_ms = 0;
-        bool active() const { return duration_ms > 0 && elapsed_ms < duration_ms; }
-    } slide;
+    struct Move {
+        int from_x = 0, from_y = 0, to_x = 0, to_y = 0;
+        uint32_t frames = 1, ticks = 0;
+    };
+    struct Wave {
+        int amplitude = 0, start = 0, end = 0;
+        uint32_t frames = 60, ticks = 0;
+        double origin = 0;
+    };
+    std::deque<Move> moves;
+    std::array<std::deque<Wave>, 2> waves;
+    double motion_remainder = 0;
+    bool relative_origin_valid = false;
+    int relative_x = 0, relative_y = 0;
+    bool moving() const { return !moves.empty() || !waves[0].empty() || !waves[1].empty(); }
+    double position(int axis) const;
+    void finish_motion();
     // 0x8C mode 0x80: the effect layer (a BST\CUT* cut-in) fades out through
     // its wipe mask; sub_447B00 queues alpha 255 -> 0 at 510/frames per frame,
     // so the sprite is fully transparent halfway through the duration.
     struct Fade {
+        int start_alpha = 255, end_alpha = 0;
         double rate_per_frame = 0;
         double elapsed_frames = 0, duration_frames = 0;
         bool active() const { return duration_frames > 0 && elapsed_frames < duration_frames; }
@@ -267,6 +279,7 @@ public:
     void set_visual_effects_enabled(bool enabled) { visual_effects_enabled_ = enabled; scene_dirty_ = true; }
     void set_dialogue_font_size(int size);
     void set_effect_speed(int native_0_to_11);
+    void set_text_speed(int native_0_to_11);
     void set_character_volume(size_t id, int percent, bool muted = false) { scene_audio_.set_character_volume(id, percent, muted); }
     void set_latin_mode(bool latin);
     bool latin_mode() const { return latin_mode_; }
@@ -315,7 +328,7 @@ public:
     void set_animation_enabled(bool enabled);
     void update(uint32_t elapsed_ms);
     void finish_animations(bool finish_screen_effect = true);
-    bool animating() const { return !camera_motion_.empty() || dc2pc_transition_active_ || (is_dc4_or_dc4ph_ && (transition_active_ || !screen_effect_.empty())); }
+    bool animating() const;
     float camera_scale() const { return camera_scale_; }
     // Native .dat saves for supported games; snapshots for legacy/checkpoints.
     bool save_state(const std::string& path);
@@ -365,6 +378,10 @@ private:
     void load_slot(int slot, const std::string& raw);
     void load_bst(int idx, const std::string& name, int slot);
     bool dispatch_dc2dm_message_face(const dc4::MesCommand& command);
+    bool dc4_message_faces() const;
+    void release_dc4_message_face(size_t index);
+    bool dispatch_dc4_message_face(const dc4::MesCommand& command);
+    void draw_dc4_message_face();
     void draw_dc2dm_message_face();
     void release_dc2dm_sprite(size_t index);
     bool load_bst_expression(int idx, const std::string& name);
@@ -385,8 +402,16 @@ private:
     UiButton dc2pc_choice_button(size_t index) const;
     void apply_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, uint16_t y);
     void reset_camera();
-    // 0x8E queues a sprite slide (sub_447620/700); update() interpolates.
-    void queue_sprite_slide(uint16_t scale_pct, uint16_t x, uint16_t y, uint16_t mode);
+    void queue_sprite_slide(uint16_t x, uint16_t y, uint16_t target, uint16_t mode);
+    void queue_sprite_move(size_t index, int x, int y, uint32_t frames);
+    void queue_sprite_entrance(size_t index, uint16_t kind, uint32_t frames);
+    void update_sprite_motion(double elapsed_ms);
+    void reset_sprite_motion_batch();
+    bool collect_dialogue_command(const dc4::MesCommand& command);
+    void schedule_dialogue_actions();
+    void run_dialogue_action(int kind, int index);
+    void update_dialogue_actions(double elapsed_ms);
+    void finish_dialogue_actions();
     // 0x8C: effect-layer fade (MesVM case 140 -> sub_447B00).
     void queue_sprite_effect(uint16_t w0, uint16_t w1, uint16_t w2, uint16_t w3);
     // COMU phone chat: 0xAB modes and 0x6D messages (MesVM case 171/109).
@@ -550,6 +575,15 @@ private:
     bool animation_enabled_ = false;
     bool effects_enabled_ = true;
     int effect_speed_ = 5;
+    int text_speed_ = 5;
+    uint32_t sprite_wave_frames_ = 60;
+    int sprite_wave_axis_ = 0;
+    struct DialogueAction { int kind = 0, index = 0; double due_ms = 0; };
+    std::vector<DialogueAction> dialogue_actions_;
+    double dialogue_action_ms_ = 0;
+    std::array<std::vector<dc4::MesCommand>, 10> dialogue_batches_;
+    bool collecting_dialogue_batch_ = false;
+    size_t dialogue_batch_index_ = 0;
     // Scene transition: 0x0F(32) snapshots the composed frame and selects the
     // effect; 0xB4 after the layer commit starts a crossfade to the new scene.
     std::vector<uint8_t> transition_snap_;

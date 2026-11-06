@@ -163,7 +163,7 @@ final class ScreenModeChecks {
             game.title = titles[i]; game.path = new File(activity.getFilesDir(), "screen-fixture-" + i).getPath();
             library.entries.add(game);
             ui(() -> { set("uiLanguage", "en"); call("showGameSettings", new Class<?>[]{GameLibrary.Entry.class}, game); });
-            int row = dialog().getListView().getCount() - 1;
+            int row = dialog().getListView().getCount() - 2;
             check(dialog().getListView().getAdapter().getItem(row).toString().endsWith("Fit to Screen"), "default Fit for " + game.title);
             tapRow(row); check(dialog().getListView().getCheckedItemPosition() == 0, "default choice selected");
             tapRow(1); check(game.stretchToScreen, "Stretch selected");
@@ -281,7 +281,7 @@ final class ScreenModeChecks {
                 activity.getResources().updateConfiguration(config, activity.getResources().getDisplayMetrics());
                 call("showGameSettings", new Class<?>[]{GameLibrary.Entry.class}, game);
             });
-            tapRow(dialog().getListView().getCount() - 2);
+            tapRow(dialog().getListView().getCount() - 3);
             ui(() -> dialog().getWindow().setLayout(dp(380), -2));
             tapRow(0); SystemClock.sleep(500);
             ui(() -> { call("chooseFullscreen", new Class<?>[]{GameLibrary.Entry.class}, game); dialog().getWindow().setLayout(dp(380), -2); });

@@ -13,6 +13,7 @@ final class GameLibrary {
         boolean visualEffectsEnabled = true;
         boolean stretchToScreen;
         boolean fullscreen;
+        boolean cursorEnabled;
         String english = "", indonesian = "", enEncoding = "windows-31j", idEncoding = "windows-31j";
         String enFingerprint = "", idFingerprint = "";
         String overlay() { return language.equals("en") ? english : language.equals("id") ? indonesian : ""; }
@@ -74,6 +75,7 @@ final class GameLibrary {
                     p.getProperty(id + ".sakuraEnabled", "true")));
             e.stretchToScreen = "true".equals(p.getProperty(id + ".stretchToScreen", "false"));
             e.fullscreen = "true".equals(p.getProperty(id + ".fullscreen", "false"));
+            e.cursorEnabled = "true".equals(p.getProperty(id + ".cursorEnabled", "false"));
             e.english = p.getProperty(id + ".en", ""); e.indonesian = p.getProperty(id + ".id", "");
             e.enEncoding = p.getProperty(id + ".enEncoding", "windows-31j");
             e.idEncoding = p.getProperty(id + ".idEncoding", "windows-31j");
@@ -205,6 +207,7 @@ final class GameLibrary {
             p.setProperty(e.id + ".visualEffectsEnabled", Boolean.toString(e.visualEffectsEnabled));
             p.setProperty(e.id + ".stretchToScreen", Boolean.toString(e.stretchToScreen));
             p.setProperty(e.id + ".fullscreen", Boolean.toString(e.fullscreen));
+            p.setProperty(e.id + ".cursorEnabled", Boolean.toString(e.cursorEnabled));
             p.setProperty(e.id + ".en", e.english); p.setProperty(e.id + ".id", e.indonesian);
             p.setProperty(e.id + ".enEncoding", e.enEncoding); p.setProperty(e.id + ".idEncoding", e.idEncoding);
             p.setProperty(e.id + ".enFingerprint", e.enFingerprint); p.setProperty(e.id + ".idFingerprint", e.idFingerprint);
@@ -290,6 +293,32 @@ final class GameLibrary {
             }
         }
         return false;
+    }
+
+    static String baseDataError(File root) {
+        File[] scripts = new File(root, "MES").listFiles();
+        if (scripts == null) return null;
+        boolean dc4 = false;
+        for (File script : scripts) {
+            String name = script.getName().toLowerCase(Locale.ROOT);
+            if (script.isFile() && name.startsWith("dc4_") && name.endsWith(".mes")) {
+                dc4 = true;
+                break;
+            }
+        }
+        if (!dc4) return null;
+        for (String folder : new String[]{"GRP", "DAT"}) {
+            File[] files = new File(root, folder).listFiles();
+            if (files == null) continue;
+            for (File file : files) {
+                if (!file.getName().equalsIgnoreCase("NAMES.DAT") || !file.isFile()) continue;
+                try (InputStream in = new FileInputStream(file)) {
+                    if (in.read() == 7 && in.read() == 0 && in.read() == 0 && in.read() == 0
+                            && file.length() > 4) return null;
+                } catch (IOException ignored) {}
+            }
+        }
+        return "GRP/NAMES.DAT";
     }
 
     static File dataRoot(File path, boolean overlay) throws IOException {

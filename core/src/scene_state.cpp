@@ -177,7 +177,9 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || fairy_lights_.active || sheets_.count(28));
         const bool save_priority = std::any_of(sprites_.begin(), sprites_.end(),
             [](const BstSprite& sprite) { return sprite.priority != 50; });
-        const bool extended = save_priority || save_effects;
+        const bool save_motion = dc4_message_faces() || std::any_of(sprites_.begin(), sprites_.end(),
+            [](const BstSprite& sprite) { return sprite.moving(); });
+        const bool extended = save_priority || save_effects || save_motion;
         if (extended) {
             out.flag(!save_effects && dc2dm_ending_reference_valid_);
             out.flag(save_effects);
@@ -208,10 +210,39 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
                 out.flag(p.brightening);
             }
         }
+        if (save_motion) {
+            out.number(dialogue_action_ms_);
+            out.u32(sprite_wave_frames_); out.u32(sprite_wave_axis_);
+            for (const auto& s : sprites_) {
+                out.u32(s.fade.start_alpha); out.u32(s.fade.end_alpha);
+                out.number(s.fade.rate_per_frame); out.number(s.fade.elapsed_frames); out.number(s.fade.duration_frames);
+                out.number(s.motion_remainder); out.flag(s.relative_origin_valid);
+                out.u32(uint32_t(s.relative_x)); out.u32(uint32_t(s.relative_y));
+                out.u32(uint32_t(s.moves.size()));
+                for (const auto& m : s.moves) {
+                    out.u32(uint32_t(m.from_x)); out.u32(uint32_t(m.from_y));
+                    out.u32(uint32_t(m.to_x)); out.u32(uint32_t(m.to_y));
+                    out.u32(m.frames); out.u32(m.ticks);
+                }
+                for (const auto& waves : s.waves) {
+                    out.u32(uint32_t(waves.size()));
+                    for (const auto& w : waves) {
+                        out.u32(uint32_t(w.amplitude)); out.u32(uint32_t(w.start)); out.u32(uint32_t(w.end));
+                        out.u32(w.frames); out.u32(w.ticks); out.number(w.origin);
+                    }
+                }
+            }
+            for (const auto& batch : dialogue_batches_) {
+                out.u32(uint32_t(batch.size()));
+                for (const auto& c : batch) out.u32(c.pos);
+            }
+            out.u32(uint32_t(dialogue_actions_.size()));
+            for (const auto& a : dialogue_actions_) { out.u32(a.kind); out.u32(a.index); out.number(a.due_ms); }
+        }
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(save_motion ? 11 : save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
         header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
@@ -365,12 +396,19 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
             const int priority_records[]={10,20,30,40,50,63,65};
             for(int i=0;i<7;++i)
                 u32(0x18E20+priority_records[i]*960+0x380,uint32_t(sprites_[priority_indices[i]].priority));
+            if (dc4_message_faces()) for (size_t i : {8u, 9u}) {
+                const auto& face = sprites_[i];
+                const size_t at = 0x18E20 + (75 + i - 8) * 960;
+                number(at, float(face.cur_x)); number(at+4, float(face.cur_y));
+                number(at+12, float(face.x)); number(at+16, float(face.y));
+            }
             for(size_t i=0;i<sprites_.size();++i) if(sprites_[i].visible && sprites_[i].img.valid()) {
                 const auto& sprite=sprites_[i];
                 int slot=-1,record=-1;
                 if(i<5 && sprite.z==0) {slot=4+int(i);record=10+int(i)*10;}
                 else if(i==12) {slot=25;record=63;}
                 else if(i==13) {slot=26;record=65;}
+                else if(dc4_message_faces() && (i==8 || i==9)) {slot=31+int(i)-8;record=75+int(i)-8;}
                 else throw std::runtime_error("native export does not support this sprite layer");
                 name(0xA8+slot*48,48,sprite.image);
                 // The PC reconstructs a full BST registration canvas, including
@@ -379,6 +417,11 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
                 Image canvas;
                 canvas.w=sprite.canvas_w>0?sprite.canvas_w:sprite.img.w;
                 canvas.h=sprite.canvas_h>0?sprite.canvas_h:sprite.img.h;
+                if (slot == 31 || slot == 32) {
+                    renderer(record, canvas, float(sprite.cur_x), float(sprite.cur_y), 1,
+                             sprite.alpha/255.f, 0, 0, false);
+                    continue;
+                }
                 const float left=sprite.cur_x+sprite.x*(1-sprite.scale);
                 const float top=sprite.cur_y+sprite.y*(1-sprite.scale);
                 renderer(record,canvas,left,top,sprite.scale,sprite.alpha/255.f,float(sprite.x),float(sprite.y),true);
@@ -595,6 +638,21 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
             sprite.cur_y=int(std::lround(base_y-sprite.y*(1-sprite.scale)-crop_y*sprite.scale));
             sprite.alpha=int(std::lround(std::clamp(number(at+104),0.f,1.f)*255));
         }
+        if (candidate.dc4_message_faces()) for (int i : {8, 9}) {
+            const size_t at = 0x18E20 + (75 + i - 8) * 960;
+            const auto resource = name(0xA8 + (31 + i - 8) * 48, 48);
+            if (!resource.empty()) {
+                candidate.load_slot(31 + i - 8, resource);
+                if (!candidate.sprites_[i].img.valid())
+                    throw std::runtime_error("saved message face is unavailable: " + resource);
+            }
+            auto& face = candidate.sprites_[i];
+            face.cur_x = int(std::lround(number(at)));
+            face.cur_y = int(std::lround(number(at+4)));
+            face.x = int(std::lround(number(at+12)));
+            face.y = int(std::lround(number(at+16)));
+            face.alpha = int(std::lround(std::clamp(number(at+104), 0.f, 1.f) * 255));
+        }
         const auto ambient_type = integer(0x3C104), ambient_parameter = integer(0x3C108);
         const auto light_parameter = integer(0x3C110);
         if (ambient_type > 255 || ambient_parameter > 255 || light_parameter > 255)
@@ -792,7 +850,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 9)
+        if (version < 1 || version > 11)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -848,7 +906,9 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 scale <= 0 || scale > 655.35 || x < -32768 || x > 65535 || y < -32768 || y > 65535 || alpha < 0 || alpha > 255 || z < 0 || z > 2)
                 throw std::runtime_error("invalid saved sprite");
             if (!image.empty()) {
-                candidate.load_bst(int(i), image, z == 2 ? 25 : z == 1 ? 19 : 4);
+                const int slot = candidate.dc4_message_faces() && (i == 8 || i == 9)
+                    ? 31 + int(i) - 8 : z == 2 ? 25 : z == 1 ? 19 : 4;
+                candidate.load_bst(int(i), image, slot);
                 if (!candidate.sprites_[i].img.valid()) throw std::runtime_error("saved sprite is unavailable: " + image);
             }
             auto& sprite = candidate.sprites_[i];
@@ -876,6 +936,40 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             dc4::MesCommand command;
             while (scan.next(&command) && command.pos < vm.pc) if (command.op == 0x6C)
                 candidate.dispatch_dc2dm_message_face(dc4::mes_engine_command(command));
+        }
+        if (version < 10 && candidate.dc4_message_faces() &&
+            std::all_of(candidate.sprites_.begin()+8, candidate.sprites_.begin()+10,
+                [](const BstSprite& face) {
+                    return face.name.empty() && face.image.empty() && !face.visible &&
+                           face.cur_x == 0 && face.cur_y == 0;
+                })) {
+            // Older snapshots omitted message faces. Recover only visual commands;
+            // discard a pending reference at flow boundaries rather than guessing a branch.
+            dc4::MesFile start;
+            if (start.load_file(dc4::resolve_asset(data_ + "/MES/start.mes"))) {
+                dc4::MesStream scan(start); dc4::MesCommand command;
+                while (scan.next(&command)) if (command.op == 0x8D)
+                    candidate.dispatch_dc4_message_face(dc4::mes_engine_command(command));
+            }
+            std::string refs[2];
+            bool after_line = false;
+            dc4::MesStream scan(candidate.mes_); dc4::MesCommand command;
+            while (scan.next(&command) && command.pos < vm.pc) {
+                if (after_line) refs[0].clear();
+                after_line = command.kind == dc4::CmdKind::Text && command.op != 0x6A;
+                if (command.op == 0x8D)
+                    candidate.dispatch_dc4_message_face(dc4::mes_engine_command(command));
+                else if (command.op == 0x3C && (command.p1 == 31 || command.p1 == 32)) {
+                    if (command.str != "--") refs[command.p1-31] = command.str == "-" ? "" : command.str;
+                } else if ((command.op == 0x64 && command.str == "-") ||
+                           command.op == 0x4B || command.op == 0x54 || command.op == 0x4F ||
+                           command.op == 0x50 || command.op == 0x2E || command.op == 0x20 ||
+                           command.op == 0x86 || command.op == 0x0B || command.op == 0x0C ||
+                           command.op == 0x1D) {
+                    refs[0].clear(); refs[1].clear();
+                }
+            }
+            for (int i = 0; i < 2; ++i) if (!refs[i].empty()) candidate.load_slot(31+i, refs[i]);
         }
         const auto audio = read_audio(in);
         uint16_t camera_duration = 5;
@@ -1009,6 +1103,75 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 }
             }
         }
+        if (version >= 11) {
+            candidate.dialogue_action_ms_ = in.number();
+            candidate.sprite_wave_frames_ = in.count(65535); candidate.sprite_wave_axis_ = int(in.count(1));
+            if (candidate.dialogue_action_ms_ < 0 || !candidate.sprite_wave_frames_)
+                throw std::runtime_error("invalid saved animation clock");
+            auto coordinate = [&]() {
+                const int value = in.integer();
+                if (std::abs(double(value)) > 10000000) throw std::runtime_error("invalid saved motion coordinate");
+                return value;
+            };
+            for (auto& s : candidate.sprites_) {
+                s.fade.start_alpha = int(in.count(255)); s.fade.end_alpha = int(in.count(255));
+                s.fade.rate_per_frame = in.number(); s.fade.elapsed_frames = in.number(); s.fade.duration_frames = in.number();
+                if (s.fade.elapsed_frames < 0 || s.fade.duration_frames < 0 || s.fade.duration_frames > 65535 * 12 ||
+                    s.fade.elapsed_frames > s.fade.duration_frames || std::abs(s.fade.rate_per_frame) > 510)
+                    throw std::runtime_error("invalid saved sprite fade");
+                s.motion_remainder = in.number(); s.relative_origin_valid = in.flag();
+                s.relative_x = coordinate(); s.relative_y = coordinate();
+                if (s.motion_remainder < 0 || s.motion_remainder >= 1000)
+                    throw std::runtime_error("invalid saved motion remainder");
+                const auto moves = in.count(100);
+                for (uint32_t i = 0; i < moves; ++i) {
+                    BstSprite::Move m;
+                    m.from_x = coordinate(); m.from_y = coordinate(); m.to_x = coordinate(); m.to_y = coordinate();
+                    m.frames = in.count(65535 * 6); m.ticks = in.count(m.frames);
+                    if (!m.frames) throw std::runtime_error("invalid saved motion duration");
+                    s.moves.push_back(m);
+                }
+                for (auto& waves : s.waves) {
+                    const auto count = in.count(100);
+                    for (uint32_t i = 0; i < count; ++i) {
+                        BstSprite::Wave w;
+                        w.amplitude = coordinate(); w.start = coordinate(); w.end = coordinate();
+                        w.frames = in.count(65535); w.ticks = in.count(w.frames); w.origin = in.number();
+                        if (!w.frames || std::abs(w.origin) > 10000000)
+                            throw std::runtime_error("invalid saved wave");
+                        waves.push_back(w);
+                    }
+                }
+            }
+            std::vector<uint32_t> command_positions;
+            dc4::MesStream boundaries(candidate.mes_);
+            dc4::MesCommand boundary;
+            while (boundaries.next(&boundary)) command_positions.push_back(boundary.pos);
+            dc4::MesStream stream(candidate.mes_);
+            for (auto& batch : candidate.dialogue_batches_) {
+                const auto count = in.count(10);
+                for (uint32_t i = 0; i < count; ++i) {
+                    const auto pos = in.u32();
+                    dc4::MesCommand command;
+                    if (!std::binary_search(command_positions.begin(), command_positions.end(), pos))
+                        throw std::runtime_error("invalid saved dialogue command boundary");
+                    stream.seek(pos);
+                    if (!stream.next(&command) || command.op == 0xB0 || command.kind == dc4::CmdKind::Text)
+                        throw std::runtime_error("invalid saved dialogue command");
+                    batch.push_back(dc4::mes_engine_command(command));
+                }
+            }
+            const auto count = in.count(4096);
+            double last_due = candidate.dialogue_action_ms_;
+            for (uint32_t i = 0; i < count; ++i) {
+                DialogueAction a;
+                a.kind = int(in.count(2)); a.index = int(in.count(a.kind == 2 ? 9 : 3)); a.due_ms = in.number();
+                if (a.due_ms < last_due || a.due_ms > 10000000)
+                    throw std::runtime_error("invalid saved dialogue action");
+                last_due = a.due_ms;
+                candidate.dialogue_actions_.push_back(a);
+            }
+        }
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
         if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
         comu_visible_ = restored_comu_visible;
@@ -1021,9 +1184,13 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         script_name_ = script; current_line_ = line; speaker_ = speaker; transition_type_ = transition;
         camera_scale_ = float(camera_scale); camera_x_ = float(camera_x); camera_y_ = float(camera_y);
         camera_duration_ = camera_duration; camera_motion_ = std::move(camera_motion);
-        if (!animation_enabled_) finish_animations();
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
         reset_restore_transients();
+        dialogue_actions_ = std::move(candidate.dialogue_actions_);
+        dialogue_batches_ = std::move(candidate.dialogue_batches_);
+        dialogue_action_ms_ = candidate.dialogue_action_ms_;
+        sprite_wave_frames_ = candidate.sprite_wave_frames_; sprite_wave_axis_ = candidate.sprite_wave_axis_;
+        if (!animation_enabled_ || !effects_enabled_) finish_animations();
         mask_ = std::move(candidate.mask_); screen_effect_atlas_ = std::move(candidate.screen_effect_atlas_);
         sakura_ = std::move(candidate.sakura_); sakura_sheet_ = std::move(candidate.sakura_sheet_);
         fairy_lights_ = std::move(candidate.fairy_lights_); fairy_light_sheet_ = std::move(candidate.fairy_light_sheet_);
@@ -1040,6 +1207,8 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
 }
 
 void SceneRunner::reset_restore_transients() {
+    dialogue_actions_.clear(); dialogue_batches_ = {}; dialogue_action_ms_ = 0;
+    collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
     next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
     pending_movie_.clear(); pending_movie_is_effect_ = false; input_skip_label_.clear();
     script_wait_pending_ = false; script_wait_ms_ = 0;

@@ -137,7 +137,7 @@ final class DisplaySettingsChecks {
         classic.title = "D.C. II Dearest Marriage";
         classic.path = new File(activity.getFilesDir(), "dc2dm").getAbsolutePath();
         open(classic);
-        check(dialog().getListView().getCount() == 9, "DC2DM has screen mode but no DC4 font/sakura controls");
+        check(dialog().getListView().getCount() == 11, "DC2DM has screen, fullscreen and cursor modes but no DC4 font/effect controls");
         host.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK); host.waitForIdleSync();
         ui(() -> activity.finish());
         return checks;

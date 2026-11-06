@@ -1,5 +1,35 @@
 # Android library and save-archive checks
 
+## Optional cursor mode
+
+The per-game cursor option defaults to Off for new games and older libraries.
+Host-side persistence checks:
+
+```powershell
+javac -encoding UTF-8 -cp "$env:LOCALAPPDATA/Android/Sdk/platforms/android-36/android.jar" -d build/cursor-mode/preferences `
+  android/app/src/main/java/org/dc4engine/GameLibrary.java `
+  (Get-ChildItem android/app/src/main/java/org/dc4engine/profile/*.java).FullName `
+  tests/android/CursorPreferencesChecks.java
+java -cp build/cursor-mode/preferences org.dc4engine.CursorPreferencesChecks
+```
+
+Build and install the isolated QA packages as described below, then run:
+
+```powershell
+adb shell am instrument -w -e cursorOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+This checks relative motion, tap versus movement, touch slop, hold-and-drag,
+viewport bounds and scaling, cancellation, multiple fingers, runtime toggles,
+focus loss and restoration, movie visibility, and four-second auto-hide.
+The real Activity opens synthetic DC4 and DC4PH gallery fixtures through both
+direct touch and cursor clicks. Moving the cursor must leave the CG unchanged;
+clicking advances it. Android navigation controls remain directly tappable.
+Settings are exercised in EN/ID/JP at 200% text, including a 380dp Indonesian
+dialog, Cancel, Back and keyboard selection. Screenshots are saved under
+`/sdcard/Android/data/org.dc4engine.updateqa/files/cursor-checks/`.
+See `docs/cursor-mode-validation.md` for scope and results.
+
 ## Release descriptions and update dialog
 
 Run the Java 17 text checks from the repository root:
@@ -405,3 +435,47 @@ confined to this test. Captures are in external-files/gles-frame-checks.
 Use an explicit adb serial when several devices are connected. Pull evidence
 before uninstalling org.dc4engine.glesqa.test and org.dc4engine.glesqa.
 See docs/fxaa-legacy-validation.md for observed coverage and limitations.
+
+## CG preview back button
+
+Build with `update-qa.init.gradle` and install the isolated QA app and test APKs.
+The fixture generator uses private QA storage and requires no installed games.
+
+```powershell
+adb shell am instrument -w -e galleryOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+`GalleryPreviewChecks` exercises DC4 and Plus Harmony menu formats in English,
+Indonesian and Japanese. It checks that the button appears only after opening a
+CG, follows navigation auto-hide and reveal, and returns to the same gallery through touch,
+Android Back and keyboard Enter. It also checks variant taps, duplicate close
+requests, render pause/resume, safe bounds, 48dp targets, 2x text and a 380dp
+container. Screenshots are in external-files/gallery-preview-checks.
+
+The same suite also checks complete 1920x1080 CG corners, an intermediate
+left-to-right mask transition, advancement beyond the selected thumbnail,
+skipping locked CGs, portrait containment, and route wrapping. Native
+`system_menu_test <AdvData> --gallery` adds deterministic elapsed-time checks
+and compares rendered pixels with original DC4/Plus Harmony image assets.
+See `docs/cg-preview-render-validation.md` for the rendering results.
+
+Use `sidebarOnly` and `navigationOnly` for the existing navigation regressions.
+For installed desktop assets, run `system_menu_test <AdvData> --menus` to check
+native menus, including the gallery preview state, without the replay catalogue
+test that assumes the DC4 All Age scene count. See
+`docs/cg-preview-back-validation.md` for results and test limits.
+
+## Incomplete DC4 base folders
+
+Build the QA application and instrumentation with `update-qa.init.gradle`, then:
+
+```powershell
+adb shell am instrument -w -e gameDataOnly true org.dc4engine.updateqa.test/org.dc4engine.UpdateDialogChecks
+```
+
+The 64 checks exercise registration and launching of complete and partial
+folders with identical MES fingerprints, overlay acceptance, catalogue headers,
+EN/ID/JP error dialogs, and native title startup for DC4 and DC4PH. Fixtures
+use a separate temporary library. As with the other instrumentation modes,
+the runner changes QA launcher preferences; back up and restore those if the
+QA installation has user settings. See `docs/dc4ph-startup-validation.md`.

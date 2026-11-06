@@ -1,4 +1,5 @@
 #include "arisa32/scene.h"
+#include "legacy_snapshot_fixture.h"
 
 #include <algorithm>
 #include <array>
@@ -203,7 +204,15 @@ void ambient(const fs::path& root, uint16_t version, bool original = false) {
     Script clean(version); clean.text("CLEAN"); clean.save(root,"clean.mes");
     dc4scene::SceneRunner legacy(root.string());
     CHECK(legacy.load_script((root / "MES/clean.mes").string())); CHECK(legacy.advance_to_next_text());
-    std::vector<uint8_t> old_save; CHECK(legacy.capture_state(&old_save)); CHECK(old_save[8] == 5);
+    std::vector<uint8_t> old_save; CHECK(legacy.capture_state(&old_save)); CHECK(old_save[8] == 11);
+    snapshot_fixture::strip_idle_v11_motion(old_save);
+    // v5 has no trailing effect flags or sprite priorities.
+    old_save.resize(old_save.size() - 66); old_save[8] = 5;
+    const auto payload_size = uint32_t(old_save.size() - 24);
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 24; i < old_save.size(); ++i) hash = (hash ^ old_save[i]) * 1099511628211ULL;
+    for (int i = 0; i < 4; ++i) old_save[12+i] = uint8_t(payload_size >> (8*i));
+    for (int i = 0; i < 8; ++i) old_save[16+i] = uint8_t(hash >> (8*i));
     Script script(version);
     script.slot(28,"SYSTEM\\EFFSAKURA01"); script.param(0x28,9,116); script.text("PETALS");
     script.param(0x28,7,0); script.text("CONTINUE");
@@ -219,7 +228,7 @@ void ambient(const fs::path& root, uint16_t version, bool original = false) {
     const auto frame = scene.frame();
     CHECK(std::count_if(frame.begin(), frame.end(), [](uint8_t v) { return v != 0; }) > 1280 * 720);
     if (original) ppm(scene, root / "ambient-3200.ppm");
-    std::vector<uint8_t> saved; CHECK(scene.capture_state(&saved)); CHECK(saved[8] == 9);
+    std::vector<uint8_t> saved; CHECK(scene.capture_state(&saved)); CHECK(saved[8] == 11);
     scene.update(400); scene.draw(-1); CHECK(scene.frame() != frame);
     CHECK(scene.restore_state(saved)); scene.draw(-1); CHECK(scene.frame() == frame);
     scene.update(4800); split.update(4800); scene.draw(-1); split.draw(-1); CHECK(scene.frame() == split.frame());
@@ -320,7 +329,7 @@ void visual_effects(const fs::path& root, uint16_t version, bool original = fals
     scene.draw(-1); split.draw(-1); CHECK(scene.frame() == split.frame());
     const auto frame = scene.frame();
     std::vector<uint8_t> saved; std::string error;
-    CHECK(scene.capture_state(&saved, &error)); CHECK(saved[8] == 9);
+    CHECK(scene.capture_state(&saved, &error)); CHECK(saved[8] == 11);
     if (original) ppm(scene, root / "lights-2400.ppm");
     scene.set_visual_effects_enabled(false); scene.draw(-1);
     const auto hidden = scene.frame(); CHECK(hidden != frame);

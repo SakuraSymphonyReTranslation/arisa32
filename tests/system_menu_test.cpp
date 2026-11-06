@@ -1,6 +1,7 @@
 #include "arisa32/system_menu.h"
 #include "arisa32/mesvm.h"
 #include "arisa32/save_screen.h"
+#include "arisa32/names.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -22,11 +23,11 @@ bool has(Menu& m,const std::string& tag){for(const auto& c:m.controls())if(c.tag
 dc4ui::SystemMenuAction click(Menu& m,const std::string& tag){
     for(const auto& c:m.controls())if(c.tag==tag&&c.enabled){m.pointer_down(c.x+c.w/2,c.y+c.h/2);auto action=m.pointer_up(c.x+c.w/2,c.y+c.h/2);return m.confirming()?m.answer_confirmation(true):action;}return {};
 }
-void bmp(const std::filesystem::path& path,const std::vector<uint8_t>& rgba){
+void bmp(const std::filesystem::path& path,const std::vector<uint8_t>& rgba,int width=1280,int height=720){
     std::ofstream o(path,std::ios::binary);if(!o)return;
     auto u16=[&](uint16_t v){o.put(char(v));o.put(char(v>>8));};
     auto u32=[&](uint32_t v){u16(uint16_t(v));u16(uint16_t(v>>16));};
-    o.put('B');o.put('M');u32(54+1280*720*4);u32(0);u32(54);u32(40);u32(1280);u32(uint32_t(-720));u16(1);u16(32);u32(0);u32(1280*720*4);u32(0);u32(0);u32(0);u32(0);
+    o.put('B');o.put('M');u32(54+width*height*4);u32(0);u32(54);u32(40);u32(width);u32(uint32_t(-height));u16(1);u16(32);u32(0);u32(width*height*4);u32(0);u32(0);u32(0);u32(0);
     for(size_t i=0;i<rgba.size();i+=4){o.put(char(rgba[i+2]));o.put(char(rgba[i+1]));o.put(char(rgba[i]));o.put(char(rgba[i+3]));}
 }
 void profile(){
@@ -52,6 +53,144 @@ void write_bytes(const std::filesystem::path& path,const std::vector<uint8_t>& b
     std::ofstream out(path,std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));
     CHECK(bool(out));
+}
+struct GalleryScript {
+    std::vector<uint8_t> bytes;
+    explicit GalleryScript(int version):bytes{1,0,0,0,3,0,0,0,0,0,uint8_t(version),uint8_t(version>>8),0}{}
+    void word(int v){bytes.push_back(uint8_t(v));bytes.push_back(uint8_t(v>>8));}
+    void param(int op,int a,int b){bytes.insert(bytes.end(),{uint8_t(op),uint8_t(a),uint8_t(b)});}
+    void words(int op,int a,int b,int c,int d){bytes.push_back(uint8_t(op));word(a);word(b);word(c);word(d);}
+    void str(int op,const std::string& value){bytes.push_back(uint8_t(op));bytes.insert(bytes.end(),value.begin(),value.end());bytes.push_back(0);}
+    void save(const std::filesystem::path& root,const std::string& name){auto out=bytes;out.push_back(0);write_bytes(root/"MES"/(name+".mes"),out);}
+};
+void gallery_image(const std::filesystem::path& path,int width,int height,int kind){
+    std::vector<uint8_t> bytes{'C','R','X','G',0,0,0,0};
+    const auto word=[&](int n){bytes.push_back(uint8_t(n));bytes.push_back(uint8_t(n>>8));};
+    word(width);word(height);word(1);word(0);word(0);word(0);
+    const int stride=(width*3+3)&~3;
+    std::vector<uint8_t> pixels(size_t(stride)*height);
+    for(int y=0;y<height;++y)for(int x=0;x<width;++x){
+        auto* p=&pixels[size_t(y)*stride+x*3];
+        if(kind==0){p[2]=x<width/2?220:40;p[1]=y<height/2?30:210;p[0]=50;}
+        else if(kind==1){p[0]=200;p[1]=50;p[2]=20;}
+        else if(kind==2)p[0]=p[1]=p[2]=uint8_t(x*255/(width-1));
+        else p[0]=p[1]=p[2]=100;
+        if(kind==0 && x>=100 && x<200 && y>=100 && y<200)p[0]=p[1]=p[2]=(x+y)%2?255:0;
+    }
+    for(size_t i=0;i<pixels.size();i+=8){bytes.push_back(255);bytes.insert(bytes.end(),pixels.begin()+i,pixels.begin()+std::min(i+8,pixels.size()));}
+    write_bytes(path,bytes);
+}
+void gallery_fixtures(const std::filesystem::path& scratch){
+    for(int version:{0xAAB6,0xABB6}){
+        const auto root=scratch/std::to_string(version);
+        GalleryScript main(version);main.str(0x4b,"main");main.str(0x49,"system/titleback02");main.param(0x0b,0,0);main.save(root,"main");
+        for(const char* name:{"config","music","sce_asa"}){
+            GalleryScript script(version);script.str(0x4b,std::string(name)=="config"?"menu1":"menu");script.param(0x0b,0,0);script.save(root,name);
+        }
+        GalleryScript gallery(version);gallery.str(0x4b,"menu");gallery.str(0x49,"system/configback01");
+        gallery.words(0x72,100,100,400,400);gallery.str(0x54,"cg0");
+        gallery.words(0x72,500,100,800,400);gallery.str(0x54,"cg3");gallery.param(0x0b,0,0);
+        for(int i=0;i<4;++i){
+            gallery.str(0x4b,"cg"+std::to_string(i));gallery.str(0x49,"*"+std::to_string(i));gallery.str(0x54,"cg_draw2");
+        }
+        gallery.str(0x4b,"cg_draw2");gallery.bytes.push_back(0x3c);gallery.str(21,"MSK/MASK11A");
+        gallery.param(0x0f,21,5);gallery.param(0x15,0,1);gallery.str(0x54,"cg_next");
+        gallery.str(0x4b,"cg_next");gallery.str(0x54,"cg0");gallery.save(root,"cg_asa");
+        std::vector<uint8_t> names(228);names[0]=7;
+        const auto number=[&](int n){for(int i=0;i<4;++i)names.push_back(uint8_t(n>>(8*i)));};
+        const auto name=[&](const std::string& text){const size_t at=names.size();names.resize(at+32);std::copy(text.begin(),text.end(),names.begin()+at);};
+        number(0);number(0);number(5);for(int i=0;i<5;++i)name("BG/test"+std::to_string(i));
+        number(1);name("DC4_SEN20181213B");write_bytes(root/"GRP/NAMES.DAT",names);
+        for(const char* image:{"titleback02","titlechip01","configback01","configchip01","exchip"})
+            gallery_image(root/"GRP/system"/(std::string(image)+".crx"),8,8,3);
+        gallery_image(root/"GRP/BG/test0.crx",1920,1080,0);
+        gallery_image(root/"GRP/BG/test1.crx",2560,1440,1);
+        gallery_image(root/"GRP/BG/test3.crx",720,1080,0);
+        gallery_image(root/"GRP/MSK/MASK11A.crx",1280,720,2);
+        Menu menu;std::string error;CHECK(menu.load(root.string(),&error));
+        for(int id:{0,1,3,4})menu.set_variable(97,id,1);
+        menu.set_visual_effects_enabled(false);menu.open(Page::Gallery);
+        dc4scene::FontRenderer font;
+        const auto frame=[&](){std::vector<uint8_t> pixels;menu.draw(-1,-1,false,font,&pixels);return pixels;};
+        const auto pixel=[](const std::vector<uint8_t>& f,int x,int y,int c){return f[(size_t(y)*1280+x)*4+c];};
+        std::vector<uint8_t> hd;
+        CHECK(!menu.draw_gallery(1920,1080,&hd));
+        const auto hd_pixel=[&](int x,int y,int c){return hd[(size_t(y)*1920+x)*4+c];};
+        const auto gallery_frame=frame();click(menu,"cg0");CHECK(menu.gallery_preview_active());
+        CHECK(frame()==gallery_frame);menu.update(500);auto halfway=frame();
+        CHECK(pixel(halfway,10,100,0)>200);CHECK(pixel(halfway,1270,100,0)>90);
+        menu.update(500);const auto first=frame();
+        CHECK(!menu.draw_gallery(0,1080,&hd));CHECK(!menu.draw_gallery(1920,720,&hd));
+        CHECK(!menu.draw_gallery(7680,4320,&hd));CHECK(!menu.draw_gallery(1920,1080,nullptr));
+        CHECK(menu.draw_gallery(1920,1080,&hd));CHECK(hd.size()==1920*1080*4);
+        bool detail=true;
+        for(int y=100;y<200;++y)for(int x=100;x<200;++x)
+            detail &= hd_pixel(x,y,0)==((x+y)%2?255:0);
+        CHECK(detail);
+        const auto original_hd=hd;
+        CHECK(menu.draw_gallery(1280,720,&hd));
+        CHECK(hd[(size_t(100)*1280+100)*4]>=95 && hd[(size_t(100)*1280+100)*4]<=160);
+        CHECK(menu.draw_gallery(1920,1080,&hd));CHECK(hd==original_hd);
+        CHECK(pixel(first,10,10,0)==220);CHECK(pixel(first,1270,10,0)==40);
+        CHECK(pixel(first,10,710,1)==210);CHECK(pixel(first,1270,710,1)==210);
+        menu.pointer_down(640,360);menu.cancel_pointer();menu.pointer_up(640,360);CHECK(frame()==first);
+        menu.scroll(1);CHECK(menu.variable(99,100)==1);const auto black=frame();CHECK(pixel(black,640,360,2)==0);
+        menu.update(500);halfway=frame();CHECK(pixel(halfway,10,360,2)>190);CHECK(pixel(halfway,1270,360,2)<10);
+        CHECK(menu.draw_gallery(1920,1080,&hd));CHECK(hd_pixel(15,540,2)>190);CHECK(hd_pixel(1905,540,2)<10);
+        menu.scroll(1);CHECK(menu.variable(99,100)==1);CHECK(pixel(frame(),1270,360,2)==200);
+        menu.scroll(1);CHECK(menu.variable(99,100)==3);menu.update(1000);const auto portrait=frame();
+        CHECK(pixel(portrait,10,360,0)==0);CHECK(pixel(portrait,1270,360,0)==0);
+        CHECK(pixel(portrait,410,10,0)==220);CHECK(pixel(portrait,870,710,1)==210);
+        CHECK(menu.draw_gallery(1920,1080,&hd));CHECK(hd_pixel(599,540,0)==0);CHECK(hd_pixel(1320,540,0)==0);
+        CHECK(hd_pixel(600,10,0)==220);CHECK(hd_pixel(1319,1070,1)==210);
+        menu.scroll(1);CHECK(menu.variable(99,100)==0);menu.update(1000);CHECK(frame()==first);
+        menu.scroll(-1);CHECK(menu.variable(99,100)==3);menu.back();CHECK(!menu.gallery_preview_active());CHECK(frame()==gallery_frame);
+        CHECK(!menu.draw_gallery(1920,1080,&hd));
+        click(menu,"cg0");menu.back();menu.update(1000);CHECK(frame()==gallery_frame);
+        menu.set_variable(99,10,0);click(menu,"cg0");CHECK(frame()==first);
+        menu.scroll(1);CHECK(pixel(frame(),1270,360,2)==200);menu.back();
+        for(int speed:{0,5,11}){
+            menu.set_variable(99,10,1);menu.set_variable(99,12,speed);frame();click(menu,"cg0");
+            menu.update(999);CHECK(frame()!=first);menu.update(1);CHECK(frame()==first);menu.back();
+        }
+        gallery_image(root/"GRP/BG/test0.crx",1920,1080,1);
+        CHECK(menu.load(root.string(),&error));menu.set_variable(97,0,1);menu.set_variable(99,10,0);
+        menu.open(Page::Gallery);click(menu,"cg0");
+        CHECK(menu.draw_gallery(1920,1080,&hd));CHECK(hd_pixel(120,120,2)==200);
+        std::cout<<"Gallery fit, mask, unlock sequence, rapid taps, cancel, Back and settings passed: "<<std::hex<<version<<std::dec<<'\n';
+    }
+}
+void gallery_assets(const std::string& data){
+    dc4::GameNames names;CHECK(dc4::decode_game_names(read_bytes(std::filesystem::path(data)/"GRP/NAMES.DAT"),&names));
+    Menu menu;std::string error;CHECK(menu.load(data,&error));
+    for(int id:{0,1,3})menu.set_variable(97,id,1);
+    menu.set_visual_effects_enabled(false);menu.open(Page::Gallery);
+    dc4scene::FontRenderer font;std::vector<uint8_t> frame;
+    menu.draw(-1,-1,false,font,&frame);click(menu,"cg0");
+    for(int id:{0,1,3}){
+        CHECK(menu.variable(99,100)==id);
+        menu.update(500);menu.draw(-1,-1,false,font,&frame);
+        if(const char* capture=std::getenv("DC4_MENU_CAPTURES")){
+            std::filesystem::create_directories(capture);
+            bmp(std::filesystem::path(capture)/("cg"+std::to_string(id)+"-half.bmp"),frame);
+        }
+        menu.update(500);menu.draw(-1,-1,false,font,&frame);
+        const auto bytes=read_bytes(std::filesystem::path(data)/"GRP"/(names.cg[id]+".CRX"));
+        dc4::CrxInfo info;std::vector<uint8_t> original;
+        CHECK(dc4::crx_decode(bytes.data(),bytes.size(),&original,&info));
+        CHECK(int(info.width)*720==int(info.height)*1280);
+        std::vector<uint8_t> hd;CHECK(menu.draw_gallery(1920,1080,&hd));
+        bool exact=info.width==1920 && info.height==1080 && hd.size()==original.size();
+        if(exact)for(size_t i=0;i<original.size();i+=4)for(int c=0;c<3;++c)exact &= hd[i+c]==original[i+c];
+        CHECK(exact);
+        if(const char* capture=std::getenv("DC4_MENU_CAPTURES"))bmp(std::filesystem::path(capture)/("cg"+std::to_string(id)+"-hd.bmp"),hd,1920,1080);
+        if(!original.empty())for(int y:{0,100,360,719})for(int x:{0,100,640,1279})for(int c=0;c<3;++c)
+            CHECK(frame[(size_t(y)*1280+x)*4+c]==original[(size_t(y*info.height/720)*info.width+x*info.width/1280)*4+c]);
+        if(const char* capture=std::getenv("DC4_MENU_CAPTURES"))bmp(std::filesystem::path(capture)/("cg"+std::to_string(id)+"-full.bmp"),frame);
+        menu.scroll(1);
+    }
+    CHECK(menu.variable(99,100)==0);menu.back();CHECK(!menu.gallery_preview_active());
+    std::cout<<"Original CG pixels match full-image scaling and route order: "<<data<<'\n';
 }
 void check_replay_controls(dc4scene::SceneRunner& scene,bool disabled){
     for(const auto& control:replay_controls){
@@ -427,7 +566,10 @@ void assets(const std::string& data){
     m.set_variable(100,109,1);CHECK(has(m,"musmode"));shot("extras");
     click(m,"cgmode");CHECK(m.page()==Page::Gallery);CHECK(!has(m,"cg0"));shot("gallery-locked");
     m.mark_cg_seen("bg/dc4_ev_asa07b");m.mark_cg_seen("bg/dc4_ev_asa07a");m.open(Page::Gallery);CHECK(has(m,"cg0"));shot("gallery-unlocked");
-    click(m,"cg0");shot("gallery-view");m.scroll(1);shot("gallery-variant");m.back();CHECK(has(m,"cg0"));
+    CHECK(!m.gallery_preview_active());
+    click(m,"cg0");CHECK(m.gallery_preview_active());shot("gallery-view");
+    m.scroll(1);CHECK(m.gallery_preview_active());shot("gallery-variant");
+    m.back();CHECK(!m.gallery_preview_active());CHECK(m.page()==Page::Gallery);CHECK(has(m,"cg0"));
     for(const char* route:{"nin","sor","hyr","sii","miu","tiy","cmn","asa"}){m.activate(route);CHECK(m.page()==Page::Gallery);CHECK(m.error().empty());m.scroll(1);CHECK(m.error().empty());}
     m.open(Page::Scenes);CHECK(!has(m,"sce0"));shot("scenes-locked");
     m.mark_scene_seen("dc4_mid20190301a1");m.open(Page::Scenes);CHECK(has(m,"sce0"));shot("scenes-unlocked");
@@ -468,6 +610,40 @@ void progression(const std::string& data,const std::filesystem::path& scratch){
     Menu two;CHECK(two.load(data,&error));CHECK(two.load_profile(two_routes,&error));
     CHECK(!has(two,"dc") && two.variable(100,101)==1 && two.variable(100,103)==1);
     for(int i:{102,104,105,106,107,108})CHECK(two.variable(100,i)==0);
+    const auto stale_path=(scratch/"stale-dc.dat").string();
+    {std::ofstream stale(stale_path,std::ios::binary);stale<<"DC4ENGINE_PROFILE 1\nv 100 100 1\nv 100 101 1\nv 100 103 1\n";}
+    Menu stale;CHECK(stale.load(data,&error));CHECK(stale.load_profile(stale_path,&error));
+    CHECK(stale.variable(100,100)==0 && !has(stale,"dc"));
+    CHECK(stale.activate("dc").type==Type::None && !stale.confirming());
+    dc4scene::SceneRunner polluted(data);CHECK(polluted.load_script(data+"/MES/main.mes"));
+    for(int i=100;i<120;++i)polluted.set_variable(100,uint16_t(i),1);
+    polluted.set_variable(5,2,7);polluted.set_variable(9,8,42);
+    std::vector<uint8_t> polluted_slot;CHECK(polluted.capture_state(&polluted_slot));
+    CHECK(polluted.restore_state(polluted_slot));stale.restore_scene_progress(polluted);
+    for(int i=100;i<120;++i)CHECK(polluted.variable(100,uint16_t(i))==int(i==101 || i==103));
+    CHECK(polluted.variable(5,2)==7 && polluted.variable(9,8)==42);
+    CHECK(!stale.sync_progress(polluted));CHECK(!stale.sync_progress(polluted));
+    CHECK(stale.save_profile(stale_path,&error));
+    {std::ifstream saved(stale_path);std::string contents((std::istreambuf_iterator<char>(saved)),{});
+        CHECK(contents.find("v 100 100 0\n")!=std::string::npos);}
+    Menu repaired;CHECK(repaired.load(data,&error));CHECK(repaired.load_profile(stale_path,&error));
+    CHECK(!has(repaired,"dc") && repaired.variable(100,101)==1 && repaired.variable(100,103)==1);
+    // A stale native D.C. flag cannot replace any one of the eight endings.
+    for(int missing=101;missing<=108;++missing){
+        std::vector<uint8_t> native(0x4B80);
+        for(int i=100;i<=108;++i)native[0xD8+i]=i==missing?0:1;
+        write_bytes(scratch/"stale-system.dat",native);
+        Menu imported;CHECK(imported.load(data,&error));
+        CHECK(imported.load_system_dat((scratch/"stale-system.dat").string(),&error));
+        CHECK(imported.variable(100,100)==0 && !has(imported,"dc"));
+        CHECK(imported.activate("dc").type==Type::None && !imported.confirming());
+    }
+    for(int i=101;i<=108;++i)repaired.set_variable(100,i,1);
+    CHECK(!has(repaired,"dc"));
+    repaired.set_variable(100,100,1);CHECK(has(repaired,"dc"));
+    repaired.activate("dc");CHECK(repaired.confirming());
+    repaired.set_variable(100,108,0);
+    CHECK(repaired.answer_confirmation(true).type==Type::None);
     for(int i=100;i<150;++i)menu.set_variable(100,i,0);
     const auto end_y=[&](){for(const auto& c:menu.controls())if(c.tag=="end")return c.y;return -1;};
     CHECK(end_y()==536);
@@ -599,6 +775,8 @@ int main(int argc,char** argv){
         else if(mode=="--progression") progression(installed,scratch/"progression");
         else if(mode=="--sakura") ambient_menu(installed,scratch/"sakura");
         else if(mode=="--confirmations") confirmations(installed,scratch/"confirmations");
+        else if(mode=="--menus") assets(installed);
+        else if(mode=="--gallery") {gallery_fixtures(scratch/"gallery");gallery_assets(installed);}
         else {
             if(mode!="--movie-modal")replay_policy_assets(installed,scratch/"installed");
             if(mode!="--replay-policy")movie_modal_assets(installed);

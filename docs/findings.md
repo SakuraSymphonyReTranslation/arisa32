@@ -427,10 +427,12 @@ screen_centre = (cur_x + tgt_x, cur_y + tgt_y) + (I + C/2 - (tgt_x, tgt_y)) * s
 Equivalently `centre = cur + tgt*(1-s) + (I + C/2)*s`: at scale 1 the place
 operands cancel entirely and the mode-0 position alone moves the sprite; the
 default `8B 100, 640, 360, 16..20` at every script start only resets the zoom
-anchor, leaving characters at their authored frame position. The 0x8E slide
-offsets decay the mode-0 position linearly to zero (`sub_447620`), and the
-per-layer camera state (bytes 36-48: scale + pivot, defaults (640,360);
-`sub_444A50`) composes on top — bg layers get pivot (512-x, 288-y), character
+anchor, leaving characters at their authored frame position. The 0x8E position
+commands queue signed targets through `sub_4474C0`; relative targets share a
+saved batch origin, and w3 sets duration in six-frame units. The wave branches
+use `sub_447620`/`sub_447700`. See [sprite-motion validation](dc4-sprite-motion-validation.md).
+The per-layer camera state (bytes 36-48: scale + pivot, defaults (640,360);
+`sub_444A50`) composes on top: bg layers get pivot (512-x, 288-y), character
 layers (512-0.8x, 288-0.8y), the 80% being the 1280->1600 bg over-scan.
 
 **Supporting evidence**: the draw animator `sub_448F00` steps bytes [8,12]

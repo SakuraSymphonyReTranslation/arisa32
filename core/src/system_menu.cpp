@@ -254,6 +254,34 @@ void blit(const dc4scene::Image& image, const Rect& src, const Rect& dst, std::v
         }
     }
 }
+void gallery_bitmap(const dc4scene::Image& image, int width, int height, std::vector<uint8_t>* frame) {
+    frame->assign(size_t(width)*height*4, 0);
+    for (size_t i=3; i<frame->size(); i+=4) (*frame)[i]=255;
+    const double scale=std::min(double(width)/image.w,double(height)/image.h);
+    const int w=std::max(1,int(std::lround(image.w*scale)));
+    const int h=std::max(1,int(std::lround(image.h*scale)));
+    const int left=(width-w)/2, top=(height-h)/2;
+    for (int y=0; y<h; ++y) {
+        const double sy=std::clamp((y+0.5)*image.h/h-0.5,0.0,double(image.h-1));
+        const int y0=int(sy), y1=std::min(y0+1,image.h-1);
+        const double fy=sy-y0;
+        for (int x=0; x<w; ++x) {
+            const double sx=std::clamp((x+0.5)*image.w/w-0.5,0.0,double(image.w-1));
+            const int x0=int(sx), x1=std::min(x0+1,image.w-1);
+            const double fx=sx-x0;
+            const auto* a=&image.rgba[(size_t(y0)*image.w+x0)*4];
+            const auto* b=&image.rgba[(size_t(y0)*image.w+x1)*4];
+            const auto* c=&image.rgba[(size_t(y1)*image.w+x0)*4];
+            const auto* d=&image.rgba[(size_t(y1)*image.w+x1)*4];
+            auto* out=&(*frame)[(size_t(y+top)*width+x+left)*4];
+            for (int channel=0; channel<3; ++channel) {
+                const double upper=a[channel]*a[3]*(1-fx)+b[channel]*b[3]*fx;
+                const double lower=c[channel]*c[3]*(1-fx)+d[channel]*d[3]*fx;
+                out[channel]=uint8_t(std::lround((upper*(1-fy)+lower*fy)/255));
+            }
+        }
+    }
+}
 }
 
 struct SystemMenu::Impl {
@@ -327,6 +355,13 @@ struct SystemMenu::Impl {
     bool held = false, gallery_view = false, movie_menu = false;
     std::vector<int> gallery_variants;
     size_t gallery_variant = 0;
+    struct GalleryEffect { int type = -1, frames = 0; std::string mask; };
+    std::map<int, GalleryEffect> gallery_effects;
+    GalleryEffect gallery_effect;
+    uint32_t gallery_elapsed = 0, gallery_duration = 0;
+    mutable std::vector<uint8_t> gallery_menu_frame;
+    mutable dc4scene::Image gallery_canvas;
+    std::vector<uint8_t> gallery_outgoing;
     std::mt19937 random{std::random_device{}()};
 
     Impl() { defaults(false); }
@@ -367,6 +402,10 @@ struct SystemMenu::Impl {
             if (b == 95) return 1;
             return 0;
         }
+        // Old profiles may contain a D.C. unlock without the eight ending flags.
+        if (dc4_profile && b == 100 && i == 100 && at->second)
+            for (int ending = 101; ending <= 108; ++ending)
+                if (get(100, ending) <= 0) return 0;
         return at->second;
     }
     void put(int b, int i, int value) {
@@ -433,6 +472,87 @@ struct SystemMenu::Impl {
         if (!dc4::decode_game_names(b,&result)) return false;
         bgm_names=std::move(result.bgm); cg_names=std::move(result.cg); scene_names=std::move(result.scenes);
         return true;
+    }
+    void gallery_route(const Script& source, int selected) {
+        gallery_effects.clear();
+        if (!dc4_profile || !source.labels.count("cg_next")) return;
+        std::vector<int> route;
+        for (size_t i = 0; i < source.code.size(); ++i) {
+            const auto& c = source.code[i];
+            if (c.opcode() != Opcode::BACKGROUND || c.str.empty() || c.str.front() != '*') continue;
+            int id = -1;
+            try { id = std::stoi(c.str.substr(1)); } catch (...) { continue; }
+            if (id < 0 || size_t(id) >= cg_names.size() || get(97,id) <= 0 ||
+                std::find(route.begin(),route.end(),id) != route.end()) continue;
+            GalleryEffect effect;
+            for (size_t j = i+1; j < source.code.size() && source.code[j].opcode() != Opcode::LABEL; ++j) {
+                if (source.code[j].opcode() != Opcode::JUMP) continue;
+                const auto label = source.labels.find(source.code[j].str);
+                if (label == source.labels.end()) break;
+                for (size_t k = label->second+1; k < source.code.size() && source.code[k].opcode() != Opcode::LABEL; ++k) {
+                    const auto& draw = source.code[k];
+                    if (draw.opcode() == Opcode::LOAD_SLOT && draw.p1 == 21) effect.mask = draw.str;
+                    if (draw.opcode() == Opcode::TRANSITION && (draw.p1 == 0 || draw.p1 == 1 || draw.p1 == 21)) {
+                        effect.type = draw.p1;
+                        effect.frames = draw.p1 == 21 ? draw.p2*12 : (draw.p2+1)*20;
+                        break;
+                    }
+                }
+                break;
+            }
+            route.push_back(id);
+            gallery_effects.emplace(id,std::move(effect));
+        }
+        const auto start = std::find(route.begin(),route.end(),selected);
+        if (start == route.end()) { gallery_effects.clear(); return; }
+        gallery_variant = size_t(start-route.begin());
+        gallery_variants = std::move(route);
+    }
+    void show_gallery(size_t index, bool entering = false) {
+        const int id = gallery_variants[index];
+        const std::string next = "*"+std::to_string(id);
+        const auto* next_image = image(next);
+        if (!next_image || !next_image->valid()) return;
+        gallery_variant = index;
+        background = next;
+        gallery_view = true;
+        gallery_duration = gallery_elapsed = 0;
+        gallery_outgoing.clear();
+        const auto effect = gallery_effects.find(id);
+        if (effect == gallery_effects.end()) return;
+        put(99,100,id);
+        gallery_effect = effect->second;
+        if (!get(99,10) || gallery_effect.frames <= 0) return;
+        int frames = gallery_effect.frames;
+        if (gallery_effect.type != 21) {
+            const int speed = std::clamp(get(99,12),0,11);
+            if (speed < 5) frames += int(double(frames/2)/5*(5-speed));
+            if (speed > 5) frames -= int(double(frames/2)/6*(speed-5));
+        }
+        gallery_duration = uint32_t((frames*1000+59)/60);
+        if (!gallery_effect.mask.empty()) image(gallery_effect.mask);
+        // PC captures the gallery on entry; subsequent full-CG reveals start on black.
+        if (entering) gallery_outgoing = std::move(gallery_menu_frame);
+    }
+    void draw_gallery_transition(std::vector<uint8_t>* frame, int width=W, int height=H) const {
+        if (!gallery_duration || !get(99,10)) return;
+        const double t = double(gallery_elapsed)/gallery_duration;
+        const auto* mask = gallery_effect.type == 21 ? image(gallery_effect.mask) : nullptr;
+        const int threshold = int(std::lround(255-510*t));
+        const int fade = int(std::lround(255*(1-t)));
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+            const int menu_x=x*W/width, menu_y=y*H/height;
+            int alpha = fade;
+            if (mask && mask->valid()) {
+                const size_t sample = (size_t(std::min(menu_y,mask->h-1))*mask->w+std::min(menu_x,mask->w-1))*4;
+                alpha = std::clamp(int(mask->rgba[sample+2])+threshold,0,255);
+            }
+            const size_t pixel = (size_t(y)*width+x)*4;
+            for (int c = 0; c < 3; ++c) {
+                const int old = gallery_outgoing.size() == FrameBytes ? gallery_outgoing[(size_t(menu_y)*W+menu_x)*4+c] : 0;
+                (*frame)[pixel+c] = uint8_t((old*alpha+(*frame)[pixel+c]*(255-alpha))/255);
+            }
+        }
     }
     void progress_vars() {
         for (size_t i = 0; i < cg_names.size(); ++i) {
@@ -1209,6 +1329,11 @@ struct SystemMenu::Impl {
                     chips.push_back(title);
                 }
             }
+            if (!unlocked) {
+                const Rect title = list_titles[id][0].dst;
+                captions.push_back({r.x + title.x, r.y + title.y, 24, -1, 99,
+                                    "??????", title.w});
+            }
         }
         widgets.push_back({{1072, 216, 40, 384}, "#music:scroll", true, -2, 0, music_max_scroll()+1, 216, 600});
     }
@@ -1230,6 +1355,9 @@ struct SystemMenu::Impl {
     void rebuild() {
         if (!ready || gallery_view)
             return;
+        gallery_menu_frame.clear();
+        gallery_outgoing.clear();
+        gallery_duration = 0;
         held = false;
         pressed = -1;
         put(9, 7, in_game ? 0 : 1);
@@ -1341,6 +1469,7 @@ SystemMenu::SystemMenu(SystemMenu&&) noexcept = default;
 SystemMenu& SystemMenu::operator=(SystemMenu&&) noexcept = default;
 bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->data = data_dir; p_->scripts.clear(); p_->images.clear(); p_->last_error.clear(); p_->ready = false;
+    p_->gallery_canvas = {};
     p_->dc4_profile = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
     p_->confirm.load(data_dir);
     p_->dc2pc = false;
@@ -1406,9 +1535,25 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
 }
 bool SystemMenu::loaded() const { return p_->ready; }
 SystemMenuPage SystemMenu::page() const { return p_->page; }
+bool SystemMenu::gallery_preview_active() const { return p_->ready && p_->gallery_view; }
+bool SystemMenu::draw_gallery(int width, int height, std::vector<uint8_t>* frame) const {
+    if (!frame || !gallery_preview_active() || !p_->dc4_profile || width<=0 || height<=0 ||
+        width>3840 || height>2160 || int64_t(width)*9!=int64_t(height)*16) return false;
+    const auto* source=p_->image(p_->background);
+    if (!source || !source->valid()) return false;
+    auto& canvas=p_->gallery_canvas;
+    if (canvas.name!=p_->background || canvas.w!=width || canvas.h!=height) {
+        gallery_bitmap(*source,width,height,&canvas.rgba);
+        canvas.name=p_->background; canvas.w=width; canvas.h=height;
+    }
+    *frame=canvas.rgba;
+    p_->draw_gallery_transition(frame,width,height);
+    return true;
+}
 void SystemMenu::resume_scenes() {
     cancel_pointer();
     p_->page = Page::Scenes; p_->gallery_view = p_->movie_menu = false;
+    p_->gallery_canvas = {};
     p_->script_name = p_->replay_menu;
     if (p_->dc2pc) {p_->put(3,3,p_->replay_route);p_->put(206,80,p_->replay_page);}
     else {p_->put(3,5,p_->replay_route); p_->put(3,6,p_->replay_page);}
@@ -1427,6 +1572,7 @@ void SystemMenu::open(SystemMenuPage page) {
         p_->put(99,14,p_->dc2dm_music_enabled);
     }
     p_->page = page; p_->gallery_view = false; p_->movie_menu = false;
+    p_->gallery_canvas = {};
     if (page == Page::Gallery || page == Page::Scenes) {
         if(p_->dc2pc){p_->put(3,3,0);p_->put(206,80,0);}
         p_->put(3,5,0); p_->put(3,6,0);
@@ -1479,7 +1625,7 @@ Action SystemMenu::pointer_up(int x,int y) {
         return result==ConfirmResult::Yes?activate_confirmed(tag):Action{};
     }
     x=p_->input_x(x); y=p_->input_y(y);
-    if (p_->gallery_view) { cancel_pointer(); scroll(1); return {}; }
+    if (p_->gallery_view) { const bool held=p_->held; cancel_pointer(); if(held)scroll(1); return {}; }
     int pressed=p_->pressed, hit=p_->hit(x,y); bool held=p_->held;
     if (held && pressed >= 0 && size_t(pressed)<p_->widgets.size() && p_->widgets[size_t(pressed)].slider_bank != -1) {
         auto out=p_->slider(pressed,x,y); cancel_pointer(); return out;
@@ -1504,9 +1650,12 @@ void SystemMenu::cancel_pointer() { p_->held=false; p_->pressed=-1;p_->confirm.c
 void SystemMenu::scroll(int delta) {
     if (!delta||confirming()) return;
     if (p_->gallery_view && !p_->gallery_variants.empty()) {
+        if (p_->gallery_duration) {
+            p_->gallery_duration=0; p_->gallery_outgoing.clear(); return;
+        }
         int n=int(p_->gallery_variants.size());
-        p_->gallery_variant=size_t((int(p_->gallery_variant)+delta%n+n)%n);
-        p_->background="*"+std::to_string(p_->gallery_variants[p_->gallery_variant]); p_->image(p_->background);
+        const size_t next=size_t((int(p_->gallery_variant)+delta%n+n)%n);
+        if(next!=p_->gallery_variant)p_->show_gallery(next);
     } else if (p_->page==Page::Music && !p_->movie_menu) {
         if(p_->dc2pc) {
             p_->put(3,25,std::clamp(p_->get(3,25)+delta*2,0,std::max(0,int(p_->legacy_items.size())-int(p_->legacy_rows.size()))));
@@ -1529,7 +1678,7 @@ void SystemMenu::scroll(int delta) {
 Action SystemMenu::back() {
     if(confirming())return answer_confirmation(false);
     cancel_pointer();
-    if(p_->gallery_view) {p_->gallery_view=false; p_->rebuild(); return {};}
+    if(p_->gallery_view) {p_->gallery_view=false; p_->gallery_canvas={}; p_->rebuild(); return {};}
     if(p_->movie_menu) {
         p_->put(3, 24, 0);
         p_->movie_menu = false;
@@ -1950,9 +2099,8 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
             if (p_->get(97, i) > 0) p_->gallery_variants.push_back(i);
         if (p_->gallery_variants.empty()) return {};
         p_->gallery_variant = 0;
-        p_->background = "*" + std::to_string(p_->gallery_variants[0]);
-        p_->gallery_view = true;
-        p_->image(p_->background);
+        p_->gallery_route(*s,p_->gallery_variants.front());
+        p_->show_gallery(p_->gallery_variant,true);
         cancel_pointer();
         return {};
     }
@@ -1978,6 +2126,13 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
 }
 
 void SystemMenu::update(uint32_t elapsed_ms) {
+    if (p_->gallery_duration) {
+        p_->gallery_elapsed=uint32_t(std::min<uint64_t>(uint64_t(p_->gallery_elapsed)+elapsed_ms,p_->gallery_duration));
+        if (p_->gallery_elapsed==p_->gallery_duration || !p_->get(99,10)) {
+            p_->gallery_duration=0;
+            p_->gallery_outgoing.clear();
+        }
+    }
     if (p_->visual_effects_enabled && p_->get(99,10) != 0) {
         p_->sakura.update(elapsed_ms, p_->sakura_random);
         p_->fairy_lights.update(elapsed_ms, p_->sakura_random);
@@ -1994,10 +2149,15 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     if(auto* back=p_->image(p_->background)) {
         Rect src{0,0,back->w,back->h};
         Rect dst=p_->destination({0,0,p_->profile->canvas_width,p_->profile->canvas_height});
-        if(p_->gallery_view && back->h>H) {dst={0,0,back->w,back->h};}
+        if(p_->gallery_view && back->valid()) {
+            const double scale=std::min(double(dst.w)/back->w,double(dst.h)/back->h);
+            const int width=std::max(1,int(std::lround(back->w*scale)));
+            const int height=std::max(1,int(std::lround(back->h*scale)));
+            dst={dst.x+(dst.w-width)/2,dst.y+(dst.h-height)/2,width,height};
+        }
         blit(*back,src,dst,frame);
     }
-    if(p_->gallery_view)return;
+    if(p_->gallery_view){p_->draw_gallery_transition(frame);return;}
     if (p_->visual_effects_enabled && p_->get(99,10) != 0) {
         if (p_->sakura.active)
             if (auto* sheet = p_->image(p_->sakura_sheet)) p_->sakura.draw(*frame, *sheet);
@@ -2130,6 +2290,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     if(!p_->ready) font.rasterize_line(dc4::translate_ui(u"Menu data could not be loaded"),50,80,frame,W,H,28);
     p_->confirm.draw(mx,my,down,font,frame);
+    if(p_->dc4_profile && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
 }
 
 SystemConfig SystemMenu::config() const {
@@ -2246,7 +2407,8 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     out<<"DC4ENGINE_PROFILE 1\n";
     for(const auto& pair:p_->vars) {
         int b=pair.first.first,i=pair.first.second;
-        if(b==93||b==94||b==95||b==99||b==100)out<<"v "<<b<<' '<<i<<' '<<pair.second<<'\n';
+        const int value=b==100 && i==100?p_->get(b,i):pair.second;
+        if(b==93||b==94||b==95||b==99||b==100)out<<"v "<<b<<' '<<i<<' '<<value<<'\n';
     }
     for(const auto& s:p_->seen_cg)out<<"c "<<std::quoted(s)<<'\n';
     for(const auto& s:p_->seen_music)out<<"m "<<std::quoted(s)<<'\n';
@@ -2438,7 +2600,7 @@ bool SystemMenu::sync_progress(const dc4scene::SceneRunner& scene){
     bool changed=false;
     for(size_t i=0;i<p_->cg_names.size();++i)if(scene.variable(97,uint16_t(i))>0)changed=p_->seen_cg.insert(key(p_->cg_names[i])).second||changed;
     for(size_t i=0;i<p_->scene_names.size();++i)if(scene.variable(98,uint16_t(i))>0)changed=p_->seen_scene.insert(key(p_->scene_names[i])).second||changed;
-    for(int i=p_->profile->progress_first;i<p_->profile->progress_end;++i){int value=scene.variable(100,uint16_t(i));if(value>p_->get(100,i)){p_->put(100,i,value);changed=true;}}
+    for(int i=p_->profile->progress_first;i<p_->profile->progress_end;++i){int value=scene.variable(100,uint16_t(i));if(value>p_->vars[{100,i}]){p_->put(100,i,value);changed=true;}}
     if(changed)p_->progress_vars();return changed;
 }
 void SystemMenu::set_music_position(int percent){p_->put(99,189,std::clamp(percent,0,100));}

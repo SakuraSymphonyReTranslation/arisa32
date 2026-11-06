@@ -20,14 +20,14 @@ final class FloatingNavigation {
     static final String PREFERENCE = "autoHideNavigation";
     static final String EDGE_POSITION_PREFERENCE = "navigationEdgeY";
     static final long HIDE_DELAY_MS = 4000;
-    private final View bubble, back, edge;
+    private final View bubble, back, galleryBack, edge;
     private final FrameLayout layout;
     private final Runnable clamp;
     private final SharedPreferences preferences;
     private final BooleanSupplier blocked;
     private final AccessibilityManager accessibility;
     private final int slop;
-    private boolean autoHide, hidden, active, touching;
+    private boolean autoHide, hidden, active, touching, galleryPreviewActive;
     private float downX, downY, startX, startY;
     private float controlOffsetX, controlOffsetY, edgeFraction, edgeStartFraction;
     private float edgeTop, edgeBottom;
@@ -35,11 +35,12 @@ final class FloatingNavigation {
     private boolean moved, cancelled;
     private final Runnable timeout = this::onTimeout;
 
-    FloatingNavigation(Activity activity, FrameLayout layout, View bubble, View back,
+    FloatingNavigation(Activity activity, FrameLayout layout, View bubble, View back, View galleryBack,
                        Runnable clamp, SharedPreferences preferences, BooleanSupplier blocked, String description) {
         this.layout = layout;
         this.bubble = bubble;
         this.back = back;
+        this.galleryBack = galleryBack;
         this.clamp = clamp;
         this.preferences = preferences;
         float saved = preferences.getFloat(EDGE_POSITION_PREFERENCE, 0f);
@@ -83,6 +84,13 @@ final class FloatingNavigation {
 
     void setDescription(String description) { edge.setContentDescription(description); }
 
+    void setGalleryPreviewActive(boolean visible) {
+        if (galleryPreviewActive == visible) return;
+        galleryPreviewActive = visible;
+        if (visible) show();
+        else galleryBack.setVisibility(View.GONE);
+    }
+
     void setAutoHide(boolean enabled) {
         autoHide = enabled;
         if (!enabled) show();
@@ -124,8 +132,9 @@ final class FloatingNavigation {
     }
 
     private void onTimeout() {
-        if (touching || blocked.getAsBoolean() || accessibility != null && accessibility.isTouchExplorationEnabled()
-                || !bubble.isInTouchMode() && (bubble.hasFocus() || back != null && back.hasFocus())) {
+        if (touching || galleryBack.isPressed() || blocked.getAsBoolean()
+                || accessibility != null && accessibility.isTouchExplorationEnabled()
+                || !bubble.isInTouchMode() && (bubble.hasFocus() || back != null && back.hasFocus() || galleryBack.hasFocus())) {
             schedule();
             return;
         }
@@ -138,6 +147,7 @@ final class FloatingNavigation {
         layout.removeCallbacks(timeout);
         bubble.setVisibility(View.INVISIBLE);
         if (back != null) back.setVisibility(View.INVISIBLE);
+        galleryBack.setVisibility(galleryPreviewActive ? View.INVISIBLE : View.GONE);
         edge.setVisibility(View.VISIBLE);
         clamp.run();
     }
@@ -148,6 +158,7 @@ final class FloatingNavigation {
         edge.setVisibility(View.GONE);
         bubble.setVisibility(View.VISIBLE);
         if (back != null) back.setVisibility(View.VISIBLE);
+        galleryBack.setVisibility(galleryPreviewActive ? View.VISIBLE : View.GONE);
         clamp.run();
         if (restoreFocus) bubble.requestFocus();
         schedule();

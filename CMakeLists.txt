@@ -20,6 +20,7 @@ add_library(arisa32_core STATIC
     core/src/xpcm.cpp
     core/src/bgm.cpp
     core/src/scene.cpp
+    core/src/scene_sprite_motion.cpp
     core/src/scene_dc4_effects.cpp
     core/src/scene_state.cpp
     core/src/scene_dc2dm_ending.cpp
@@ -89,6 +90,9 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(dc4_sprite_motion_test tests/dc4_sprite_motion_test.cpp)
+    target_link_libraries(dc4_sprite_motion_test PRIVATE arisa32_core)
+    add_test(NAME dc4_sprite_motion_test COMMAND dc4_sprite_motion_test)
     add_executable(dc4_effect_test tests/dc4_effect_test.cpp)
     target_link_libraries(dc4_effect_test PRIVATE arisa32_core)
     add_test(NAME dc4_effect_test COMMAND dc4_effect_test)
@@ -162,6 +166,9 @@ if(BUILD_TESTING)
     add_executable(dc2dm_sprite_test tests/dc2dm_sprite_test.cpp)
     target_link_libraries(dc2dm_sprite_test PRIVATE dc4core)
     add_test(NAME dc2dm_sprite_test COMMAND dc2dm_sprite_test)
+    add_executable(dc4_message_face_test tests/dc4_message_face_test.cpp)
+    target_link_libraries(dc4_message_face_test PRIVATE dc4core)
+    add_test(NAME dc4_message_face_test COMMAND dc4_message_face_test)
     add_executable(save_screen_test tests/save_screen_test.cpp)
     target_link_libraries(save_screen_test PRIVATE dc4core)
     add_test(NAME save_screen_test COMMAND save_screen_test)
