@@ -11,6 +11,8 @@
 #include "arisa32/movie.h"
 #include "arisa32/resource.h"
 #include "arisa32/confirm_dialog.h"
+#include "arisa32/dc2pc_menu_transition.h"
+#include "arisa32/dc2dm_title_particles.h"
 #include "ui_script.h"
 
 #include <SDL.h>
@@ -541,8 +543,9 @@ struct SaveSlots {
         const fs::path quicksave = dc4::resolve_save(directory,version,0);
         const bool quick = fs::is_regular_file(quicksave, ec);
         latest_path=dc4::latest_save(directory,version);
-        screen->set_shortcuts(!latest_path.empty(), false, quick);
-        screen->set_special_slots(read(quicksave),latest_path.empty()?dc4ui::SaveSlot{}:read(latest_path));
+        const auto automatic=dc4::auto_save(directory,version);
+        screen->set_shortcuts(!latest_path.empty(), fs::is_regular_file(automatic,ec), quick);
+        screen->set_special_slots(read(quicksave),latest_path.empty()?dc4ui::SaveSlot{}:read(latest_path),read(automatic));
     }
 };
 
@@ -718,6 +721,7 @@ int run(const Options& o) {
             return nullptr;
         }
         system_menu.initialize_scene(*rebuilt,replay);
+        if(line==0)rebuilt->set_auto_save_path(dc4::auto_save_target(profile_dir,rebuilt->save_format_version()).string());
         for (int i = 0; i <= line; ++i) {
             // Settle earlier dialogue indices; animate only the requested line.
             rebuilt->set_animation_enabled(i == line ? animate_last : false);
@@ -787,7 +791,7 @@ int run(const Options& o) {
     SDL_SetTextureBlendMode(frame_texture.get(), SDL_BLENDMODE_NONE);
     if(profile_allowed) {
         slots.refresh(profile_dir,&save_screen,scene->save_format_version());
-        system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0)),fs::is_regular_file(profile_dir/"autosave.dc4sav"));
+        system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0)),fs::is_regular_file(dc4::auto_save(profile_dir,scene->save_format_version())));
     }
     apply_settings();
     if (audio_ready && !o.bgm.empty()) {
@@ -805,6 +809,9 @@ int run(const Options& o) {
     bool mouse_down = o.down;
     Uint32 line_start = SDL_GetTicks(), line_finished = line_start, last_skip = line_start;
     Uint32 animation_tick = line_start;
+    dc4ui::Dc2pcMenuTransition title_transition;
+    bool title_commit_due = false;
+    bool quit_after_voice = false;
     std::string status;
     auto update_title = [&]() {
         if (!window) return;
@@ -926,6 +933,12 @@ int run(const Options& o) {
         mouse_down = false;
         status.clear(); update_title();
     };
+    auto play_sys_voice = [&](int event_id) {
+        if (!audio_ready || !voices.loaded()) return;
+        const auto cfg = system_menu.config();
+        if (!cfg.voice_enabled || !cfg.master_enabled) return;
+        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
+    };
     auto persist_state = [&](bool load, int slot, int character_icon=-1) {
         if (!scene || slot < -2 || slot >= dc4ui::SaveScreen::kSlotCount || (slot == -2 && !load)) return;
         if (!scene->save_load_allowed()) return;
@@ -949,6 +962,7 @@ int run(const Options& o) {
             }
             if (load) {
                 if (!scene->load_state(path.string())) { notify(operation + " failed: " + scene->last_error()); return; }
+                scene->set_auto_save_path(dc4::auto_save_target(directory,scene->save_format_version()).string());
                 system_menu.restore_scene_progress(*scene);
                 backlog = Backlog{};
                 backlog.add(*scene, dialogue_index);
@@ -970,7 +984,8 @@ int run(const Options& o) {
             else slots.open = false;
             backlog.open = false;
             slots.refresh(directory,&save_screen,scene->save_format_version());
-            system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(directory,scene->save_format_version(),0)),fs::is_regular_file(directory/"autosave.dc4sav"));
+            system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(directory,scene->save_format_version(),0)),fs::is_regular_file(dc4::auto_save(directory,scene->save_format_version())));
+            if (system_menu.is_dc2dm()) play_sys_voice(load ? 23 : 22);
             notify(operation + (load ? " restored" : " written") + (preview_ok ? "" : " (preview unavailable)"));
         } catch (const std::exception& e) {
             notify(operation + " failed: " + e.what());
@@ -1017,15 +1032,13 @@ int run(const Options& o) {
         mouse_down=false;animation_tick=SDL_GetTicks();
         if(yes&&accepted)accepted();
     };
-    auto prompt_quit = [&]() {prompt(dc4ui::ConfirmKind::Quit,[&]{run_loop=false;});};
-
-    auto play_sys_voice = [&](int event_id) {
-        if (!audio_ready || !voices.loaded()) return;
-        const auto cfg = system_menu.config();
-        if (!cfg.voice_enabled || !cfg.master_enabled) return;
-        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
+    auto quit = [&]() {
+        if (system_menu.is_dc2dm()) { play_sys_voice(20); quit_after_voice = true; }
+        else run_loop = false;
     };
+    auto prompt_quit = [&]() {prompt(dc4ui::ConfirmKind::Quit,quit);};
     auto open_system = [&](dc4ui::SystemMenuPage page) {
+        const auto before = system_menu.page();
         const bool from_scene=!menu_open && scene && !scene->script_name().empty();
         auto_mode=skip_mode=false;slots.open=false;backlog.open=false;mouse_down=false;
         system_menu.set_in_game(page==dc4ui::SystemMenuPage::Config && from_scene);
@@ -1033,8 +1046,21 @@ int run(const Options& o) {
         system_menu.open(page);menu_open=true;
         if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
         else if(page==dc4ui::SystemMenuPage::Music)audio.engine.stop_bgm();
-        play_sys_voice(system_menu.page_voice_event());
+        play_sys_voice(system_menu.page_voice_event(before));
         status.clear();update_title();
+    };
+    auto return_title = [&]() {
+        if (system_menu.is_dc2dm() && scene && !scene->script_name().empty()) {
+            std::vector<uint8_t> outgoing;
+            if (menu_open) system_menu.draw(-1,-1,false,font,&outgoing);
+            else { scene->draw(-1); outgoing = scene->frame(); }
+            title_transition.start_dc2dm_title(std::move(outgoing),dc4ui::dc2dm_title_particle_sheet(data));
+            title_commit_due = false;
+            auto_mode = skip_mode = mouse_down = false;
+            system_menu.cancel_pointer();
+            scene->set_pointer(-1,-1,false);
+            animation_tick = SDL_GetTicks();
+        } else open_system(dc4ui::SystemMenuPage::Title);
     };
     auto prompt_title = [&]() {
         const bool replay=scene && scene->save_format_version()==0x9D72 && !scene->save_load_allowed();
@@ -1045,7 +1071,7 @@ int run(const Options& o) {
                 open_system(dc4ui::SystemMenuPage::Scenes);
                 system_menu.resume_scenes();
                 title_music();
-            } else open_system(dc4ui::SystemMenuPage::Title);
+            } else return_title();
         });
     };
     auto prompt_quick = [&](bool load) {
@@ -1082,7 +1108,7 @@ int run(const Options& o) {
             if(scene && !scene->script_name().empty()){menu_open=false;scene->set_message_visible(true);}
             break;
         case T::NewGame:case T::StartScene:
-            if (system_menu.scene_ui_script() != "start.mes" || selected.type != T::StartScene)
+            if (system_menu.scene_ui_script() != "start.mes" || selected.type != T::StartScene || (system_menu.is_dc2dm() && selected.voice_event))
                 play_sys_voice(selected.voice_event ? selected.voice_event : 7);
             start_scene(selected);break;
         case T::Load:play_sys_voice(13);open_slots(true);break;
@@ -1094,13 +1120,17 @@ int run(const Options& o) {
         case T::AutoLoad:
             play_sys_voice(8);
             open_slots(true);
-            if(scene&&scene->load_state((profile_dir/"autosave.dc4sav").string())){
+            if(scene&&scene->load_state(dc4::auto_save(profile_dir,scene->save_format_version()).string())){
+                scene->set_auto_save_path(dc4::auto_save_target(profile_dir,scene->save_format_version()).string());
                 system_menu.restore_scene_progress(*scene);
+                if(scene->current_line().empty())scene->advance_to_next_text();
                 menu_open=slots.open=false;apply_settings();
+                if(system_menu.is_dc2dm())play_sys_voice(23);
             }
             break;
-        case T::Quit:run_loop=false;break; // Already confirmed by SystemMenu.
+        case T::Quit:quit();break; // Already confirmed by SystemMenu.
         case T::Title:
+            if (system_menu.is_dc2dm()) { return_title(); break; }
             audio.engine.stop_all();
             if(scene) scene->finish_replay();
             system_menu.set_in_game(false);
@@ -1138,7 +1168,7 @@ int run(const Options& o) {
                 title_music();
                 music_running=false;
             }
-            play_sys_voice(system_menu.page_voice_event());
+            play_sys_voice(system_menu.page_voice_event(before));
         }
     };
     auto save_action = [&](const dc4ui::SaveAction& selected) {
@@ -1190,8 +1220,8 @@ int run(const Options& o) {
             scene->set_message_visible(!scene->message_visible()); auto_mode = skip_mode = false;
         } else if (tag == ":qs" || tag==":aaqsave" || tag==":qsave") prompt_quick(false);
         else if (tag == ":ql" || tag==":aaqload") prompt_quick(true);
-        else if (tag == ":ds" || tag==":aasave") { scene->set_sidebar_visible(false); open_slots(false); }
-        else if (tag == ":dl" || tag==":aaload") { scene->set_sidebar_visible(false); open_slots(true); }
+        else if (tag == ":ds" || tag==":aasave") { scene->set_sidebar_visible(false); if(system_menu.is_dc2dm())play_sys_voice(12); open_slots(false); }
+        else if (tag == ":dl" || tag==":aaload") { scene->set_sidebar_visible(false); if(system_menu.is_dc2dm())play_sys_voice(13); open_slots(true); }
         else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":menu") { scene->set_sidebar_visible(false); open_system(dc4ui::SystemMenuPage::Config); }
         else if (tag == ":aatitle") {
             if (scene->save_format_version() != 0x9D72) scene->set_sidebar_visible(false);
@@ -1202,14 +1232,37 @@ int run(const Options& o) {
     };
     auto draw = [&]() {
         const Uint32 tick = SDL_GetTicks();
-        if (scene && !menu_open && !movie.active() && !scene->pending_movie().empty()) {
+        if (title_transition.active()) {
+            const Uint32 elapsed = tick - animation_tick;
+            animation_tick = tick;
+            if (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS) {
+                line_start += elapsed;
+                if (title_commit_due) {
+                    title_commit_due = false;
+                    audio.engine.stop_all();
+                    open_system(dc4ui::SystemMenuPage::Title);
+                    std::vector<uint8_t> incoming;
+                    system_menu.draw(-1,-1,false,font,&incoming);
+                    title_transition.reveal(std::move(incoming));
+                    animation_tick = SDL_GetTicks();
+                } else title_commit_due = title_transition.update(elapsed);
+            }
+            std::vector<uint8_t> pixels;
+            if (title_transition.draw(&pixels)) {
+                SDL_SetRenderDrawColor(ren,0,0,0,255);
+                return SDL_RenderClear(ren) == 0 &&
+                    SDL_UpdateTexture(frame_texture.get(),nullptr,pixels.data(),dc4scene::kScreenW*4) == 0 &&
+                    SDL_RenderCopy(ren,frame_texture.get(),nullptr,nullptr) == 0;
+            }
+        }
+        if (scene && !quit_after_voice && !menu_open && !movie.active() && !scene->pending_movie().empty()) {
             movie_from_scene = true;
             if (!movie.open(data, scene->pending_movie(), movie_audio_engine(scene->pending_movie()), &err)) {
                 notify("Movie: " + err); scene->finish_movie();
             }
         }
         if (scene && o.shot.empty()) {
-            if (!menu_open && !global_confirm.active() && !movie.active() && !backlog.open && !slots.open && (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS))
+            if (!quit_after_voice && !menu_open && !global_confirm.active() && !movie.active() && !backlog.open && !slots.open && (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS))
                 scene->update(tick - animation_tick);
         }
         if(movie.active() && o.shot.empty()){
@@ -1328,6 +1381,14 @@ int run(const Options& o) {
         const Uint32 frame_start = SDL_GetTicks();
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (title_transition.active() || quit_after_voice) {
+                if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+                    audio.engine.set_device_paused(true);
+                if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                    audio.engine.set_device_paused(false); animation_tick = SDL_GetTicks();
+                }
+                continue;
+            }
             if (global_confirm.active()) {
                 if (event.type == SDL_MOUSEMOTION) {
                     mx = event.motion.x; my = event.motion.y;
@@ -1388,6 +1449,10 @@ int run(const Options& o) {
             if (event.type == SDL_QUIT) { prompt_quit(); continue; }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
                 mouse_down = false; pressed_action.clear(); pressed_widget = false;
+                if (scene && scene->minigame_active()) {
+                    scene->minigame_pointer(3, -1, -1);
+                    sync_progress(); flush_profile();
+                }
                 save_screen.cancel_pointer();
                 system_menu.cancel_pointer();movie.set_paused(true);audio.engine.set_device_paused(true);
                 auto_mode = skip_mode = false; update_title();
@@ -1405,6 +1470,31 @@ int run(const Options& o) {
             if(movie.active()) {
                 if((event.type==SDL_MOUSEBUTTONUP && event.button.button==SDL_BUTTON_LEFT) ||
                     (event.type==SDL_KEYDOWN && !event.key.repeat && (event.key.keysym.sym==SDLK_ESCAPE || event.key.keysym.sym==SDLK_SPACE || event.key.keysym.sym==SDLK_RETURN)))finish_movie();
+                continue;
+            }
+            if (scene && scene->minigame_active() && !menu_open) {
+                using Key = dc4scene::Dc2dmMinigame::Key;
+                if (event.type == SDL_MOUSEMOTION)
+                    scene->minigame_pointer(2, event.motion.x, event.motion.y);
+                if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
+                    if (event.button.button == SDL_BUTTON_LEFT)
+                        scene->minigame_pointer(event.type == SDL_MOUSEBUTTONDOWN ? 0 : 1, event.button.x, event.button.y);
+                    else if (event.button.button == SDL_BUTTON_RIGHT && event.type == SDL_MOUSEBUTTONDOWN)
+                        scene->minigame_key(Key::Cancel);
+                }
+                if (event.type == SDL_KEYDOWN && !event.key.repeat) {
+                    switch (event.key.keysym.sym) {
+                    case SDLK_LEFT: scene->minigame_key(Key::Left); break;
+                    case SDLK_RIGHT: scene->minigame_key(Key::Right); break;
+                    case SDLK_UP: scene->minigame_key(Key::Up); break;
+                    case SDLK_DOWN: scene->minigame_key(Key::Down); break;
+                    case SDLK_TAB: scene->minigame_key((event.key.keysym.mod & KMOD_SHIFT) ? Key::Previous : Key::Next); break;
+                    case SDLK_RETURN: case SDLK_SPACE: scene->minigame_key(Key::Accept); break;
+                    case SDLK_ESCAPE: scene->minigame_key(Key::Cancel); break;
+                    }
+                }
+                auto_mode = skip_mode = mouse_down = false;
+                sync_progress();
                 continue;
             }
             if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
@@ -1584,7 +1674,8 @@ int run(const Options& o) {
         SDL_RenderWindowToLogical(ren, wx, wy, &lx, &ly);
         mx = int(lx); my = int(ly);
         if (!(SDL_GetWindowFlags(window.get()) & SDL_WINDOW_MOUSE_FOCUS)) mx = my = -1;
-        if(scene && !global_confirm.active() && !menu_open && !backlog.open && !slots.open && !movie.active()) {
+        if(quit_after_voice && !audio.engine.channel_playing(8)) run_loop = false;
+        if(scene && !title_transition.active() && !quit_after_voice && !global_confirm.active() && !menu_open && !backlog.open && !slots.open && !movie.active()) {
             if(!scene->pending_movie().empty()){
                 movie_from_scene=true;
                 if(!movie.open(data,scene->pending_movie(),movie_audio_engine(scene->pending_movie()),&err)){notify("Movie: "+err);scene->finish_movie();advance_script();}
@@ -1594,7 +1685,7 @@ int run(const Options& o) {
             system_menu.set_music_position(int(audio.engine.channel_fraction(0)*100));
             if(music_running&&!audio.engine.channel_playing(0)){music_running=false;menu_action(system_menu.activate("next"));}
         }
-        if (scene && !global_confirm.active() && !menu_open && !movie.active() && !backlog.open && !slots.open && !scene->sidebar_visible() && !scene->reviewing_dialogue() && scene->message_visible() && !scene->waiting_for_choice() && !scene->waiting_for_time() && !scene->scene_ended()) {
+        if (scene && !title_transition.active() && !quit_after_voice && !global_confirm.active() && !menu_open && !movie.active() && !backlog.open && !slots.open && !scene->sidebar_visible() && !scene->reviewing_dialogue() && scene->message_visible() && !scene->waiting_for_choice() && !scene->waiting_for_time() && !scene->scene_ended()) {
             const Uint32 now = SDL_GetTicks();
             const bool focused = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS) != 0;
             const bool skip = focused && (skip_mode || (SDL_GetModState() & KMOD_CTRL));

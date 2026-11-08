@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/** The pointer-pair DC4 tables and fixed-width DC2PC chapter table. */
+/** Native DC4/DC2DM pointer tables and the fixed-width DC2PC chapter table. */
 public final class ScenarioTitles {
     private ScenarioTitles() {}
     private static int u32(byte[] b, int p) {
@@ -34,8 +34,9 @@ public final class ScenarioTitles {
         // Filter them before allocating strings or running any text decoder.
         switch (b[p] | 32) {
             case 'd': return prefix(b,p,"dc4_");
+            case 'm': return prefix(b,p,"mar_");
             case 'f': return prefix(b,p,"fst_");
-            case 's': return prefix(b,p,"snd_");
+            case 's': return prefix(b,p,"snd_") || prefix(b,p,"sin_") || prefix(b,p,"suc");
             case 't': return prefix(b,p,"trd_");
             case '1': case '2': case '3': return prefix(b,p+1,"ind_");
             default: return false;
@@ -66,7 +67,7 @@ public final class ScenarioTitles {
             if (i > 0 && b[i-1] != 0) continue;
             if (!scriptStart(b,i)) continue;
             String name = string(b, i, 64, StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
-            if (!name.matches("(?:dc4_[a-z0-9_]+|(?:fst|snd|trd|[123]ind)_[a-z0-9_]+)")) continue;
+            if (!name.matches("(?:dc4_[a-z0-9_]+|(?:mar|sin)_[0-9]{4}_[a-z][0-9]+|suc[0-9]{2}_[0-9]{4}_[a-z0-9_]+|(?:fst|snd|trd|[123]ind)_[a-z0-9_]+)")) continue;
             for (int s = 0; s < count; ++s) {
                 int off = sections+s*40, raw = u32(b, off+20), bytes = u32(b, off+16);
                 if (raw >= 0 && bytes >= 0 && i >= raw && (long)i < (long)raw + bytes)
@@ -74,7 +75,7 @@ public final class ScenarioTitles {
             }
             // DC2PC's inline record includes a four-byte field after the name.
             String title = string(b, i+260, 256, sjis);
-            if (japanese(title)) titles.put(name, title);
+            if (!dmScript(name) && japanese(title)) titles.put(name, title);
         }
         if (scripts.isEmpty()) return titles;
         for (int i = 0; i <= b.length-8; i += 4) {
@@ -88,9 +89,13 @@ public final class ScenarioTitles {
                 long raw = Integer.toUnsignedLong(u32(b, off+20)) + delta;
                 if (raw >= b.length) continue;
                 String title = string(b, (int)raw, 256, sjis);
-                if (japanese(title)) titles.put(name, title);
+                if (japanese(title) || dmScript(name) && title.matches("[A-Za-z][A-Za-z0-9 ,.!?'():/\\-]{2,150}"))
+                    titles.put(name, title);
             }
         }
         return titles;
+    }
+    private static boolean dmScript(String name) {
+        return name.startsWith("mar_") || name.startsWith("sin_") || name.startsWith("suc");
     }
 }

@@ -14,11 +14,12 @@ inline std::string save_lower(std::string value) {
     return value;
 }
 inline std::string native_save_prefix(uint32_t version) {
-    return version==0x9969 ? "DC2PC" : version==0xAAB6 ? "DC4" : version==0xABB6 ? "DC4PHDL" : "";
+    return version==0x9969 ? "DC2PC" : version==0x9D72 ? "DC2DM" : version==0xAAB6 ? "DC4" : version==0xABB6 ? "DC4PHDL" : "";
 }
 // DC2PC has quick 00, latest-copy 01, then three regular rows on page 1
 // and five rows per later page, with an eight-record page stride.
 inline int native_save_number(uint32_t version,int logical) {
+    if(version==0x9D72)return logical==0 ? 1 : logical+3;
     if(version!=0x9969)return logical+2;
     if(logical==0)return 0;
     return logical<=3?logical+1:8+((logical-4)/5)*8+(logical-4)%5;
@@ -40,6 +41,10 @@ inline int save_slot_number(const std::string& filename, uint32_t version) {
         if(physical>=2 && physical<=4)logical=physical-1;
         else if(physical>=8 && physical%8<=4)logical=4+(physical/8-1)*5+physical%8;
         else return -1;
+    } else if(native && version==0x9D72) {
+        if(logical==1)return 0;
+        if(logical<4)return -1;
+        logical-=3;
     } else if(native)logical-=2;
     return logical>=0 && logical<=100 ? logical : -1;
 }
@@ -66,7 +71,8 @@ inline std::filesystem::path latest_save(const std::filesystem::path& directory,
         if(!i->is_regular_file(ec))continue;
         const auto filename=i->path().filename().string();
         const int slot=save_slot_number(filename,version);
-        if(slot<1 && !(version==0x9969 && save_lower(filename)=="dc2pc01.dat"))continue;
+        if(slot<1 && !(version==0x9969 && save_lower(filename)=="dc2pc01.dat") &&
+           !(version==0x9D72 && save_lower(filename)=="dc2dm03.dat"))continue;
         if(slot<1) {native[0]=i->path();continue;}
         (save_lower(i->path().extension().string())==".dat"?native:legacy)[slot]=i->path();
     }
@@ -75,5 +81,19 @@ inline std::filesystem::path latest_save(const std::filesystem::path& directory,
         const auto time=std::filesystem::last_write_time(path,ec);
         if(!ec&&(result.empty()||time>latest)){result=path;latest=time;}ec.clear();}
     return result;
+}
+inline std::filesystem::path auto_save_target(const std::filesystem::path& directory, uint32_t version) {
+    if(version==0x9D72) {
+        std::error_code ec;
+        for(std::filesystem::directory_iterator i(directory,ec),end;!ec&&i!=end;i.increment(ec))
+            if(i->is_regular_file(ec)&&save_lower(i->path().filename().string())=="dc2dm02.dat")return i->path();
+        return directory/"DC2DM02.dat";
+    }
+    return directory/"autosave.dc4sav";
+}
+inline std::filesystem::path auto_save(const std::filesystem::path& directory, uint32_t version) {
+    const auto native=auto_save_target(directory,version), legacy=directory/"autosave.dc4sav";
+    std::error_code ec;
+    return std::filesystem::is_regular_file(native,ec) || !std::filesystem::is_regular_file(legacy,ec) ? native : legacy;
 }
 } // namespace dc4

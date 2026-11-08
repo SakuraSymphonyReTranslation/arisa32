@@ -38,36 +38,26 @@ public final class Dc2DearestMarriageProfile implements GameProfile {
     }
 
     @Override public String getSaveSubdir() { return "SaveData"; }
-    @Override public String getSaveFilePrefix() { return ""; }
-    @Override public int extractSlotNumber(String name) { return common.extractSlotNumber(name); }
-    // DC2DM's PC records cannot be restored by the native save codecs yet.
+    @Override public String getSaveFilePrefix() { return "DC2DM"; }
+    @Override public int extractSlotNumber(String name) { return NativeSaveFiles.slot(name, "DC2DM", 4); }
     @Override public File resolveSlotSaveFile(File dir, int index) {
-        return Dc2PlusCommunicationProfile.child(dir, "slot" + (index + 1) + ".dc4sav");
+        return NativeSaveFiles.resolve(dir, "DC2DM", 4, index + 1);
     }
     @Override public File resolveQuickSaveFile(File dir) {
-        return Dc2PlusCommunicationProfile.child(dir, "quicksave.dc4sav");
+        return NativeSaveFiles.resolve(dir, "DC2DM", 4, 0);
+    }
+    @Override public File resolveLatestSaveCopy(File dir) { return NativeSaveFiles.latestCopy(dir, "DC2DM"); }
+    @Override public File resolveAutoSaveFile(File dir) {
+        File nativeSave = Dc2PlusCommunicationProfile.child(dir, "DC2DM02.dat");
+        return nativeSave != null && nativeSave.isFile() ? nativeSave : GameProfile.super.resolveAutoSaveFile(dir);
     }
     @Override public File saveTarget(File dir, int slot) {
-        return slot < 0 ? resolveQuickSaveFile(dir) : resolveSlotSaveFile(dir, slot);
+        return NativeSaveFiles.target(dir, "DC2DM", 4, slot < 0 ? 0 : slot + 1);
     }
     @Override public File[] resolveSaveFiles(File dir, int count) {
-        File[] saves = new File[count + 1];
-        if (dir == null) return saves;
-        saves[0] = new File(dir, "quicksave.dc4sav");
-        for (int i = 1; i <= count; ++i) saves[i] = new File(dir, "slot" + i + ".dc4sav");
-        File[] files = dir.listFiles();
-        if (files != null) for (File file : files) {
-            if (!file.isFile()) continue;
-            String name = file.getName().toLowerCase(Locale.ROOT);
-            if (name.equals("quicksave.dc4sav")) saves[0] = file;
-            else if (name.matches("slot[1-9][0-9]{0,2}\\.dc4sav")) {
-                int slot = Integer.parseInt(name.substring(4, name.length() - 7));
-                if (slot <= count) saves[slot] = file;
-            }
-        }
-        return saves;
+        return NativeSaveFiles.resolveAll(dir, "DC2DM", 4, count);
     }
-    @Override public boolean isNativeSaveFile(String name) { return common.isNativeSaveFile(name); }
+    @Override public boolean isNativeSaveFile(String name) { return NativeSaveFiles.accepts(name, "DC2DM"); }
 
     @Override public String resolveScenarioTitle(String script, String language,
             Map<String, String> exeTitles, Map<String, String> jpToIdTitles) {

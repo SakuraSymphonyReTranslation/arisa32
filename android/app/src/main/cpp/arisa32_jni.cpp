@@ -8,6 +8,7 @@
 #include "arisa32/resource.h"
 #include "arisa32/system_menu.h"
 #include "arisa32/dc2pc_menu_transition.h"
+#include "arisa32/dc2dm_title_particles.h"
 #include "arisa32/movie.h"
 #include "arisa32/bgm.h"
 #include <filesystem>
@@ -52,6 +53,8 @@ struct Engine {
     std::function<void()> presentation_commit;
     bool presentation_reveal = false;
     bool presentation_commit_due = false;
+    bool presentation_wait_voice = false;
+    bool quitting = false;
     std::string data_dir;
     JavaVM* vm = nullptr;
     jobject activity = nullptr;
@@ -83,7 +86,7 @@ struct Engine {
     dc4ui::SaveScreen save_screen;
     std::vector<dc4ui::SaveSlot> save_slots =
         std::vector<dc4ui::SaveSlot>(dc4ui::SaveScreen::kSlotCount);
-    dc4ui::SaveSlot quick_slot, latest_slot;
+    dc4ui::SaveSlot quick_slot, latest_slot, auto_slot;
     std::vector<uint8_t> save_frame;
     bool save_frame_visible = false;
     int save_mx = -1, save_my = -1;
@@ -134,6 +137,7 @@ std::string answer_confirm(Engine* e,bool yes) {
 
 void save_profile(Engine* e) {
     if (e->save_dir.empty()) return;
+    if (e->scene && e->scene->minigame_active()) e->menu.sync_progress(*e->scene);
     std::error_code ec;
     std::filesystem::create_directories(e->save_dir, ec);
     e->menu.save_profile(e->save_dir + "/system-profile.dat");
@@ -401,7 +405,7 @@ void refresh_menu_saves(Engine* e) {
     std::error_code ec;
     const bool latest=!dc4::latest_save(e->save_dir,version).empty();
     const bool quick=std::filesystem::is_regular_file(dc4::resolve_save(e->save_dir,version,0),ec);
-    const bool automatic=std::filesystem::is_regular_file(e->save_dir+"/autosave.dc4sav",ec);
+    const bool automatic=std::filesystem::is_regular_file(dc4::auto_save(e->save_dir,e->scene->save_format_version()),ec);
     std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
     for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
         if (dir.empty()) continue;
@@ -424,16 +428,19 @@ void capture_presentation(Engine* e, std::vector<uint8_t>* frame, bool outgoing 
     else { e->scene->draw(reveal_count(e)); *frame = e->scene->frame(); }
 }
 
-void begin_dc2pc_boundary(Engine* e, uint32_t wait_ms, bool reveal, std::function<void()> commit) {
+void begin_dc2pc_boundary(Engine* e, uint32_t wait_ms, bool reveal, std::function<void()> commit, bool title_particles = false) {
     std::vector<uint8_t> outgoing;
     capture_presentation(e,&outgoing,true);
     bool black = true;
     for (size_t i=0; i+3<outgoing.size(); i+=4)
         if (outgoing[i] || outgoing[i+1] || outgoing[i+2]) { black=false; break; }
-    e->presentation.start(std::move(outgoing),e->menu.variable(99,12),wait_ms,!black);
+    if (title_particles && e->menu.is_dc2dm())
+        e->presentation.start_dc2dm_title(std::move(outgoing),dc4ui::dc2dm_title_particle_sheet(e->data_dir));
+    else e->presentation.start(std::move(outgoing),e->menu.variable(99,12),wait_ms,!black);
     e->presentation_commit = std::move(commit);
     e->presentation_reveal = reveal;
     e->presentation_commit_due = false;
+    e->presentation_wait_voice = false;
     e->pointer_down = e->menu_down = false;
     e->menu.cancel_pointer();
     e->scene->set_pointer(-1,-1,false);
@@ -449,6 +456,7 @@ std::string enter_scene(Engine* e, std::unique_ptr<dc4scene::SceneRunner> next, 
     e->current_bgm.clear();
     next->set_audio(&e->audio, &e->voice);
     next->set_observer([e](const dc4::MesCommand& c, const std::string& script) { e->menu.observe(c,script); });
+    next->set_auto_save_path(dc4::auto_save_target(e->save_dir,next->save_format_version()).string());
     e->scene = std::move(next);
     apply_config(e);
     e->line_key.clear(); e->log_rows.clear(); e->dialogue_index = -1;
@@ -483,6 +491,7 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
 }
 
 void finish_restore(Engine* e, bool prepared_audio = false) {
+    e->scene->set_auto_save_path(dc4::auto_save_target(e->save_dir,e->scene->save_format_version()).string());
     e->menu.restore_scene_progress(*e->scene);
     sync_progress(e);
     e->movie.close();
@@ -521,8 +530,9 @@ std::string restore_save(Engine* e, const std::string& path) {
         next->set_audio(audio.get(), &e->voice);
         if (!next->load_sheets(e->data_dir + "/MES/start.mes") ||
             !next->load_ui_script(e->data_dir + "/MES/" + e->menu.scene_ui_script()) ||
-            !next->show_message_window("SYSTEM/MESWIN.CRX") ||
-            !next->load_state(path)) return "Load failed: " + next->last_error();
+            !next->show_message_window("SYSTEM/MESWIN.CRX")) return "Load failed: " + next->last_error();
+        if (e->menu.is_dc2dm()) e->menu.restore_scene_progress(*next);
+        if (!next->load_state(path)) return "Load failed: " + next->last_error();
         e->pending_scene = std::move(next);
         e->pending_audio = std::move(audio);
         begin_dc2pc_boundary(e,0,true,[e] {
@@ -538,6 +548,7 @@ std::string restore_save(Engine* e, const std::string& path) {
             finish_restore(e,true);
             e->menu.set_in_game(true);
         });
+        if (e->menu.is_dc2dm()) e->presentation_wait_voice = play_system_voice(e,23);
         return {};
     }
     if (!e->scene->load_state(path)) return "Load failed: " + e->scene->last_error();
@@ -549,6 +560,7 @@ void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before);
 
 void open_menu(Engine* e, dc4ui::SystemMenuPage page) {
     if (!e->menu.loaded()) return;
+    if (e->scene && e->scene->minigame_active()) e->scene->minigame_pointer(3, -1, -1);
     const auto before = e->menu.page();
     e->menu_open = true; e->menu_down = false;
     e->menu_x = e->menu_y = -1;
@@ -615,7 +627,7 @@ void return_to_title(Engine* e) {
     if (e->presentation.active()) return;
     if (dc2pc_menu(e) && e->in_game) {
         // advmenu/go_title: five 200 ms ticks, then a black-out before transfer.
-        begin_dc2pc_boundary(e,1000,true,[e] { return_to_title_now(e); });
+        begin_dc2pc_boundary(e,1000,true,[e] { return_to_title_now(e); },e->menu.is_dc2dm());
     } else return_to_title_now(e);
 }
 
@@ -646,7 +658,7 @@ void menu_page_changed(Engine* e, dc4ui::SystemMenuPage before) {
             play_menu_music(e, e->menu.title_music(), true);
         }
     }
-    play_system_voice(e, e->menu.page_voice_event());
+    play_system_voice(e, e->menu.page_voice_event(before));
 }
 
 bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, std::string* error) {
@@ -721,9 +733,11 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
         play_system_voice(e, 11);
         if (e->in_game) { e->menu_open = false; e->tick = Clock::now(); return "close"; }
         return "quit";
-    case A::Quit: return "quit";
+    case A::Quit:
+        e->quitting = e->menu.is_dc2dm() && play_system_voice(e,20);
+        return e->quitting ? "quit-wait" : "quit";
     case A::NewGame: case A::StartScene: {
-        if (!dc2pc_menu(e) || action.type != A::StartScene)
+        if (!dc2pc_menu(e) || action.type != A::StartScene || (e->menu.is_dc2dm() && action.voice_event))
             play_system_voice(e,action.voice_event ? action.voice_event : 7);
         auto error = start_scene(e, action.asset.empty() ? kOpening : action.asset, action.label, action.type == A::StartScene);
         return error.empty() ? "start" : error;
@@ -740,7 +754,7 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
         play_system_voice(e, 8);
         const auto version=e->scene->save_format_version();
         const std::string path=action.type==A::LatestLoad ? dc4::latest_save(e->save_dir,version).string() :
-            action.type==A::AutoLoad ? e->save_dir+"/autosave.dc4sav" : dc4::resolve_save(e->save_dir,version,0).string();
+            action.type==A::AutoLoad ? dc4::auto_save(e->save_dir,version).string() : dc4::resolve_save(e->save_dir,version,0).string();
         if(path.empty())return "No saved game";
         auto error = restore_save(e,path); return error.empty() ? "start" : error;
     }
@@ -773,10 +787,14 @@ void tick_engine(Engine* e) {
     const auto now = Clock::now();
     const auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now-e->tick).count();
     e->tick = now;
-    if (e->paused) return;
+    if (e->paused || e->quitting) return;
     const uint32_t elapsed = uint32_t(std::clamp<int64_t>(delta,0,250));
     if (e->presentation.active()) {
         e->line_start += std::chrono::milliseconds(elapsed);
+        if (e->presentation_wait_voice) {
+            if (e->audio.channel_playing(8)) return;
+            e->presentation_wait_voice = false;
+        }
         if (e->presentation_commit_due) {
             e->presentation_commit_due = false;
             auto commit = std::move(e->presentation_commit);
@@ -1064,6 +1082,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         destroy_engine(env);
         return JNI_FALSE;
     }
+    e->scene->set_auto_save_path(dc4::auto_save_target(e->save_dir,e->scene->save_format_version()).string());
     if (menu_ok) {
         apply_config(e);
         open_menu(e, dc4ui::SystemMenuPage::Title);
@@ -1101,6 +1120,20 @@ Java_org_dc4engine_Dc4Activity_dc4OpenMenu(JNIEnv* env,jobject,jstring name) {
     if (!e) return env->NewStringUTF("Engine is not running");
     if (e->presentation.active()) return env->NewStringUTF("");
     const auto page = jstr_to_std(env,name);
+    if (page == "back" && e->confirm.active()) {
+        answer_confirm(e, false);
+        return env->NewStringUTF("");
+    }
+    if (page == "back" && e->in_game && !e->menu_open && e->scene && e->scene->minigame_active()) {
+        e->scene->minigame_key(dc4scene::Dc2dmMinigame::Key::Cancel);
+        return env->NewStringUTF("");
+    }
+    if (page == "quit-voice") {
+        e->quitting = e->menu.is_dc2dm() && play_system_voice(e,20);
+        return env->NewStringUTF(e->quitting ? "quit-wait" : "quit");
+    }
+    if (page == "quit-poll")
+        return env->NewStringUTF(e->menu.is_dc2dm() && e->audio.channel_playing(8) ? "quit-wait" : "quit");
     if (page == "title") {
         return_to_title(e);
         return env->NewStringUTF("");
@@ -1205,7 +1238,7 @@ Java_org_dc4engine_Dc4Activity_dc4RequestConfirm(JNIEnv* env,jobject,jstring req
         if(!std::filesystem::is_regular_file(dc4::resolve_save(e->save_dir,e->scene->save_format_version(),0)))return env->NewStringUTF("No quick save");
         kind=dc4ui::ConfirmKind::QuickLoad;
     }else if(action=="title"){
-        if(e->scene->save_format_version()==0x9D72 && !e->scene->save_load_allowed())
+        if(e->scene->save_format_version()==0x9D72 && e->scene->variable(9,7)!=0)
             return env->NewStringUTF(request_confirm(e,dc4ui::ConfirmKind::ReplayExit,[e]{
                 finish_scenario_menu(e,dc4ui::SystemMenuPage::Scenes);
                 return std::string(":close");
@@ -1317,6 +1350,14 @@ JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused || e->presentation.active()) return env->NewStringUTF("");
+    if (e->scene->minigame_active()) {
+        if (!e->in_game || e->menu_open || e->confirm.active()) return env->NewStringUTF("");
+        e->pointer_down = false;
+        e->pressed_action.clear(); e->pressed_widget = false; e->pressed_choice = -1;
+        e->scene->minigame_pointer(action, x, y);
+        sync_progress(e);
+        return env->NewStringUTF("");
+    }
     e->scene->set_pointer(x, y, action == 0 || (action == 2 && e->pointer_down));
     if (action == 0) {
         e->pointer_down = true;
@@ -1411,6 +1452,7 @@ Java_org_dc4engine_Dc4Activity_dc4SetPaused(JNIEnv* env, jobject, jboolean pause
     e->pressed_widget = false;
     e->pressed_choice = -1;
     e->scene->set_pointer(-1, -1, false);
+    e->scene->minigame_pointer(3, -1, -1);
     e->menu.cancel_pointer(); e->menu_down = false;
     e->save_screen.cancel_pointer(); e->save_down = false;
     if(paused){answer_confirm(e,false);e->menu.answer_confirmation(false);e->save_screen.cancel_confirm();}
@@ -1526,6 +1568,7 @@ Java_org_dc4engine_Dc4Activity_dc4Save(JNIEnv* env, jobject, jstring path) {
     if (!e->scene->save_state(jstr_to_std(env, path)))
         return env->NewStringUTF(("Save failed: " + e->scene->last_error()).c_str());
     sync_progress(e); save_profile(e);
+    if (e->menu.is_dc2dm()) play_system_voice(e,22);
     return env->NewStringUTF("");
 }
 
@@ -1564,8 +1607,8 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(JNIEnv* env, jobject, jboolean loadi
         LOGE("save screen artwork: %s", error.c_str());
     e->save_screen.set_language(dc4::get_language());
     e->save_screen.set_mode(loading ? dc4ui::SaveMode::Load : dc4ui::SaveMode::Save);
-    e->save_screen.set_shortcuts(latest, false, quick);
-    e->save_screen.set_special_slots(e->quick_slot,e->latest_slot);
+    e->save_screen.set_shortcuts(latest, e->auto_slot.occupied, quick);
+    e->save_screen.set_special_slots(e->quick_slot,e->latest_slot,e->auto_slot);
     e->save_screen.set_navigation(true,true,true);
     if (e->menu_open) { e->menu_return = true; e->return_page = e->menu.page(); }
     e->menu_open = false;
@@ -1686,6 +1729,7 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(JNIEnv* env, jobject, jint action, 
             play_system_voice(e, 11);
             return env->NewStringUTF("close");
         case Action::LatestLoad: return env->NewStringUTF("latest");
+        case Action::AutoLoad: return env->NewStringUTF("automatic");
         case Action::QuickLoad: return env->NewStringUTF("quick");
         case Action::QuickSave: return env->NewStringUTF("quicksave");
         case Action::Config: return env->NewStringUTF("config");
@@ -1942,6 +1986,10 @@ Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, 
         if (e->menu_open) menu_page_changed(e,before);
         return env->NewStringUTF(result.c_str());
     }
+    if (e->in_game && e->scene->minigame_active()) {
+        e->scene->minigame_key(dc4scene::Dc2dmMinigame::Key::Cancel);
+        return env->NewStringUTF("");
+    }
     if (e->in_game && !e->movie.active() && !e->movie_playing_in_java) {
         e->scene->return_to_dialogue();
         e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
@@ -2012,18 +2060,18 @@ Java_org_dc4engine_Arisa32Activity_dc4SlotsOpen(JNIEnv* env, jobject thiz, jbool
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4SlotInfo(JNIEnv* env, jobject thiz, jint index, jboolean occupied, jstring timestamp, jstring excerpt, jobject thumbnail, jint icon) {
     Engine* e=g_engine;
-    if(!e || index < -2 || index >= dc4ui::SaveScreen::kSlotCount)return;
+    if(!e || index < -3 || index >= dc4ui::SaveScreen::kSlotCount)return;
     icon=icon>=0 && icon<16?icon:-1;
     if(index>=0) {
         Java_org_dc4engine_Dc4Activity_dc4SlotInfo(env, thiz, index, occupied, timestamp, excerpt, thumbnail);
         e->save_slots[size_t(index)].character_icon=icon;
     } else {
-        auto& slot=index==-1?e->quick_slot:e->latest_slot;
+        auto& slot=index==-1?e->quick_slot:index==-2?e->latest_slot:e->auto_slot;
         slot={};slot.occupied=occupied;slot.character_icon=icon;
         slot.timestamp=jstr_to_utf16(env,timestamp,64);
         slot.excerpt=jstr_to_utf16(env,excerpt,256);
         if(occupied && thumbnail)copy_thumbnail_bitmap(env,thumbnail,&slot.thumbnail);
-        e->save_screen.set_special_slots(e->quick_slot,e->latest_slot);
+        e->save_screen.set_special_slots(e->quick_slot,e->latest_slot,e->auto_slot);
     }
 }
 JNIEXPORT jint JNICALL

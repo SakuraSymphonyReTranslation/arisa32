@@ -12,8 +12,8 @@ android {
         manifestPlaceholders = [appLabel: '@string/app_name']
         minSdk 21          // Android 5.0 (Lollipop)+
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 16
-        versionName '0.6.9'
+        versionCode 17
+        versionName '0.7.0'
         testInstrumentationRunner 'org.dc4engine.UpdateDialogChecks'
         externalNativeBuild {
             cmake {

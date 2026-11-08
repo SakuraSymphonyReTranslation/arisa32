@@ -88,6 +88,33 @@ public final class ProfileChecks {
         check(modernTitle.equals(titles.get("dc4_com_01")), "modern title pointer pair");
         check(classicTitle.equals(titles.get("2ind_chapter")), "uppercase numbered DC2PC prefix");
         check(titles.size() == 3, "invalid and truncated script prefixes rejected");
+        pe.position(2800); pe.put("MAR_0114_A1\0".getBytes(StandardCharsets.US_ASCII));
+        pe.position(2860); pe.put("Awal semester terakhir sekolah\0".getBytes(StandardCharsets.US_ASCII));
+        pe.putInt(2032,0x401000+2800-512);pe.putInt(2036,0x401000+2860-512);
+        pe.position(3400); pe.put("SIN_0326_F1\0".getBytes(StandardCharsets.US_ASCII));
+        pe.putInt(2040,0x401000+3400-512);pe.putInt(2044,0x401000+1500-512);
+        pe.position(3500); pe.put("SUC60_0811_A1_OTM\0".getBytes(StandardCharsets.US_ASCII));
+        pe.putInt(2048,0x401000+3500-512);pe.putInt(2052,0x401000+1500-512);
+        Files.write(exe,pe.array());titles=ScenarioTitles.readExe(exe.toFile());
+        check("Awal semester terakhir sekolah".equals(titles.get("mar_0114_a1")),"DM patched title pointer");
+        check(modernTitle.equals(titles.get("sin_0326_f1")),"DM SIN title pointer");
+        check(modernTitle.equals(titles.get("suc60_0811_a1_otm")),"DM SUC title pointer");
+        byte[] dmSave=new byte[0x3FE0];
+        ByteBuffer.wrap(dmSave).order(ByteOrder.LITTLE_ENDIAN).putInt(0x3FE1);
+        System.arraycopy("MAR_0114_A1".getBytes(StandardCharsets.US_ASCII),0,dmSave,8,11);
+        dmSave[0x28D9]=11;dmSave[0x28DA]=7;dmSave[0x28DB]=14;dmSave[0x28DC]=35;dmSave[0x28DD]=26;dmSave[0x28DE]=10;
+        Files.write(save,dmSave);
+        java.util.Calendar date=java.util.Calendar.getInstance();date.clear();date.set(2026,10,7,14,35,10);
+        check(SaveMetadata.timestamp(save.toFile())==date.getTimeInMillis(),"DM embedded date survives copying");
+        check(SaveMetadata.script(save.toFile(),false).equals("MAR_0114_A1"),"DM native scenario identity");
+        dmSave[0x28D9]=13;Files.write(save,dmSave);
+        check(SaveMetadata.timestamp(save.toFile())==save.toFile().lastModified(),"invalid DM date falls back to file date");
+        String realExe=System.getenv("DC2DM_EXE");
+        if(realExe!=null) {
+            Map<String,String> actual=ScenarioTitles.readExe(new File(realExe));
+            check(actual.size()==279,"all real DM scenario titles");
+            check("Awal semester terakhir sekolah".equals(actual.get("mar_0114_a1")),"real Indonesian PC title");
+        }
         check(GameProfileRegistry.getProfileById("dc4").isNativeSaveFile("DC403.png"), "native stem thumbnail archive");
         check(GameProfileRegistry.getProfileById("dc4").extractSlotNumber("DC4103.dat") == -1, "native slot beyond 100 rejected");
     }
@@ -108,39 +135,42 @@ public final class ProfileChecks {
         check(dm.matches(null, dm.getDisplayName()), "DC2DM full title fallback");
         for (String title : new String[]{"DC2PC", "D.C. II ~Da Capo II~", "Da Capo II Fall in Love", "Dearest Marriage"})
             check(!dm.matches(null, title), "DC2DM excludes unrelated or incomplete title: " + title);
-        check(dm.saveTarget(root.toFile(), 0).getName().equals("slot1.dc4sav"), "DC2DM retains portable snapshot writes");
-        check(dm.saveTarget(root.toFile(), -1).getName().equals("quicksave.dc4sav"), "DC2DM retains portable quicksave");
-        check(dm.getSaveFilePrefix().isEmpty(), "DC2DM does not claim unverified native save format");
+        check(dm.saveTarget(root.toFile(), 0).getName().equals("DC2DM04.dat"), "DC2DM native first slot");
+        check(dm.saveTarget(root.toFile(), -1).getName().equals("DC2DM01.dat"), "DC2DM native quicksave");
+        check(dm.getSaveFilePrefix().equals("DC2DM"), "DC2DM native prefix");
         Path existing = Files.createDirectories(data.resolve("sAvEdAtA"));
         check(GameSaveDirectory.resolve(data.getParent().toFile(), data.toFile(), data.toFile()).toPath().equals(existing),
                 "DC2DM reuses existing save directory casing");
         Files.write(existing.resolve("DC2DM01.dat"), new byte[]{1, 2, 3});
         Files.write(existing.resolve("DC2DM00.dat"), new byte[]{4, 5, 6});
-        check(dm.resolveSlotSaveFile(existing.toFile(), 0).getName().equals("slot1.dc4sav"),
-                "unsupported DC2DM PC records do not occupy portable save slots");
-        check(dm.resolveQuickSaveFile(existing.toFile()).getName().equals("quicksave.dc4sav"),
-                "unsupported DC2DM PC records do not occupy portable quicksave");
+        check(dm.resolveSlotSaveFile(existing.toFile(), 0).getName().equals("DC2DM04.dat"), "DM quicksave does not occupy slot 1");
+        check(dm.resolveQuickSaveFile(existing.toFile()).getName().equals("DC2DM01.dat"), "DM native quicksave lookup");
         Path snapshot = existing.resolve("SLOT1.DC4SAV");
         Files.write(snapshot, new byte[]{7, 8, 9});
         check(dm.resolveSlotSaveFile(existing.toFile(), 0).toPath().equals(snapshot),
                 "DC2DM portable save lookup preserves existing casing");
-        check(dm.saveTarget(existing.toFile(), 0).toPath().equals(snapshot),
-                "DC2DM overwrites the existing portable slot without a case-only duplicate");
+        check(dm.saveTarget(existing.toFile(), 0).getName().equals("DC2DM04.dat"), "DM new save uses native target, preserving legacy file");
         Path quickSnapshot = existing.resolve("QUICKSAVE.DC4SAV");
         Files.write(quickSnapshot, new byte[]{10, 11, 12});
-        check(dm.saveTarget(existing.toFile(), -1).toPath().equals(quickSnapshot),
-                "DC2DM overwrites the existing portable quicksave without a case-only duplicate");
+        check(dm.saveTarget(existing.toFile(), -1).getName().equals("DC2DM01.dat"), "DM native quicksave has priority");
         directoryReads.clear();
         File[] saves = dm.resolveSaveFiles(new CountedFile(existing.toString()), 100);
-        check(saves.length == 101 && saves[0].toPath().equals(quickSnapshot)
+        check(saves.length == 101 && saves[0].getName().equals("DC2DM01.dat")
                         && saves[1].toPath().equals(snapshot),
                 "DC2DM batched picker finds portable saves with existing casing");
-        check(saves[2].getName().equals("slot2.dc4sav") && saves[100].getName().equals("slot100.dc4sav"),
+        check(saves[2].getName().equals("DC2DM05.dat") && saves[100].getName().equals("DC2DM103.dat"),
                 "DC2DM batched picker retains empty and legacy portable slot targets");
         check(directoryReads.getOrDefault(existing.toString(), 0) == 1,
                 "DC2DM picker reads the save directory once");
         check(dm.resolveSaveFiles(null, 100)[0] == null, "DC2DM missing save directory leaves empty picker");
         check(dm.isNativeSaveFile("DC2DM01.dat"), "DC2DM PC records remain included in save archives");
+        check(dm.isNativeSaveFile("DC2DM04.dat.arisa"), "DM companions included in archives");
+        check(dm.extractSlotNumber("dc2dm01.dat")==0 && dm.extractSlotNumber("DC2DM04.dat")==1, "DM physical slot mapping");
+        check(dm.extractSlotNumber("DC2DM02.dat")==-1 && dm.extractSlotNumber("DC2DM03.dat")==-1, "DM reserved records excluded");
+        Path automatic=Files.write(existing.resolve("dC2Dm02.DaT"),new byte[]{1});
+        Path latest=Files.write(existing.resolve("DC2DM03.dat"),new byte[]{1});
+        check(dm.resolveAutoSaveFile(existing.toFile()).toPath().equals(automatic), "DM case-insensitive auto save");
+        check(dm.resolveLatestSaveCopy(existing.toFile()).toPath().equals(latest), "DM latest copy");
         bytes.put(16, (byte) 0x73); Files.write(main, bytes.array());
         check(!dm.matches(data.toFile(), "DC2DM"), "neighboring MES version overrides matching DC2DM path");
         bytes.put(16, (byte) 0x72).put(18, (byte) 1); Files.write(main, bytes.array());

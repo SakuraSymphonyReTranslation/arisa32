@@ -479,3 +479,68 @@ EN/ID/JP error dialogs, and native title startup for DC4 and DC4PH. Fixtures
 use a separate temporary library. As with the other instrumentation modes,
 the runner changes QA launcher preferences; back up and restore those if the
 QA installation has user settings. See `docs/dc4ph-startup-validation.md`.
+
+## DC2DM save and progress probe
+
+Use an arm64 device, a built APK, and a local copy of the PC SaveData folder:
+
+```powershell
+python tests/android/run_dc2dm_save_probe.py --apk android/app/build/outputs/apk/debug/app-debug.apk --saves path/to/copied/SaveData --serial DEVICE_SERIAL --data "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/AdvData" --exe "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/DC2DM.EXE" --font path/to/msgothic.ttc
+```
+
+The copied folder must contain `system.dat`, `DC2DM01.dat`, `DC2DM02.dat`,
+`DC2DM03.dat`, `DC2DM04.dat`, and `DC2DM06.dat`. The inspected executable must
+contain the 279-entry scenario-title table. JDK and Android SDK paths use
+`JAVA_HOME` and `ANDROID_HOME` when set, otherwise the local Windows defaults.
+
+The default run has 12 cases: three title stages, a separate-process restart
+for each stage, five native/companion save round trips, and Save/Load rows.
+Restart cases remove their native `system.dat` before starting again. Slot
+cases wait for transitions, advance empty checkpoints, compare restored
+dialogue/speaker/artwork, and continue the story. The row case checks the
+Save/Load confirmation path for quick, auto, latest, and regular slots.
+
+Stage cases also tap the real Start button. Before Graduation completion,
+they exercise the native confirmation's Cancel, No, and Yes paths. After
+Graduation or Married Life completion, Start must directly open the two- or
+three-story selector. The probe checks responding rows and the native Return
+button. An idle selector waits for input, so its script-wait status is not an
+animation-completion signal.
+
+The optional `--cases menus` imports copied progress into the fixture and checks
+Extras, CG, Scenario, Music, Config, all four Otome voice choices, full CG
+rendering at 1920x1080, next/back navigation, and the return-to-title particle
+transition with pause/resume. It writes menu, CG, and transition captures.
+Use `--cases menus stages DC2DM01.dat DC2DM02.dat DC2DM03.dat DC2DM04.dat DC2DM06.dat rows`
+for all 13 cases. See [the menu and CG report](../../docs/dc2dm-menu-audio-transition-validation.md).
+
+Use `--cases stages`, `--cases rows`, or a list such as
+`--cases DC2DM02.dat DC2DM06.dat` to repeat selected cases. `stages` always runs
+all three first-run/restart pairs. A failed case stops the run and returns a
+nonzero exit code; completed output is saved after every case.
+
+For the recorded birthday choice, run `scene_test` with `DC2DM_DATA` and
+`DC2DM_CHOICE_CAPTURES` to export its native `choice.dat`, then add
+`--choice-save path/to/choice.dat --cases choices` to the probe command.
+This optional case checks both `MAR_0129_E1` branches through the JNI touch
+handler, including normal, hover and pressed row art, cancel, release over
+another row, and outside taps. It checks that Yoshiyuki and narration cannot
+replay stale audio, that the next Anzu line can replay, and that restoring
+an unvoiced save after Anzu keeps replay disabled. Captures show both choices
+and their first unvoiced/voiced dialogue. It uses the same isolated saves as
+the other cases and does not install or launch the player's Activity.
+
+For the recorded classroom transition, run `dc2dm_transition_test` with
+`DC2DM_DATA` and `DC2DM_TRANSITION_CAPTURES` to export `transition.dat`, then
+add `--transition-save path/to/transition.dat --cases transitions`. This
+checks the two mask phases, white boundary, direction and soft edge, pause,
+dialogue blocking, transient-save rejection, forced Title, and subsequent
+Load. Transition captures and result logs use the same isolated fixture.
+
+The probe runs the packaged JNI library in `app_process`; it does not install
+the APK or launch its Activity. It links only game asset directories into a
+unique `/data/local/tmp/arisa32-dc2dm-save-*` fixture so profile discovery cannot
+mix the player's progress with the staged flags. All saves are written there.
+Logs, APK/JNI hashes, and captures are copied to `build/dc2dm-save-validation/`.
+See [the validation report](../../docs/dc2dm-save-progress-validation.md) for
+results and the limits of native-PC compatibility.

@@ -252,6 +252,21 @@ void native_filenames(const fs::path& root) {
     CHECK(dc4::latest_save(classic,0x9969)==copy);
     fs::last_write_time(numbered,baseline+std::chrono::hours(1));
     CHECK(dc4::latest_save(classic,0x9969)==numbered);
+    const auto dm=directory/"dm";fs::create_directories(dm);
+    CHECK(dc4::save_target(dm,0x9D72,0).filename()=="DC2DM01.dat");
+    CHECK(dc4::save_target(dm,0x9D72,1).filename()=="DC2DM04.dat");
+    CHECK(dc4::save_target(dm,0x9D72,100).filename()=="DC2DM103.dat");
+    for(int logical=0;logical<=100;++logical)
+        CHECK(dc4::save_slot_number(dc4::save_target(dm,0x9D72,logical).filename().string(),0x9D72)==logical);
+    CHECK(dc4::save_slot_number("DC2DM02.dat",0x9D72)==-1);
+    CHECK(dc4::save_slot_number("DC2DM03.dat",0x9D72)==-1);
+    CHECK(dc4::save_slot_number("DC2DM04.dat.arisa",0x9D72)==-1);
+    const auto dm_auto=dm/"dc2dm02.DAT", dm_latest=dm/"dc2dm03.DAT";
+    write_fixture(dm/"autosave.dc4sav","legacy auto");
+    CHECK(dc4::auto_save(dm,0x9D72)==dm/"autosave.dc4sav");
+    write_fixture(dm_auto,"native auto");write_fixture(dm_latest,"latest");
+    CHECK(dc4::auto_save(dm,0x9D72)==dm_auto && dc4::auto_save_target(dm,0x9D72)==dm_auto);
+    CHECK(dc4::latest_save(dm,0x9D72)==dm_latest);
     write_fixture(classic/"DC2PC00.dat","quick");
     fs::last_write_time(classic/"DC2PC00.dat",baseline+std::chrono::hours(2));
     CHECK(dc4::latest_save(classic,0x9969)==numbered);

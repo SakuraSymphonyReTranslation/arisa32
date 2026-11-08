@@ -9,6 +9,7 @@ import java.util.Map;
 final class NativeSaveFiles {
     private NativeSaveFiles() {}
     private static int physical(String prefix, int first, int logical) {
+        if (prefix.equalsIgnoreCase("DC2DM") && logical == 0) return 1;
         if (!prefix.equalsIgnoreCase("DC2PC")) return logical+first-1;
         if (logical==0) return 0;
         return logical<=3 ? logical+1 : 8+((logical-4)/5)*8+(logical-4)%5;
@@ -24,6 +25,10 @@ final class NativeSaveFiles {
         String stem = prefix.toLowerCase(Locale.ROOT);
         if (!lower.matches(stem + "[0-9]{2,3}\\.dat")) return -1;
         int physical = Integer.parseInt(lower.substring(stem.length(), lower.length()-4));
+        if (prefix.equalsIgnoreCase("DC2DM")) {
+            if (physical == 1) return 0;
+            return physical >= 4 && physical <= 103 ? physical-3 : -1;
+        }
         if (prefix.equalsIgnoreCase("DC2PC")) {
             if (physical==0) return 0;
             if (physical>=2 && physical<=4) return physical-1;
@@ -59,7 +64,7 @@ final class NativeSaveFiles {
         return dir == null ? null : resolve(dir, lookup(dir), prefix, first, logical);
     }
     static File latestCopy(File dir, String prefix) {
-        return lookup(dir).get((prefix+"01.dat").toLowerCase(Locale.ROOT));
+        return lookup(dir).get((prefix+(prefix.equalsIgnoreCase("DC2DM") ? "03.dat" : "01.dat")).toLowerCase(Locale.ROOT));
     }
     static File[] resolveAll(File dir, String prefix, int first, int count) {
         File[] saves = new File[count+1];

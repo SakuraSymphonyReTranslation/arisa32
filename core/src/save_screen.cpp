@@ -679,7 +679,7 @@ void SaveScreen::draw_dc2dm(const std::vector<SaveSlot>& slots, int mx, int my, 
         const int index = dc2dm_slot_index(visible);
         if (!special && index < 0) continue;
         const int x = visible < 5 ? 248 : 584, y = 80 + visible % 5 * 84;
-        const SaveSlot* slot = special ? (visible == 0 ? &quick_slot_ : visible == 2 ? &latest_slot_ : nullptr)
+        const SaveSlot* slot = special ? (visible == 0 ? &quick_slot_ : visible == 2 ? &latest_slot_ : &auto_slot_)
             : size_t(index) < slots.size() ? &slots[size_t(index)] : nullptr;
         const bool occupied = slot && slot->occupied;
         const SaveAction action = !special ? SaveAction{SaveActionType::Slot, index}

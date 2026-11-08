@@ -95,9 +95,13 @@ static void dc2dm_voice_prefetch() {
     voice_command(0x37, "next"); dialogue("FIRST");
     voice_command(0x36, "current"); voice_command(0x37, "next"); dialogue("CURRENT");
     voice_command(0x37, "next"); dialogue("NARRATION");
+    script.push_back(0x4E);
+    for (unsigned char ch : std::string("Yoshiyuki")) script.push_back(uint8_t(ch - 0x20));
+    script.push_back(0); dialogue("MC");
     voice_command(0x36, "next"); voice_command(0x37, "current"); dialogue("NEXT");
     script.push_back(0);
-    const auto path = directory / "voice-sequence.mes";
+    std::filesystem::create_directories(directory / "MES");
+    const auto path = directory / "MES/voice-sequence.mes";
     {
         std::ofstream file(path, std::ios::binary);
         file.write(reinterpret_cast<const char*>(script.data()), std::streamsize(script.size()));
@@ -111,13 +115,22 @@ static void dc2dm_voice_prefetch() {
           runner.last_voice().empty() && !runner.voice_playing(), "runner ignores narration prefetch");
     check(runner.advance_to_next_text() && runner.current_line() == "CURRENT" &&
           runner.last_voice() == "current" && runner.voice_playing(), "runner retains played voice through prefetch");
+    render(sequence_audio, 8);
+    check(!runner.voice_playing() && runner.last_voice() == "current" && runner.replay_voice(),
+          "completed line keeps its own replay available");
     render(sequence_audio, 2);
     check(runner.advance_to_next_text() && runner.current_line() == "NARRATION" &&
           runner.last_voice().empty() && sequence_audio.channel_position(8) == 2,
           "runner advances to narration without restarting or associating another voice");
+    std::vector<uint8_t> silent_line;
+    check(runner.capture_state(&silent_line) && !runner.replay_voice(), "capture narration with no replay");
+    check(runner.advance_to_next_text() && runner.speaker() == "Yoshiyuki" &&
+          runner.last_voice().empty() && !runner.replay_voice(), "unvoiced Yoshiyuki cannot replay another character");
     check(runner.advance_to_next_text() && runner.current_line() == "NEXT" &&
           runner.last_voice() == "next" && render(sequence_audio, 8)[0] == 17 * 256 && !runner.voice_playing(),
           "runner plays deferred voice once at its own dialogue");
+    check(runner.restore_state(silent_line) && runner.current_line() == "NARRATION" &&
+          runner.last_voice().empty() && !runner.replay_voice(), "restoring DC2DM narration keeps replay unavailable");
     for (uint8_t version : {0xAA, 0xAB}) {
         std::filesystem::create_directories(directory / "MES");
         const auto modern_path = directory / "MES/modern-voice-sequence.mes";

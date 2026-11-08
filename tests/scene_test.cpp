@@ -963,6 +963,24 @@ void native_save_regressions(const fs::path& root) {
 void dc2dm_scene_regressions(const fs::path& root) {
     struct DmScript : Script {
         DmScript() { bytes[10] = 0x72; bytes[11] = 0x9D; }
+        void labels() {
+            dc4::MesFile mes; CHECK(mes.load(bytes.data(),bytes.size()));
+            dc4::MesStream stream(mes); dc4::MesCommand c;
+            std::vector<uint32_t> offsets(1,3);
+            while(stream.next(&c)) if(c.op==3 || c.op==4) {
+                const size_t id=c.p1 | size_t(c.p2)<<8;
+                if(id>=offsets.size()) offsets.resize(id+1,3);
+                offsets[id]=c.pos;
+            }
+            std::vector<uint8_t> indexed(4+offsets.size()*6,0);
+            indexed[0]=uint8_t(offsets.size());indexed[1]=uint8_t(offsets.size()>>8);
+            for(size_t i=0;i<offsets.size();++i) {
+                for(int n=0;n<4;++n)indexed[4+i*4+n]=uint8_t(offsets[i]>>(8*n));
+                indexed[4+offsets.size()*4+i*2]=uint8_t(i);
+                indexed[5+offsets.size()*4+i*2]=uint8_t(i>>8);
+            }
+            indexed.insert(indexed.end(),bytes.begin()+10,bytes.end());bytes.swap(indexed);
+        }
         void param(uint8_t op, uint8_t value, const std::string& name) {
             bytes.push_back(op); bytes.push_back(value);
             bytes.insert(bytes.end(), name.begin(), name.end()); bytes.push_back(0);
@@ -977,7 +995,8 @@ void dc2dm_scene_regressions(const fs::path& root) {
             words(0x54, x, y, x + w, y + h); string(0x3D, action);
             words(0x55, x, y, 0, 0); words(0x57, w, h, sheet, 99);
             words(0x55, x, y, 32, 0); words(0x57, w, h, sheet, 1);
-            if (std::strcmp(action, ":qs") == 0 || std::strcmp(action, ":ql") == 0) {
+            if (std::strcmp(action, ":qs") == 0 || std::strcmp(action, ":ql") == 0 ||
+                std::strcmp(action, ":torisetu") == 0) {
                 words(0x55, x, y, 0, 32); words(0x57, w, h, sheet, 2);
                 words(0x55, 616, 348, 32, 32); words(0x57, 28, 28, sheet, 2);
             }
@@ -990,6 +1009,7 @@ void dc2dm_scene_regressions(const fs::path& root) {
     DmScript ui;
     ui.param(0x2C, 0, "SYSTEM\\MESWIN");
     ui.button(907, 416, 38, 37, ":n"); ui.end_group();
+    ui.button(640, 420, 28, 28, ":torisetu");
     ui.button(676, 420, 28, 28, ":auto");
     ui.button(856, 420, 28, 28, ":option");
     const std::pair<int, const char*> persistence_controls[] = {
@@ -997,9 +1017,10 @@ void dc2dm_scene_regressions(const fs::path& root) {
     for (const auto& control : persistence_controls) ui.button(control.first, 420, 28, 28, control.second);
     ui.button(620, 424, 16, 22, ":n"); ui.end_group();
     ui.button(100, 100, 28, 28, "confirmation"); ui.end_group();
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         const std::string tag = ":" + std::to_string(i + 1);
         ui.button(300, 64 + i * 60, 28, 28, tag.c_str());
+        ui.words(0x55, 300, 64 + i * 60, 0, 32); ui.words(0x57, 28, 28, 21, 2);
         ui.words(0x56, 312, 80 + i * 60, 135, 99); ui.string(0x44, "");
     }
     ui.end_group();
@@ -1016,27 +1037,98 @@ void dc2dm_scene_regressions(const fs::path& root) {
     write_file(data / "MES/advmenu.mes", sidebar.bytes);
     DmScript story;
     story.string(0x34, "autoload");
+    story.bytes.insert(story.bytes.end(), {4, 1, 0});
     story.bytes.insert(story.bytes.end(), {0x19, 0, 0});
     story.string(0x3D, "autoload");
     story.words(0x6B, 20, 40, 0, 0);
     story.words(0x6B, 100, 512, 322, 16);
     story.param(0x2B, 2, "BST\\sprite");
     story.param(0x2E, 0, ".");
+    story.bytes.insert(story.bytes.end(), {3, 7, 0});
     story.text(0x4D, "CAPTION"); story.text(0x4E, "Sakura");
-    story.text(0x4F, "FIRST_LINE"); story.text(0x50, "CAPTION"); story.text(0x4F, "SECOND");
+    story.text(0x4F, "FIRST_LINE");
+    story.bytes.insert(story.bytes.end(), {6, 0, 0, 3, 8, 0});
+    story.text(0x50, "CAPTION"); story.text(0x4F, "SECOND");
     story.text(0x4F, "\x82\xa0_");
     const std::string mixed_line = "\x81\x75" "Bukan,_bukan,_hurufnya_beda._Karena_dia_\n"
         "menenun_(\x90\x44/Ori),_makanya_Orihime" "\x81\x76";
     story.text(0x4F, mixed_line);
     story.text(0x4F, "\x82\xa0\x82\xa2\x82\xa4_PC_\x82\xa6\x82\xa8");
     story.bytes.push_back(0);
+    story.labels();
     write_file(data / "MES/story.mes", story.bytes);
     dc4scene::SceneRunner scene(data.string());
     CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
-    CHECK(scene.buttons().size() == 9);
+    CHECK(scene.buttons().size() == 10);
     CHECK(scene.load_script((data / "MES/story.mes").string()));
+    const auto automatic_path=data/"SaveData/DC2DM02.dat";
+    scene.set_auto_save_path(automatic_path.string());
     CHECK(scene.advance_to_next_text());
     CHECK(scene.current_line() == "FIRST_LINE" && scene.speaker() == "Sakura");
+    CHECK(fs::is_regular_file(automatic_path));
+    CHECK(fs::is_regular_file(automatic_path.string()+".arisa"));
+    dc4scene::SceneRunner automatic(data.string());
+    CHECK(automatic.load_script((data/"MES/story.mes").string()));
+    CHECK(automatic.load_state(automatic_path.string()));
+    CHECK(automatic.current_line().empty());
+    CHECK(automatic.advance_to_next_text() && automatic.current_line()=="FIRST_LINE");
+    fs::remove(automatic_path.string()+".arisa");
+    CHECK(automatic.load_state(automatic_path.string()));
+    CHECK(automatic.current_line().empty());
+    CHECK(automatic.advance_to_next_text() && automatic.current_line()=="FIRST_LINE");
+    dc4scene::SceneRunner replay_auto(data.string());
+    CHECK(replay_auto.load_script((data/"MES/story.mes").string()));
+    replay_auto.set_variable(9,7,1);
+    const auto replay_auto_path=data/"SaveData/replay.dat";
+    replay_auto.set_auto_save_path(replay_auto_path.string());
+    CHECK(replay_auto.advance_to_next_text());
+    CHECK(!fs::exists(replay_auto_path));
+    DmScript choice;
+    choice.bytes.insert(choice.bytes.end(),{3,1,0});
+    choice.text(0x4E,"Sakura");choice.text(0x4F,"QUESTION");
+    choice.bytes.insert(choice.bytes.end(),{6,0,0,4,2,0,7,0,0});
+    choice.string(0x43,"chosen");choice.text(0x50,"Choose");
+    choice.bytes.insert(choice.bytes.end(),{9,0,0});
+    choice.string(0x34,"chosen");choice.text(0x4F,"CHOSEN");choice.bytes.push_back(0);
+    choice.labels();write_file(data/"MES/choice.mes",choice.bytes);
+    dc4scene::SceneRunner choice_scene(data.string());
+    CHECK(choice_scene.load_script((data/"MES/choice.mes").string()));
+    CHECK(choice_scene.advance_to_next_text());
+    CHECK(!choice_scene.advance_to_next_text() && choice_scene.waiting_for_choice());
+    std::vector<uint8_t> choice_save;std::string choice_error;
+    CHECK(choice_scene.capture_pc_save(&choice_save,&choice_error));
+    CHECK(choice_scene.restore_pc_save(choice_save,&choice_error));
+    CHECK(choice_scene.waiting_for_choice() && choice_scene.current_line()=="QUESTION");
+    CHECK(choice_scene.choices().size()==1 && choice_scene.choices()[0].text=="Choose");
+    CHECK(choice_scene.choose(0));
+    CHECK(choice_scene.advance_to_next_text() && choice_scene.current_line()=="CHOSEN");
+    scene.set_variable(100,1,1);
+    CHECK(scene.variable(10,1)==1);
+    scene.set_variable(10,2,1);
+    CHECK(scene.variable(100,2)==1 && scene.variable(100,100)==0);
+    std::vector<uint8_t> native;
+    std::string native_error;
+    CHECK(scene.capture_pc_save(&native,&native_error));
+    CHECK(native.size()==0x3FE0 && native[0]==0xE1 && native[1]==0x3F);
+    dc4scene::SceneRunner imported(data.string());
+    CHECK(imported.load_script((data / "MES/story.mes").string()));
+    CHECK(imported.restore_pc_save(native,&native_error));
+    CHECK(imported.current_line()=="FIRST_LINE" && imported.speaker()=="Sakura");
+    CHECK(imported.sprite(0).cur_x==20 && imported.sprite(0).cur_y==40);
+    CHECK(imported.sprite(0).x==512 && imported.sprite(0).y==322);
+    CHECK(imported.variable(100,1)==1 && imported.variable(100,2)==1);
+    CHECK(imported.advance_to_next_text() && imported.current_line()=="SECOND");
+    auto broken=native;broken[0]=0;
+    CHECK(!imported.restore_pc_save(broken,&native_error));
+    CHECK(imported.current_line()=="SECOND");
+    const auto native_path=data/"SaveData/DC2DM04.dat";
+    CHECK(scene.save_state(native_path.string()));
+    CHECK(fs::is_regular_file(native_path.string()+".arisa"));
+    CHECK(imported.load_state(native_path.string()));
+    CHECK(imported.current_line()=="FIRST_LINE");
+    native[4]^=1;write_file(native_path,native);
+    CHECK(imported.load_state(native_path.string()));
+    CHECK(imported.current_line()=="FIRST_LINE");
     CHECK(scene.visible_text() == u"FIRST LINE");
     CHECK(scene.sprite(0).visible && scene.sprite(0).img.valid());
     CHECK(scene.sprite(0).cur_x == 20 && scene.sprite(0).cur_y == 40);
@@ -1064,7 +1156,7 @@ void dc2dm_scene_regressions(const fs::path& root) {
     CHECK(scene.capture_state(&snapshot));
     dc4scene::SceneRunner restored(data.string());
     CHECK(restored.restore_state(snapshot)); restored.set_message_visible(true);
-    CHECK(restored.buttons().size() == 9);
+    CHECK(restored.buttons().size() == 10);
     action = restored.hit_test(850, 530); CHECK(action && *action == ":auto");
     restored.set_message_visible(false); restored.draw(-1);
     CHECK(restored.frame() == scene.frame());
@@ -1155,7 +1247,7 @@ void dc2dm_scene_regressions(const fs::path& root) {
     CHECK(scene.load_script((data / "MES/selection.mes").string()));
     scene.set_message_visible(true);
     CHECK(!scene.advance_to_next_text()); CHECK(scene.waiting_for_time());
-    CHECK(scene.buttons().size() == 10);
+    CHECK(scene.buttons().size() == 11);
     action = scene.hit_test(465, 332); CHECK(action && *action == "chapter");
     CHECK(scene.hit_test(850, 530) == nullptr);
     scene.draw(-1); const auto normal = scene.frame();
@@ -1164,28 +1256,77 @@ void dc2dm_scene_regressions(const fs::path& root) {
     CHECK(scene.jump_to_label("chapter")); CHECK(scene.advance_to_next_text());
     CHECK(scene.current_line() == "CHAPTER");
 
-    DmScript choices;
-    choices.text(0x4F, "QUESTION");
-    choices.bytes.insert(choices.bytes.end(), {0x07, 1, 0});
-    for (int i = 0; i < 4; ++i) {
-        choices.string(0x43, "branch" + std::to_string(i));
-        choices.text(0x50, "OPTION_" + std::to_string(i));
+    const std::vector<uint8_t> voice_sample{'X','P','C','M',8,0,0,0,0,0,0,0,
+        1,0,1,0,0x44,0xAC,0,0,0x44,0xAC,0,0,1,0,8,0,129,130,131,132,133,134,135,136};
+    write_file(data / "current.pcm", voice_sample);
+    write_file(data / "next.pcm", voice_sample);
+    DmScript voice_lines;
+    voice_lines.string(0x36, "current"); voice_lines.text(0x4E, "Anzu"); voice_lines.text(0x4F, "VOICED");
+    voice_lines.bytes.insert(voice_lines.bytes.end(), {6, 0, 0});
+    voice_lines.text(0x4E, "Yoshiyuki"); voice_lines.text(0x4F, "UNVOICED");
+    voice_lines.bytes.insert(voice_lines.bytes.end(), {6, 0, 0});
+    voice_lines.string(0x37, "next"); voice_lines.text(0x4F, "NARRATION");
+    voice_lines.bytes.insert(voice_lines.bytes.end(), {6, 0, 0});
+    voice_lines.string(0x36, "next"); voice_lines.text(0x4E, "Yoshiyuki_/_Otome");
+    voice_lines.text(0x4F, "JOINT"); voice_lines.bytes.push_back(0);
+    write_file(data / "MES/voice-lines.mes", voice_lines.bytes);
+    CHECK(scene.load_script((data / "MES/voice-lines.mes").string()));
+    CHECK(scene.advance_to_next_text() && scene.last_voice() == "current");
+    action = scene.hit_test(805, 530); CHECK(action && *action == ":torisetu");
+    scene.set_pointer(-1, -1, false); scene.draw(-1); const auto voiced = scene.frame();
+    CHECK(scene.advance_to_next_text() && scene.last_voice().empty());
+    action = scene.hit_test(805, 530); CHECK(action && *action == ":disabled");
+    std::vector<uint8_t> unvoiced;
+    CHECK(scene.capture_state(&unvoiced));
+    scene.set_pointer(-1, -1, false); scene.draw(-1); const auto silent = scene.frame();
+    const size_t replay_pixel = (size_t(530) * 1280 + 805) * 4;
+    CHECK(voiced[replay_pixel + 2] == 40 && silent[replay_pixel + 2] == 240);
+    scene.set_pointer(805, 530, false); scene.draw(-1); CHECK(scene.frame() == silent);
+    scene.set_pointer(805, 530, true); scene.draw(-1); CHECK(scene.frame() == silent);
+    CHECK(scene.advance_to_next_text() && scene.last_voice().empty());
+    action = scene.hit_test(805, 530); CHECK(action && *action == ":disabled");
+    CHECK(scene.advance_to_next_text() && scene.last_voice() == "next");
+    action = scene.hit_test(805, 530); CHECK(action && *action == ":torisetu");
+    CHECK(scene.restore_state(unvoiced) && scene.last_voice().empty());
+    action = scene.hit_test(805, 530); CHECK(action && *action == ":disabled");
+
+    for (int count = 1; count <= 5; ++count) {
+        DmScript choices;
+        choices.text(0x4F, "QUESTION");
+        choices.bytes.insert(choices.bytes.end(), {0x07, 1, 0});
+        for (int i = 0; i < count; ++i) {
+            choices.string(0x43, "branch" + std::to_string(i));
+            choices.text(0x50, "OPTION_" + std::to_string(i));
+        }
+        choices.bytes.insert(choices.bytes.end(), {0x09, 0, 0});
+        for (int i = 0; i < count; ++i) {
+            choices.string(0x34, "branch" + std::to_string(i));
+            choices.text(0x4F, "BRANCH" + std::to_string(i));
+        }
+        choices.bytes.push_back(0);
+        write_file(data / "MES/choices.mes", choices.bytes);
+        CHECK(scene.load_script((data / "MES/choices.mes").string()));
+        CHECK(scene.advance_to_next_text()); CHECK(!scene.advance_to_next_text());
+        CHECK(scene.waiting_for_choice() && scene.choices().size() == size_t(count));
+        std::vector<uint8_t> saved;
+        CHECK(scene.capture_state(&saved));
+        const int top = int(std::lround((240 - count * 30) * 1.25));
+        CHECK(scene.choice_at(350, top + 5) == -1);
+        CHECK(scene.choice_at(380, top - 1) == -1);
+        CHECK(!scene.choose(-1) && !scene.choose(count));
+        for (int i = 0; i < count; ++i) {
+            CHECK(scene.restore_state(saved));
+            CHECK(scene.choice_at(380, top + 5 + i * 75) == i);
+            scene.set_pointer(-1, -1, false); scene.draw(-1); const auto normal = scene.frame();
+            scene.set_pointer(380, top + 5 + i * 75, false); scene.draw(-1);
+            CHECK(scene.frame() != normal);
+            const auto hovered = scene.frame();
+            scene.set_pointer(380, top + 5 + i * 75, true); scene.draw(-1);
+            CHECK(scene.frame() != hovered);
+            CHECK(scene.choose(i)); CHECK(scene.advance_to_next_text());
+            CHECK(scene.current_line() == "BRANCH" + std::to_string(i));
+        }
     }
-    choices.bytes.insert(choices.bytes.end(), {0x09, 0, 0});
-    for (int i = 0; i < 4; ++i) {
-        choices.string(0x34, "branch" + std::to_string(i));
-        choices.text(0x4F, "BRANCH" + std::to_string(i));
-    }
-    choices.bytes.push_back(0);
-    write_file(data / "MES/choices.mes", choices.bytes);
-    CHECK(scene.load_script((data / "MES/choices.mes").string()));
-    CHECK(scene.advance_to_next_text()); CHECK(!scene.advance_to_next_text());
-    CHECK(scene.waiting_for_choice() && scene.choices().size() == 4);
-    for (int i = 0; i < 4; ++i) CHECK(scene.choice_at(380, 85 + i * 75) == i);
-    CHECK(scene.choice_at(350, 85) == -1);
-    scene.set_pointer(-1, -1, false); scene.draw(-1); const auto choices_normal = scene.frame();
-    scene.set_pointer(380, 85, false); scene.draw(-1); CHECK(scene.frame() != choices_normal);
-    CHECK(scene.choose(3)); CHECK(scene.advance_to_next_text()); CHECK(scene.current_line() == "BRANCH3");
 }
 
 void dc2dm_game_regressions(const fs::path& data, const fs::path& root) {
@@ -1201,6 +1342,85 @@ void dc2dm_game_regressions(const fs::path& data, const fs::path& root) {
         }
         return false;
     };
+    if(const char* saves=std::getenv("DC2DM_SAVE_DATA")) for(const auto& entry:fs::directory_iterator(saves)) {
+        if(!entry.is_regular_file() || entry.path().filename().string().find("DC2DM")!=0 || entry.path().extension()!=".dat")continue;
+        dc4scene::SceneRunner imported(data.string());
+        imported.set_font(&font);
+        if(!imported.load_state(entry.path().string())) {
+            std::cerr<<entry.path()<<": "<<imported.last_error()<<'\n';CHECK(false);continue;
+        }
+        const bool automatic=imported.current_line().empty();
+        const auto exported=root/entry.path().filename();
+        if(!imported.save_state(exported.string())) {
+            std::cerr<<entry.path()<<": "<<imported.last_error()<<'\n';CHECK(false);continue;
+        }
+        fs::remove(exported.string()+".arisa");
+        dc4scene::SceneRunner restored(data.string());restored.set_font(&font);
+        CHECK(restored.load_state(exported.string()));
+        CHECK(restored.current_line()==imported.current_line());
+        CHECK(restored.speaker()==imported.speaker());
+        if(automatic) {CHECK(next_line(imported));CHECK(next_line(restored));}
+        imported.draw(-1);restored.draw(-1);CHECK(restored.frame()==imported.frame());
+        CHECK(next_line(imported));CHECK(next_line(restored));
+        CHECK(restored.current_line()==imported.current_line());
+        std::cout<<"DC2DM native round trip: "<<entry.path().filename()<<'\n';
+    }
+    {
+        dc4scene::SceneRunner scene(data.string());
+        scene.set_font(&font);
+        CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+        CHECK(scene.load_script((data / "MES/mar_0129_e1.mes").string()));
+        bool found = false;
+        for (int line = 0; line < 300 && next_line(scene); ++line) {
+            if (scene.current_line().find("Apa_yang_sebaiknya_aku_katakan_pada_Anzu") != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        CHECK(found && scene.last_voice().empty() && !scene.replay_voice());
+        CHECK(!next_line(scene) && scene.waiting_for_choice());
+        CHECK(scene.choices().size() == 2);
+        CHECK(scene.choice_at(400, 230) == 0 && scene.choice_at(400, 305) == 1);
+        std::vector<uint8_t> saved;
+        CHECK(scene.capture_state(&saved));
+        std::vector<uint8_t> native_choice;
+        CHECK(scene.capture_pc_save(&native_choice));
+        if (const char* captures = std::getenv("DC2DM_CHOICE_CAPTURES"))
+            write_file(fs::path(captures) / "choice.dat", native_choice);
+        dc4scene::SceneRunner native_restored(data.string());
+        CHECK(native_restored.load_script((data / "MES/mar_0129_e1.mes").string()));
+        CHECK(native_restored.restore_pc_save(native_choice));
+        CHECK(native_restored.waiting_for_choice() && native_restored.choices().size() == 2);
+        CHECK(native_restored.current_line() == scene.current_line() && native_restored.last_voice().empty());
+        for (int branch = 0; branch < 2; ++branch) {
+            CHECK(scene.restore_state(saved));
+            scene.set_pointer(400, branch == 0 ? 230 : 305, false);
+            scene.draw(-1);
+            if (const char* captures = std::getenv("DC2DM_CHOICE_CAPTURES")) {
+                fs::create_directories(captures);
+                write_file(fs::path(captures) / ("choice-" + std::to_string(branch) + ".rgba"), scene.frame());
+            }
+            CHECK(scene.choose(branch) && next_line(scene));
+            CHECK(scene.speaker() == "Yoshiyuki" && scene.last_voice().empty());
+            auto first_line = scene.current_line();
+            first_line.erase(std::remove(first_line.begin(), first_line.end(), '\n'), first_line.end());
+            CHECK(first_line.find(branch == 0 ? "selamat_ulang_tahun_ya" : "tambah_tua_setahun_lagi") != std::string::npos);
+            const std::string expected_voice = branch == 0 ? "ANZ022" : "ANZ028";
+            bool first_voice = false, joined = false;
+            for (int line = 0; line < 50 && next_line(scene); ++line) {
+                if (!first_voice && !scene.last_voice().empty()) {
+                    CHECK(scene.last_voice().find(expected_voice) != std::string::npos);
+                    first_voice = true;
+                }
+                if (scene.current_line().find("Semuanya,_sekali_lagi_terima_kasih_buat_") != std::string::npos) {
+                    CHECK(scene.last_voice().find("ANZ031") != std::string::npos);
+                    joined = true;
+                    break;
+                }
+            }
+            CHECK(first_voice && joined);
+        }
+    }
     for (const auto& route : {std::pair<const char*, const char*>{"sce01", "MAR_0101_F1"},
                               {"sce02", "SIN_0326_F1"}, {"sce03", "SUC60_0811_A1_OTM"}}) {
         const int failures_before = failures;

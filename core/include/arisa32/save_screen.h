@@ -52,7 +52,9 @@ public:
     bool dc2dm() const { return dc2dm_; }
     int selected_icon() const { return selected_icon_; }
     bool choosing_icon() const { return choosing_icon_; }
-    void set_special_slots(const SaveSlot& quick, const SaveSlot& latest) { quick_slot_=quick; latest_slot_=latest; }
+    void set_special_slots(const SaveSlot& quick, const SaveSlot& latest, const SaveSlot& automatic = {}) {
+        quick_slot_=quick; latest_slot_=latest; auto_slot_=automatic;
+    }
     void set_mode(SaveMode mode);
     void set_page(int page);       // Clamp to available pages.
     void change_page(int delta);   // Wrap as in the original scripts.
@@ -108,7 +110,7 @@ private:
     bool loaded_ = false;
     bool dc2pc_ = false, dc2dm_ = false, choosing_icon_ = false;
     int selected_icon_ = -1, pressed_icon_ = -1;
-    SaveSlot quick_slot_, latest_slot_;
+    SaveSlot quick_slot_, latest_slot_, auto_slot_;
     bool latest_ = false, automatic_ = false, quick_ = false;
     bool config_ = false, title_ = false, quit_ = false;
     bool confirm_enabled_ = false;

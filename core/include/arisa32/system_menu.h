@@ -44,6 +44,7 @@ public:
     SystemMenu& operator=(const SystemMenu&) = delete;
     bool load(const std::string& data_dir, std::string* error = nullptr);
     bool loaded() const;
+    bool is_dc2dm() const;
     void open(SystemMenuPage page);
     // Restore the character tab and page from the last selected replay.
     void resume_scenes();
@@ -72,6 +73,7 @@ public:
               const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     SystemConfig config() const;
     int page_voice_event() const;
+    int page_voice_event(SystemMenuPage previous) const;
     std::string system_voice(int event_id) const;
     std::string title_music() const;
     std::string scene_ui_script() const;

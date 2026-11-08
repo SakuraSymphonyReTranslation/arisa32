@@ -258,18 +258,21 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
     try {
         if (!destination) throw std::runtime_error("missing native save destination");
         const bool classic = mes_.version == 0x9969;
-        if (!classic && mes_.version != 0xAAB6 && mes_.version != 0xABB6)
+        const bool dm = mes_.version == 0x9D72;
+        if (!classic && !dm && mes_.version != 0xAAB6 && mes_.version != 0xABB6)
             throw std::runtime_error("native saves are not supported for this game format");
-        if (current_line_.empty() || scene_end_ || comu_visible_ || !pending_movie_.empty() || script_wait_pending_)
+        if ((!dm && current_line_.empty()) || scene_end_ || comu_visible_ || !pending_movie_.empty() || script_wait_pending_)
             throw std::runtime_error("save at a dialogue or choice after the current sequence finishes");
         std::vector<dc4::MesCommand> commands;
         dc4::MesStream stream(mes_); dc4::MesCommand c;
         size_t target = size_t(-1);
         while (stream.next(&c)) {
             if (c.pos >= vm_.pos()) break;
-            if (c.op == 3 || (vm_.waiting_for_choice() && c.op == 4)) target = commands.size();
+            if (c.op == 3 || ((dm || vm_.waiting_for_choice()) && c.op == 4)) target = commands.size();
             commands.push_back(c);
         }
+        const bool automatic=dm && commands.size()>=2 && commands[commands.size()-2].op==0x19;
+        if(current_line_.empty() && !automatic)throw std::runtime_error("save at a dialogue or choice");
         if (target == size_t(-1)) throw std::runtime_error("no native scenario checkpoint at this position");
         const auto& marker = commands[target];
         const uint16_t id = uint16_t(marker.p1 | uint16_t(marker.p2) << 8);
@@ -286,7 +289,9 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
         uint32_t pc = 0; size_t matches = 0;
         while (pc_stream.next(&c)) if (c.op == marker.op && uint16_t(c.p1 | uint16_t(c.p2) << 8) == id) { pc = c.pos; ++matches; }
         if (matches != 1) throw std::runtime_error("native checkpoint is missing or ambiguous in the PC scenario");
-        std::vector<uint8_t> out(classic ? 0x2B20 : 0x56FE4, 0);
+        if (dm && (id>=original.labels.size() || original.labels[id].offset!=pc))
+            throw std::runtime_error("native DC2DM checkpoint table does not match the scenario");
+        std::vector<uint8_t> out(classic ? 0x2B20 : dm ? 0x3FE0 : 0x56FE4, 0);
         auto u32 = [&](size_t at, uint32_t value) { for(int i=0;i<4;++i) out.at(at+i)=uint8_t(value>>(8*i)); };
         auto u16 = [&](size_t at, uint16_t value) { out.at(at)=uint8_t(value);out.at(at+1)=uint8_t(value>>8); };
         auto number = [&](size_t at, float value) { uint32_t bits; std::memcpy(&bits,&value,4);u32(at,bits); };
@@ -337,6 +342,44 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
             // copying the local variables just as the PC save routine does.
             out[0x1389]=uint8_t(local.tm_mon+1);out[0x138A]=uint8_t(local.tm_mday);
             out[0x138B]=uint8_t(local.tm_hour);out[0x138C]=uint8_t(local.tm_min);out[0x138D]=uint8_t((local.tm_year+1900)%100);
+        } else if (dm) {
+            u32(0,0x3FE1); u32(0x5C8,pc); u32(0x5D0,id);
+            u32(0x5D4,automatic?uint32_t(-1):vm_.waiting_for_choice()?0x1B:6);
+            // The PC rebuilds the current line from its marker. A sentinel
+            // starts a fresh backlog instead of referring to another chapter.
+            u16(0x5DC,0xFFFF);
+            u32(0x5B8,audio.bgm_playing?uint32_t(audio.bgm_id):uint32_t(-1));
+            u32(0x5BC,1);
+            if (audio.looped_se.size()>1) throw std::runtime_error("too many native DC2DM looping effects");
+            if (!audio.looped_se.empty()) u32(0x5C0,uint32_t(audio.looped_se.front().id));
+            for (int bank=0;bank<=10;++bank) for(int i=0;i<100;++i)
+                out[0x2540+bank*100+i]=uint8_t(variable(bank,i));
+            out[0x28D9]=uint8_t(local.tm_mon+1);out[0x28DA]=uint8_t(local.tm_mday);
+            out[0x28DB]=uint8_t(local.tm_hour);out[0x28DC]=uint8_t(local.tm_min);
+            out[0x28DD]=uint8_t((local.tm_year+1900)%100);out[0x28DE]=uint8_t(local.tm_sec);
+            if (layers_.count(1)) name(0xD8,48,layers_.at(1).name);
+            for (int i=0;i<10;++i) {
+                const auto& sprite=sprites_[i];
+                const int slot=i<8?i+2:i+10;
+                if (sprite.visible) name(0xA8+slot*48,48,sprite.name);
+                if (i>=4) continue;
+                for (size_t base : {size_t(0x2E7C),size_t(0x2F2C)}) {
+                    const size_t at=base+i*44;
+                    u32(at,uint32_t(sprite.cur_x));u32(at+4,uint32_t(sprite.cur_y));
+                    u32(at+8,uint32_t(std::lround(sprite.scale*100)));
+                    u32(at+12,uint32_t(sprite.x));u32(at+16,uint32_t(sprite.y));
+                }
+            }
+            u32(0x2E74,uint32_t(sprites_[8].cur_x));u32(0x2E78,uint32_t(sprites_[8].cur_y));
+            for (const auto& sheet:sheets_) if(sheet.first>=10 && sheet.first<=25 && sheet.first!=18 && sheet.first!=19)
+                name(0xA8+sheet.first*48,48,sheet.second.name);
+            if(scene_chips_.size()>30) throw std::runtime_error("too many native DC2DM scene chips");
+            u32(0x2FF0,uint32_t(scene_chips_.size()));
+            for(size_t i=0;i<scene_chips_.size();++i) {
+                const auto& chip=scene_chips_[i];const size_t at=0x2FF8+i*64;
+                u32(at+8,chip.dst_x);u32(at+12,chip.dst_y);u32(at+20,chip.sheet);
+                u32(at+28,chip.src_x);u32(at+32,chip.src_y);u32(at+36,chip.w);u32(at+40,chip.h);
+            }
         } else {
             u32(0xAF4,pc);u32(0xAFC,id);u32(0xB00,pc);
             // Native slot data starts at game-state +0x4B80; ambient controls
@@ -448,6 +491,7 @@ bool SceneRunner::capture_pc_save(std::vector<uint8_t>* destination, std::string
 }
 
 bool SceneRunner::save_load_allowed() const {
+    if (minigame_active()) return false;
     if (dc2dm_ui_ || mes_.dialect == dc4::MesDialect::ClassicDM)
         return variable(9, 7) == 0;
     if (dc2pc_ui_ || dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
@@ -458,7 +502,21 @@ bool SceneRunner::save_load_allowed() const {
 }
 
 void SceneRunner::finish_replay() {
+    if (mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72) {
+        finish_dc2dm_transition();
+        dc2dm_transition_ = {};
+        dc2dm_transition_mask_ = {};
+        script_wait_pending_ = false;
+        script_wait_ms_ = 0;
+        script_wait_skippable_ = true;
+    }
     if (save_load_allowed()) return;
+    if (minigame_) {
+        minigame_.reset();
+        script_wait_pending_ = false;
+        script_wait_ms_ = 0;
+        script_wait_skippable_ = true;
+    }
     set_variable(9, 7, 0);
     if (dc2pc_ui_ || dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
         set_variable(3, 30, 0);
@@ -522,6 +580,9 @@ bool SceneRunner::load_state(const std::string& filename) {
 
 bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
     dc4::MesFile identity;
+    if (mes_.version == 0x9D72 ||
+        (identity.load_file(dc4::resolve_asset(data_ + "/MES/main.mes")) && identity.version == 0x9D72))
+        return restore_dc2dm_pc_save(bytes, restore_error);
     if (mes_.version == 0x9969 ||
         (identity.load_file(dc4::resolve_asset(data_ + "/MES/main.mes")) && identity.version == 0x9969))
         return restore_dc2pc_pc_save(bytes, restore_error);
@@ -707,6 +768,143 @@ bool SceneRunner::restore_pc_save(const std::vector<uint8_t>& bytes, std::string
         load_ui_script(data_+"/MES/win_size.mes");taskbar_visible_=true;
         if(restore_error)restore_error->clear();return true;
     } catch(const std::exception& error){if(restore_error)*restore_error=error.what();return false;}
+}
+
+bool SceneRunner::restore_dc2dm_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
+    try {
+        if(bytes.size()!=0x3FE0) throw std::runtime_error("truncated or unsupported DC2DM PC save");
+        const auto integer=[&](size_t at){Reader in{bytes,at};return in.u32();};
+        const auto name=[&](size_t at,size_t capacity){
+            size_t end=at;while(end<at+capacity && bytes[end])++end;
+            if(end==at+capacity)throw std::runtime_error("unterminated DC2DM save resource");
+            std::string value(reinterpret_cast<const char*>(bytes.data()+at),end-at);
+            if(!value.empty() && !resource_name(value))throw std::runtime_error("unsafe DC2DM save resource");
+            return value;
+        };
+        if(integer(0)!=0x3FE1)throw std::runtime_error("unsupported DC2DM save version");
+        std::string script=name(8,208);
+        if(!resource_name(script,false))throw std::runtime_error("invalid DC2DM saved scenario");
+        if(script.find('.')==std::string::npos)script+=".mes";
+        SceneRunner candidate(data_);
+        if(!candidate.load_script(data_+"/MES/"+script))throw std::runtime_error(candidate.last_error_);
+        if(candidate.mes_.version!=0x9D72)throw std::runtime_error("PC save scenario is not DC2DM");
+        const uint32_t checkpoint=integer(0x5D0), stop=integer(0x5D4);
+        if(checkpoint>65535 || (stop!=6 && stop!=0x1B && stop!=uint32_t(-1)))
+            throw std::runtime_error("unsupported DC2DM save checkpoint");
+        std::vector<dc4::MesCommand> commands;
+        dc4::MesStream scan(candidate.mes_);dc4::MesCommand command;
+        size_t target=size_t(-1);
+        while(scan.next(&command)) {
+            const bool marker=command.op==(stop==6?3:4) &&
+                (uint32_t(command.p1)|uint32_t(command.p2)<<8)==checkpoint;
+            const bool automatic=stop==uint32_t(-1) && checkpoint<candidate.mes_.labels.size() &&
+                command.pos==candidate.mes_.labels[checkpoint].offset && command.op==0x19;
+            if(marker || automatic) {
+                if(target!=size_t(-1))throw std::runtime_error("ambiguous DC2DM save checkpoint");
+                target=commands.size();
+            }
+            commands.push_back(command);
+        }
+        if(target==size_t(-1))throw std::runtime_error("saved DC2DM checkpoint is unavailable");
+        for(int bank:{96,97,98,100}) {
+            const int count=bank==97?1200:bank==98?650:bank==100?100:400;
+            for(int i=0;i<count;++i)candidate.set_variable(bank,i,variable(bank,i));
+        }
+        for(int bank=0;bank<10;++bank)for(int i=0;i<100;++i)
+            candidate.set_variable(bank,i,bytes[0x2540+bank*100+i]);
+        for(int i=0;i<21;++i) candidate.set_variable(100,i,std::max(variable(100,i),int(bytes[0x2928+i])));
+        uint32_t resume=commands[target].pos+uint32_t(commands[target].size);
+        if(commands[target].op==0x19 || (stop==uint32_t(-1) && commands[target].op==4 &&
+            target+1<commands.size() && commands[target+1].op==0x19)) {
+            if(commands[target].op==4)resume=commands[target+1].pos+uint32_t(commands[target+1].size);
+            const size_t tag=target+(commands[target].op==4?2:1);
+            if(tag<commands.size() && commands[tag].kind==dc4::CmdKind::Str)
+                resume=commands[tag].pos+uint32_t(commands[tag].size);
+            candidate.vm_.seek_to_pc(resume);
+        } else if(commands[target].op==4) {
+            for(size_t i=0;i<target;++i) {
+                if(commands[i].op==3)candidate.speaker_.clear();
+                candidate.dispatch_text_command(dc4::mes_engine_command(commands[i]));
+            }
+            candidate.vm_.seek_to_pc(resume);
+            size_t budget=0;
+            while(candidate.vm_.next(&command))
+                if(++budget>256 || command.opcode()==dc4::Opcode::TRANSFER)
+                    throw std::runtime_error("invalid DC2DM saved choice block");
+            if(!candidate.vm_.waiting_for_choice())throw std::runtime_error("DC2DM saved choice is unavailable");
+        } else {
+            for(size_t i=target+1;i<commands.size();++i) {
+                const auto& raw=commands[i];
+                if(raw.op==3 || raw.op==4 || raw.op==0)break;
+                candidate.dispatch_text_command(dc4::mes_engine_command(raw));
+                resume=raw.pos+uint32_t(raw.size);
+                if(raw.op==6)break;
+            }
+            if(candidate.current_line_.empty())throw std::runtime_error("DC2DM saved dialogue is unavailable");
+            candidate.vm_.seek_to_pc(resume);
+        }
+        const auto background=name(0xD8,48);
+        if(!background.empty()) {
+            candidate.load_layer(1,background);
+            if(!candidate.layers_.count(1))throw std::runtime_error("saved DC2DM background is unavailable: "+background);
+        }
+        for(int i=0;i<10;++i) {
+            const int slot=i<8?i+2:i+10;
+            const auto resource=name(0xA8+slot*48,48);
+            if(!resource.empty()) {
+                candidate.load_bst(i,resource,slot);
+                if(!candidate.sprites_[i].img.valid())throw std::runtime_error("saved DC2DM sprite is unavailable: "+resource);
+            }
+            auto& sprite=candidate.sprites_[i];
+            if(i<4) {
+                const size_t at=0x2E7C+i*44;
+                const auto scale=integer(at+8);
+                if(scale>10000)throw std::runtime_error("invalid DC2DM saved sprite scale");
+                sprite.cur_x=int32_t(integer(at));sprite.cur_y=int32_t(integer(at+4));
+                sprite.scale=scale?scale/100.f:1;
+                sprite.x=int32_t(integer(at+12));sprite.y=int32_t(integer(at+16));
+            } else if(i>=8) {
+                sprite.cur_x=int32_t(integer(0x2E74));sprite.cur_y=int32_t(integer(0x2E78));
+            }
+        }
+        for(int slot=10;slot<=25;++slot) {
+            if(slot==18 || slot==19)continue;
+            const auto resource=name(0xA8+slot*48,48);
+            if(!resource.empty())candidate.load_sheet(slot,resource);
+        }
+        const auto count=integer(0x2FF0);
+        if(count>30)throw std::runtime_error("invalid DC2DM saved chip count");
+        for(uint32_t i=0;i<count;++i) {
+            const size_t at=0x2FF8+i*64;
+            const int sheet=int(integer(at+20)), w=int(integer(at+36)), h=int(integer(at+40));
+            if(sheet<0 || sheet>25 || w<0 || w>16384 || h<0 || h>16384)
+                throw std::runtime_error("invalid DC2DM saved chip");
+            candidate.scene_chips_.push_back({int32_t(integer(at+8)),int32_t(integer(at+12)),
+                int32_t(integer(at+28)),int32_t(integer(at+32)),w,h,sheet,true});
+        }
+        auto audio=candidate.scene_audio_.capture_snapshot();
+        const auto bgm=integer(0x5B8), se=integer(0x5C0);
+        if(bgm!=uint32_t(-1) && bgm!=255) {
+            if(bgm>=400)throw std::runtime_error("invalid DC2DM saved BGM");
+            audio.bgm_id=int(bgm);audio.bgm_playing=true;audio.bgm_mode=1;
+        }
+        if(se && se!=uint32_t(-1)) {
+            if(se>=400)throw std::runtime_error("invalid DC2DM saved looping effect");
+            audio.looped_se.push_back({int(se),2,0});
+        }
+        dc4::MesVmSnapshot vm;std::string error;
+        if(!candidate.vm_.capture_snapshot(&vm,&error))throw std::runtime_error(error);
+        if(!scene_audio_.restore_snapshot(audio,false,&error))throw std::runtime_error(error);
+        mes_=std::move(candidate.mes_);vm_.reset();vm_.bind(mes_);vm_.restore_snapshot(vm);
+        layers_.swap(candidate.layers_);sprites_.swap(candidate.sprites_);
+        script_name_=script;current_line_=std::move(candidate.current_line_);speaker_=std::move(candidate.speaker_);
+        transition_type_=0;reset_camera();scene_dirty_=true;scene_end_=false;
+        message_visible_=true;preserve_scene_=false;comu_visible_=comu_group_=false;comu_items_.clear();
+        reset_restore_transients();
+        sheets_.swap(candidate.sheets_);scene_chips_.swap(candidate.scene_chips_);
+        load_ui_script(data_+"/MES/start.mes");taskbar_visible_=true;
+        if(restore_error)restore_error->clear();return true;
+    } catch(const std::exception& error) {if(restore_error)*restore_error=error.what();return false;}
 }
 
 bool SceneRunner::restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* restore_error) {
@@ -1207,6 +1405,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
 }
 
 void SceneRunner::reset_restore_transients() {
+    minigame_.reset();
     dialogue_actions_.clear(); dialogue_batches_ = {}; dialogue_action_ms_ = 0;
     collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
     next_script_.clear(); last_error_.clear(); pointer_x_ = pointer_y_ = -1; pointer_down_ = false;
@@ -1226,6 +1425,8 @@ void SceneRunner::reset_restore_transients() {
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;
     dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
     dc2pc_transition_elapsed_ms_ = dc2pc_transition_duration_ms_ = 0;
+    dc2dm_transition_ = {};
+    dc2dm_transition_mask_ = {};
     scene_chips_.clear(); pending_scene_blit_ = false;
     scene_chip_origin_x_ = scene_chip_origin_y_ = 0;
     scene_chip_source_x_ = scene_chip_source_y_ = 0;

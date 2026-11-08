@@ -21,6 +21,7 @@
 #include "arisa32/mesvm.h"
 #include "arisa32/scene_audio.h"
 #include "arisa32/voice.h"
+#include "arisa32/dc2dm_minigame.h"
 
 #include <cstdint>
 #include <array>
@@ -264,6 +265,7 @@ public:
     const std::string& script_name() const { return script_name_; }
     using CommandObserver = std::function<void(const dc4::MesCommand&, const std::string&)>;
     void set_observer(CommandObserver observer) { observer_ = std::move(observer); }
+    void set_auto_save_path(std::string path) { auto_save_path_=std::move(path); }
     const std::string& pending_movie() const { return pending_movie_; }
     bool is_effect_movie() const { return pending_movie_is_effect_; }
     void finish_movie() { pending_movie_.clear(); pending_movie_is_effect_ = false; }
@@ -314,6 +316,10 @@ public:
     std::u16string visible_text() const;
     size_t visible_text_length() const;
     void set_pointer(int x, int y, bool down) { pointer_x_ = x; pointer_y_ = y; pointer_down_ = down; }
+    bool minigame_active() const;
+    void minigame_pointer(int action, int x, int y);
+    void minigame_key(Dc2dmMinigame::Key key);
+    const Dc2dmMinigame* minigame() const { return minigame_.get(); }
     void set_message_visible(bool visible) { message_visible_ = visible; scene_dirty_ = true; }
     bool message_visible() const { return message_visible_; }
     void set_taskbar_visible(bool visible) { taskbar_visible_ = visible; scene_dirty_ = true; }
@@ -436,6 +442,10 @@ private:
     void start_dc2pc_transition(int mode);
     void finish_dc2pc_transition();
     void draw_dc2pc_transition();
+    bool start_dc2dm_transition(int mode, int speed);
+    void snapshot_dc2dm_transition();
+    void finish_dc2dm_transition();
+    void draw_dc2dm_transition();
     void update_sakura(uint32_t elapsed_ms);
     void draw_sakura();
     bool dispatch_dc4_effect_command(const dc4::MesCommand& c);
@@ -447,8 +457,10 @@ private:
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
+    bool restore_dc2dm_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
     void reset_restore_transients();
     bool dispatch_timing_command(const dc4::MesCommand& c);
+    void sync_minigame();
     bool dispatch_flow_command(const dc4::MesCommand& c, size_t& transfers);
     bool dispatch_ui_chip_command(const dc4::MesCommand& c);
     bool dispatch_layer_command(const dc4::MesCommand& c);
@@ -476,6 +488,7 @@ private:
     std::string data_;
     std::string script_name_;
     CommandObserver observer_;
+    std::string auto_save_path_;
     std::string pending_movie_, input_skip_label_;
     bool pending_movie_is_effect_ = false;
     bool is_dc4_or_dc4ph_ = false;
@@ -483,6 +496,7 @@ private:
     int dialogue_font_size_ = 22;
     bool dc4_replay_profile_ = false;
     double script_wait_ms_ = 0;
+    std::unique_ptr<Dc2dmMinigame> minigame_;
     bool script_wait_pending_ = false;
     bool script_wait_skippable_ = true;
     double dc2pc_clock_ms_ = 0, dc2pc_wait_reference_ms_ = 0;
@@ -598,6 +612,13 @@ private:
     bool dc2pc_transition_active_ = false;
     int dc2pc_transition_mode_ = 0, dc2pc_transition_speed_ = 0;
     double dc2pc_transition_elapsed_ms_ = 0, dc2pc_transition_duration_ms_ = 0;
+    struct Dc2dmTransition {
+        std::vector<uint8_t> source, target;
+        bool active = false, pending = false, black = false;
+        int mode = 0, step = 1, limit = 510, tick_ms = 34;
+        double elapsed_ms = 0, duration_ms = 0;
+    } dc2dm_transition_;
+    Image dc2dm_transition_mask_;
     std::string current_line_;
     std::string speaker_;
     struct Dialogue { std::string text, name; };

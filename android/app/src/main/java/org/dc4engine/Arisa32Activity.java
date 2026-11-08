@@ -1134,7 +1134,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     }
                     try {
                         Runnable command;
-                        while ((command = menuCommands.poll()) != null) command.run();
+                        while ((command = menuCommands.poll()) != null) {
+                            if (!quitAfterMenuVoice) command.run();
+                        }
                         Touch touch;
                         while ((touch = touches.poll()) != null) dispatchTouch(touch);
                         Bitmap displayBitmap = frame;
@@ -1242,6 +1244,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     /** Routes one queued touch to the open overlay or to the native scene. */
     private void dispatchTouch(Touch touch) {
+        if (quitAfterMenuVoice) return;
         if(dc4ConfirmActive()){
             handleOriginalAction(dc4ConfirmTouch(touch.action,touch.x,touch.y));return;
         }
@@ -1374,10 +1377,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         } else if (action.equals("close")) { closeMenus(); notifyUser(dc4OpenMenu("resume")); }
         else if (action.equals("config")) { closeMenus(); notifyUser(dc4OpenMenu("config")); }
         else if (action.equals("title")) menuCommands.add(() -> { closeMenus(); notifyUser(dc4OpenMenu("title")); });
-        else if (action.equals("quit")) runOnUiThread(() -> leaveGame(true));
+        else if (action.equals("quit")) handleOriginalAction("quit-confirmed");
         else if (action.equals("quick")) persistState(true, -1);
         else if (action.equals("quicksave")) persistState(false, -1, dc4SelectedSaveIcon());
         else if (action.equals("latest") && pickerLatestFile != null) persistState(true, -2);
+        else if (action.equals("automatic")) persistState(true, -3);
     }
 
     private void confirmOverwrite(int slot) {
@@ -1567,14 +1571,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             }
         }
 
-        // Supported profiles ship their original title table. Re-reading the
-        // executable on the render thread stalls the first Save/Load entry.
-        // Keep executable discovery as a fallback for profiles without a table.
-        if (!scriptTitles.isEmpty()) return;
+        // DM patches can put translated titles in a new executable section.
+        // Other profiles can use the bundled table without scanning an EXE.
+        if (!scriptTitles.isEmpty() && !"dc2dm".equals(currentProfile().getId())) return;
 
         // 2. Scan for game executable (*.exe)
         List<File> exeCandidates = new ArrayList<>();
-        String[] knownExes = new String[]{"DC4.EXE", "dc4.exe", "DC4PHDL.exe", "dc4phdl.exe", "DC4Launcher.exe", "DC4PHLauncher.exe"};
+        String[] knownExes = new String[]{"DC2DM.EXE", "dc2dm.exe", "DC4.EXE", "dc4.exe", "DC4PHDL.exe", "dc4phdl.exe", "DC4Launcher.exe", "DC4PHLauncher.exe"};
         for (String kn : knownExes) {
             if (parent != null) {
                 File pe = new File(parent, kn);
@@ -1634,13 +1637,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void persistState(boolean load, int slot, int characterIcon) {
         if (!dc4SaveLoadAllowed()) return;
-        if (slot < -2 || slot >= SLOT_COUNT || (slot == -2 && !load)) return;
+        if (slot < -3 || slot >= SLOT_COUNT || (slot <= -2 && !load)) return;
         autoMode = false;
         skipMode = false;
         final File dir = savesDir();
-        final File file = load ? (slot == -2 ? pickerLatestFile : slot == -1 ? resolveQuickSaveFile(dir) : resolveSlotSaveFile(dir, slot))
+        final File file = load ? (slot == -3 ? currentProfile().resolveAutoSaveFile(dir) : slot == -2 ? pickerLatestFile : slot == -1 ? resolveQuickSaveFile(dir) : resolveSlotSaveFile(dir, slot))
                 : currentProfile().saveTarget(dir, slot);
-        final String what = slot == -2 ? tr("Latest load", "Muat terbaru", "最新ロード") : slot == -1 ? (load ? tr("Quick load", "Muat cepat", "クイックロード") : tr("Quick save", "Simpan cepat", "クイックセーブ"))
+        final String what = slot == -3 ? tr("Auto load", "Muat otomatis", "オートロード") : slot == -2 ? tr("Latest load", "Muat terbaru", "最新ロード") : slot == -1 ? (load ? tr("Quick load", "Muat cepat", "クイックロード") : tr("Quick save", "Simpan cepat", "クイックセーブ"))
                 : (load ? tr("Load", "Muat", "ロード") : tr("Save", "Simpan", "セーブ")) + " · " + (slot + 1);
         if (load) {
             if (file == null || !file.isFile()) { notifyUser(what + tr(": empty slot", ": slot kosong", "：空きスロット")); return; }
@@ -1699,6 +1702,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         for (int i = 0; i < SLOT_COUNT; ++i) publishSlotInfo(i,pickerSaveFiles[i + 1]);
         publishSlotInfo(-1,pickerSaveFiles[0]);
         publishSlotInfo(-2,pickerLatestFile);
+        publishSlotInfo(-3,currentProfile().resolveAutoSaveFile(dir));
     }
 
     private void updateLatestSlot() {
@@ -1708,12 +1712,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             final File file = pickerSaveFiles[i + 1];
             final boolean occupied = file != null && file.isFile();
             if (occupied) {
-                final long modified = file.lastModified();
+                final long modified = SaveMetadata.timestamp(file);
                 if (modified > newest) { newest = modified; pickerLatestFile = file; }
             }
         }
         if (pickerLatestCopy != null && pickerLatestCopy.isFile()
-                && pickerLatestCopy.lastModified() > newest) pickerLatestFile = pickerLatestCopy;
+                && SaveMetadata.timestamp(pickerLatestCopy) > newest) pickerLatestFile = pickerLatestCopy;
     }
 
     private void updateWrittenSlot(File dir, int slot, File file) {
@@ -1731,7 +1735,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final boolean occupied=file!=null && file.isFile();
         String timestamp="",excerpt=""; Bitmap thumbnail=null; int icon=-1;
         if(occupied) {
-            timestamp=dateFormat.format(new Date(file.lastModified()));
+            timestamp=dateFormat.format(new Date(SaveMetadata.timestamp(file)));
             excerpt=resolveSlotExcerpt(file,index+1);
             thumbnail=resolveSlotThumbnail(file);
             try { icon=Integer.parseInt(readSmallFile(file.getAbsolutePath()+".icon").trim()); }
@@ -1762,7 +1766,15 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     // -------------------------------------------------------- backlog + modes
 
+    private boolean quitAfterMenuVoice;
+
     private void pollStatus() {
+        if (quitAfterMenuVoice) {
+            if ("quit".equals(dc4OpenMenu("quit-poll"))) {
+                runOnUiThread(() -> leaveGame(true));
+            }
+            return;
+        }
         String playback = dc4PlaybackSettings();
         if (playback != null) {
             String[] settings = playback.split(";", 5);
@@ -2766,6 +2778,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         createGameSurface();
     }
     private void leaveGame(boolean show) {
+        quitAfterMenuVoice = false;
         if (navigation != null) { navigation.dispose(); navigation = null; }
         stopRendering();
         restorePausedSession = false;
@@ -3013,7 +3026,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             case "quick-load-confirmed": persistState(true,-1); break;
             case "title":
             case "title-confirmed": closeMenus(); notifyUser(dc4OpenMenu("title")); break;
-            case "quit-confirmed": runOnUiThread(() -> leaveGame(true)); break;
+            case "quit-confirmed": handleOriginalAction(dc4OpenMenu("quit-voice")); break;
+            case "quit-wait": autoMode = skipMode = false; quitAfterMenuVoice = true; break;
             case "quit": runOnUiThread(() -> leaveGame(true)); break;
             case "close": closeMenus(); break;
             default: notifyUser(action); break;

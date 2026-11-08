@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0 - 2026-11-08
+
+### Bahasa Indonesia
+
+- Menambahkan pembacaan dan penulisan slot PC DC2DM dalam pasangan `.dat` dan `.dat.arisa`, termasuk pemulihan dialog, pilihan, gambar, dan audio. Save portabel lama tetap dapat dimuat.
+- Mengimpor progres DC2DM dari `system.dat` agar latar judul, segmen cerita, dan galeri mengikuti progres game serta bertahan setelah aplikasi dimulai ulang atau slot lama dimuat.
+- Memperbaiki penomoran quicksave, autosave, save terakhir, dan slot biasa DC2DM. Autosave dibuat pada checkpoint skrip; replay galeri tidak menulis autosave.
+- Menampilkan judul skenario pada baris Save/Load, termasuk 279 judul MAR/SIN/SUC dan judul executable terjemahan. Tanggal dibaca dari isi save PC.
+- Memperbaiki pengumuman suara menu dan tiga gaya suara Otome, termasuk suara setelah Save/Load dikonfirmasi. CONFIG tidak lagi memutar seluruh suara tombol saat digambar ulang.
+- Memperbaiki pratinjau CG dari gambar sumber, urutan varian dalam setiap kategori, pergantian dengan fade, serta halaman thumbnail saat kembali dari pratinjau.
+- Memulihkan tampilan pilihan cerita dari aset PC, termasuk posisi, teks, latar redup, dan keadaan normal/hover/pressed. Replay suara hanya aktif untuk rekaman milik dialog saat ini; narasi dan dialog Yoshiyuki tanpa suara tidak memutar rekaman sebelumnya.
+- Menambahkan minigame suit dan Reversi dari menu asli, dengan aturan menang/kalah/seri, tingkat kesulitan Reversi, giliran, reaksi Otome, serta jumlah kemenangan dan kekalahan dari skrip game.
+- Memperbaiki kembali paksa ke judul dari minigame: sesi dibatalkan tanpa menyimpan hasilnya, skor sesi terdahulu tetap ada, dan menu Load dapat digunakan kembali.
+- Menghapus konfirmasi Start jika pilihan cerita sudah terbuka: dua cerita setelah Graduation Days selesai, tiga setelah Married Life selesai. Konfirmasi tetap tersedia sebelum Graduation Days selesai.
+- Menambahkan transisi lingkaran saat kembali ke judul dan memperbaiki dissolve, fade, serta mask pergantian adegan, termasuk transisi putih kelas, pause, penantian skrip, dan pembersihan saat kembali paksa ke judul.
+
+### English
+
+- Adds DC2DM PC slot reading and writing with paired `.dat` and `.dat.arisa` files, including dialogue, choices, artwork, and audio restoration. Existing portable saves remain loadable.
+- Imports DC2DM progress from `system.dat` so title backgrounds, story segments, and galleries follow game progress and survive restarts or loading an older slot.
+- Corrects DC2DM quicksave, autosave, latest-save, and regular-slot numbering. Script checkpoints create autosaves; gallery replay does not overwrite them.
+- Shows scenario titles in Save/Load rows, including 279 MAR/SIN/SUC titles and titles from translated executables. Dates are read from the PC save contents.
+- Corrects menu announcements and Otome's three voice styles, including accepted Save/Load voices. Redrawing CONFIG no longer plays every button's attached voice.
+- Improves CG previews from the source images, variant order within each category, fade transitions, and the thumbnail page restored when leaving a preview.
+- Restores story-choice presentation from PC assets, including placement, captions, dimmed backgrounds, and normal/hover/pressed states. Voice replay is available only for the current line's recording; unvoiced narration and Yoshiyuki lines do not replay a previous voice.
+- Adds rock-paper-scissors and Reversi through the original menu, with win/loss/draw rules, Reversi difficulty levels, turns, Otome reactions, and script-driven win/loss totals.
+- Fixes forced returns to Title from a minigame: the active session is discarded without saving its results, earlier completed-session totals remain, and Load becomes available again.
+- Removes the Start confirmation once story selection is unlocked: two stories after Graduation Days, three after Married Life. Confirmation remains before Graduation Days is completed.
+- Adds the circular return-to-Title transition and improves scene dissolves, fades, and masks, including the classroom's white transition, pause, script waits, and cleanup after a forced return to Title.
+
+Perubahan perilaku game di atas khusus profil DC2DM. Dukungan tetap beta; sebagian efek native dan crossfade langsung dari Title ke pilihan cerita belum sesuai PC. / The game-specific behavior above applies only to DC2DM. Support remains beta; some native effects and the direct Title-to-selector crossfade still differ from PC.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.0/id.md) | [English](docs/releases/v0.7.0/en.md).
+
 ## 0.6.9 - 2026-11-06
 
 ### Bahasa Indonesia

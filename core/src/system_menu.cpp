@@ -181,6 +181,7 @@ struct Widget {
     std::string slider_image;
     int thumb_position = -1;
     bool filled_slider = false;
+    std::string voice;
 };
 struct Caption {
     int x, y, size, control = -1, state = 99;
@@ -355,12 +356,13 @@ struct SystemMenu::Impl {
     bool held = false, gallery_view = false, movie_menu = false;
     std::vector<int> gallery_variants;
     size_t gallery_variant = 0;
-    struct GalleryEffect { int type = -1, frames = 0; std::string mask; };
+    struct GalleryEffect { int type = -1, frames = 0, ordinal = 0; std::string mask; };
     std::map<int, GalleryEffect> gallery_effects;
     GalleryEffect gallery_effect;
     uint32_t gallery_elapsed = 0, gallery_duration = 0;
     mutable std::vector<uint8_t> gallery_menu_frame;
-    mutable dc4scene::Image gallery_canvas;
+    mutable dc4scene::Image gallery_canvas, gallery_previous_canvas;
+    std::string gallery_previous;
     std::vector<uint8_t> gallery_outgoing;
     std::mt19937 random{std::random_device{}()};
 
@@ -376,7 +378,7 @@ struct SystemMenu::Impl {
         if (dc4_profile) for (int i = 0; i < 20; ++i) vars[{93,i}] = 0;
         vars[{100,49}] = 80;
         for (int i = 0; i < 51; ++i) { vars[{94,i}] = 100; vars[{95,i}] = 1; }
-        if (initialize_progress && !dc4_profile)
+        if (initialize_progress && !dc4_profile && !dc2pc && !dc2dm)
             for (int i = 100; i <= 119; ++i) vars[{100, i}] = 1;
         if (dc2dm) {
             for (const auto& value : {std::pair<int,int>{7,25},{8,25},{9,29},{11,8},{12,1}})
@@ -385,13 +387,14 @@ struct SystemMenu::Impl {
         }
     }
     int get(int b, int i) const {
+        if (dc2dm && b==10 && i>=0 && i<=20) b=100;
         if ((dc2pc || dc2dm) && b >= 200 && b < 210) {
             if (i < 0 || i >= 97) return 0;
             uint32_t bits = 0;
             for (int n = 0; n < 4; ++n) bits = (bits << 8) | uint8_t(get(b-200,i+n));
             return bits <= INT32_MAX ? int(bits) : int(int64_t(bits)-0x100000000LL);
         }
-        if (dc2pc && b == 100 && i >= 100) return 0;
+        if ((dc2pc || dc2dm) && b == 100 && i >= 100) return 0;
         if (b == 99 && i == 4) return get(99,1);
         if (b == 99 && i == 20) return latest;
         if (b == 99 && i == 21) return quick;
@@ -409,17 +412,18 @@ struct SystemMenu::Impl {
         return at->second;
     }
     void put(int b, int i, int value) {
+        if (dc2dm && b==10 && i>=0 && i<=20) b=100;
         if ((dc2pc || dc2dm) && b >= 200 && b < 210) {
             if (i < 0 || i >= 97) return;
             for (int n=0;n<4;++n) put(b-200,i+n,(uint32_t(value) >> (24-8*n)) & 255);
             return;
         }
         if (b < 0 || b > 100 || i < 0 || i > 4095) return;
-        if (dc2pc && b < 10) {
+        if ((dc2pc || dc2dm) && b < 10) {
             if (i >= 100) return;
             value=std::clamp(value,0,255);
         }
-        if (dc2pc && b == 100 && i >= 100) return;
+        if ((dc2pc || dc2dm) && b == 100 && i >= 100) return;
         vars[{b,i}] = value;
         if ((b==94 || b==95) && i==50) for(int character=0;character<18;++character)vars[{b,character}]=value;
         if (!dc2dm && b == 100 && i == 49) vars[{99,11}] = value;
@@ -475,7 +479,7 @@ struct SystemMenu::Impl {
     }
     void gallery_route(const Script& source, int selected) {
         gallery_effects.clear();
-        if (!dc4_profile || !source.labels.count("cg_next")) return;
+        if ((!dc4_profile && !dc2dm) || !source.labels.count("cg_next")) return;
         std::vector<int> route;
         for (size_t i = 0; i < source.code.size(); ++i) {
             const auto& c = source.code[i];
@@ -486,6 +490,9 @@ struct SystemMenu::Impl {
                 std::find(route.begin(),route.end(),id) != route.end()) continue;
             GalleryEffect effect;
             for (size_t j = i+1; j < source.code.size() && source.code[j].opcode() != Opcode::LABEL; ++j) {
+                if (dc2dm && source.code[j].opcode() == Opcode::ASSIGN &&
+                    source.code[j].words[0] == 3 && source.code[j].words[1] == 4)
+                    effect.ordinal = source.code[j].words[2];
                 if (source.code[j].opcode() != Opcode::JUMP) continue;
                 const auto label = source.labels.find(source.code[j].str);
                 if (label == source.labels.end()) break;
@@ -513,6 +520,8 @@ struct SystemMenu::Impl {
         const std::string next = "*"+std::to_string(id);
         const auto* next_image = image(next);
         if (!next_image || !next_image->valid()) return;
+        gallery_previous = dc2dm && !entering ? background : std::string{};
+        gallery_previous_canvas = {};
         gallery_variant = index;
         background = next;
         gallery_view = true;
@@ -522,7 +531,13 @@ struct SystemMenu::Impl {
         if (effect == gallery_effects.end()) return;
         put(99,100,id);
         gallery_effect = effect->second;
+        if (dc2dm) put(3,4,gallery_effect.ordinal);
         if (!get(99,10) || gallery_effect.frames <= 0) return;
+        if (dc2dm) {
+            gallery_duration = 640u >> std::clamp(get(99,12),0,3);
+            if (entering) gallery_outgoing = std::move(gallery_menu_frame);
+            return;
+        }
         int frames = gallery_effect.frames;
         if (gallery_effect.type != 21) {
             const int speed = std::clamp(get(99,12),0,11);
@@ -540,6 +555,18 @@ struct SystemMenu::Impl {
         const auto* mask = gallery_effect.type == 21 ? image(gallery_effect.mask) : nullptr;
         const int threshold = int(std::lround(255-510*t));
         const int fade = int(std::lround(255*(1-t)));
+        const dc4scene::Image* previous = nullptr;
+        if (dc2dm && !gallery_previous.empty()) {
+            const auto* source = image(gallery_previous);
+            if (source && source->valid()) {
+                auto& canvas = gallery_previous_canvas;
+                if (canvas.name != gallery_previous || canvas.w != width || canvas.h != height) {
+                    gallery_bitmap(*source,width,height,&canvas.rgba);
+                    canvas.name=gallery_previous; canvas.w=width; canvas.h=height;
+                }
+                previous = &canvas;
+            }
+        }
         for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
             const int menu_x=x*W/width, menu_y=y*H/height;
             int alpha = fade;
@@ -549,7 +576,8 @@ struct SystemMenu::Impl {
             }
             const size_t pixel = (size_t(y)*width+x)*4;
             for (int c = 0; c < 3; ++c) {
-                const int old = gallery_outgoing.size() == FrameBytes ? gallery_outgoing[(size_t(menu_y)*W+menu_x)*4+c] : 0;
+                const int old = previous ? previous->rgba[pixel+c] :
+                    (gallery_outgoing.size() == FrameBytes ? gallery_outgoing[(size_t(menu_y)*W+menu_x)*4+c] : 0);
                 (*frame)[pixel+c] = uint8_t((old*alpha+(*frame)[pixel+c]*(255-alpha))/255);
             }
         }
@@ -1010,7 +1038,7 @@ struct SystemMenu::Impl {
                 page = Page::Music;
             } else {
                 context.finish({page == Page::Scenes ? Type::StartScene : Type::NewGame,
-                                -1, c.str, context.entry});
+                                -1, c.str, context.entry, dest == "minigame" ? 19 : 0});
                 return;
             }
             context.finish(run(dest, context.entry, context.action, context.transfer_depth + 1));
@@ -1074,6 +1102,11 @@ struct SystemMenu::Impl {
     }
 
     void menu_voice(Opcode, RunState& context, const Command& c) {
+        if (context.source->dc2dm && c.raw_op == 0x3E) {
+            if (context.control >= 0)
+                widgets[size_t(context.control)].voice = c.str;
+            return;
+        }
         // DC2PC raw 3D attaches a sound to the preceding button. It is not
         // immediate VOICE (raw 36); playing it while rebuilding a destination
         // page cuts into the host's actual entry announcement.
@@ -1537,7 +1570,7 @@ bool SystemMenu::loaded() const { return p_->ready; }
 SystemMenuPage SystemMenu::page() const { return p_->page; }
 bool SystemMenu::gallery_preview_active() const { return p_->ready && p_->gallery_view; }
 bool SystemMenu::draw_gallery(int width, int height, std::vector<uint8_t>* frame) const {
-    if (!frame || !gallery_preview_active() || !p_->dc4_profile || width<=0 || height<=0 ||
+    if (!frame || !gallery_preview_active() || (!p_->dc4_profile && !p_->dc2dm) || width<=0 || height<=0 ||
         width>3840 || height>2160 || int64_t(width)*9!=int64_t(height)*16) return false;
     const auto* source=p_->image(p_->background);
     if (!source || !source->valid()) return false;
@@ -1628,12 +1661,21 @@ Action SystemMenu::pointer_up(int x,int y) {
     if (p_->gallery_view) { const bool held=p_->held; cancel_pointer(); if(held)scroll(1); return {}; }
     int pressed=p_->pressed, hit=p_->hit(x,y); bool held=p_->held;
     if (held && pressed >= 0 && size_t(pressed)<p_->widgets.size() && p_->widgets[size_t(pressed)].slider_bank != -1) {
-        auto out=p_->slider(pressed,x,y); cancel_pointer(); return out;
+        const auto voice=p_->widgets[size_t(pressed)].voice;
+        auto out=p_->slider(pressed,x,y); cancel_pointer();
+        if (p_->dc2dm && !voice.empty()) return {Type::PlayVoice,-1,voice,{}};
+        return out;
     }
     std::string tag = held && pressed == hit && hit >= 0 ? p_->widgets[size_t(hit)].tag : "";
+    const auto voice = held && pressed == hit && hit >= 0 ? p_->widgets[size_t(hit)].voice : "";
     cancel_pointer();
-    if (!tag.empty()) return activate(tag);
-    if (held && p_->page == Page::Config && p_->get(100,54) == 3 && y >= 127 && y <= 195) {
+    if (!tag.empty()) {
+        auto out=activate(tag);
+        if (p_->dc2dm && !voice.empty() && (out.type==Type::None || out.type==Type::SettingsChanged))
+            return {Type::PlayVoice,-1,voice,{}};
+        return out;
+    }
+    if (held && !p_->dc2dm && p_->page == Page::Config && p_->get(100,54) == 3 && y >= 127 && y <= 195) {
         static const struct { int left, right, id; } kCards[] = {
             {34,126,0},{128,220,1},{222,314,2},{316,408,3},{410,502,4},
             {504,596,5},{598,690,6},{692,784,7},{786,878,8},{880,972,10},{974,1066,11}
@@ -1678,7 +1720,13 @@ void SystemMenu::scroll(int delta) {
 Action SystemMenu::back() {
     if(confirming())return answer_confirmation(false);
     cancel_pointer();
-    if(p_->gallery_view) {p_->gallery_view=false; p_->gallery_canvas={}; p_->rebuild(); return {};}
+    if(p_->gallery_view) {
+        p_->gallery_view=false; p_->gallery_canvas={}; p_->gallery_previous_canvas={};
+        p_->gallery_previous.clear(); p_->gallery_outgoing.clear(); p_->gallery_duration=0;
+        if (p_->dc2dm) p_->run(p_->script_name,"page_chk",true);
+        else p_->rebuild();
+        return {};
+    }
     if(p_->movie_menu) {
         p_->put(3, 24, 0);
         p_->movie_menu = false;
@@ -1707,8 +1755,11 @@ Action SystemMenu::activate(const std::string& tag) {
     ConfirmKind kind = ConfirmKind::Count;
     switch (menu_tag) {
     case MenuTag::Prologue:
-    case MenuTag::StartGame:
         kind = ConfirmKind::NewGame;
+        break;
+    case MenuTag::StartGame:
+        if (!p_->dc2dm || p_->page != Page::Title || p_->get(100, 1) == 0)
+            kind = ConfirmKind::NewGame;
         break;
     case MenuTag::DcRoute:
         if (!p_->get(100, 100)) return {};
@@ -2145,6 +2196,7 @@ void SystemMenu::set_visual_effects_enabled(bool enabled) { p_->visual_effects_e
 
 void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
     if(!frame)return;
+    if (p_->dc2dm && draw_gallery(W,H,frame)) return;
     frame->assign(FrameBytes,0);for(size_t i=3;i<frame->size();i+=4)(*frame)[i]=255;
     if(auto* back=p_->image(p_->background)) {
         Rect src{0,0,back->w,back->h};
@@ -2290,7 +2342,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     if(!p_->ready) font.rasterize_line(dc4::translate_ui(u"Menu data could not be loaded"),50,80,frame,W,H,28);
     p_->confirm.draw(mx,my,down,font,frame);
-    if(p_->dc4_profile && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
+    if((p_->dc4_profile || p_->dc2dm) && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
 }
 
 SystemConfig SystemMenu::config() const {
@@ -2327,19 +2379,35 @@ int SystemMenu::page_voice_event() const {
     }
     return 0;
 }
+int SystemMenu::page_voice_event(SystemMenuPage previous) const {
+    if (p_->dc2dm && (p_->page == Page::Title || previous == Page::Config ||
+        (p_->page == Page::Extras && previous != Page::Title))) return 0;
+    return page_voice_event();
+}
 std::string SystemMenu::system_voice(int event_id) const {
     if (event_id <= 0) return {};
     if (p_->dc2dm) {
-        int event = event_id;
+        // Host events differ from DM_SYS numbers. Back has no announcement;
+        // bank100[56] == 3 is the native Nothing choice, not a random actor.
+        int event = 0;
         switch (event_id) {
+        case 2: event = 2; break;
+        case 7: event = 3; break;
+        case 8: case 13: event = 7; break;
         case 10: event = 8; break;
         case 14: event = 13; break;
         case 15: event = 10; break;
         case 16: event = 11; break;
         case 17: event = 9; break;
+        case 18: event = 16; break;
+        case 19: event = 12; break; // Mini Game
+        case 20: event = 20; break; // Quit
+        case 21: event = 21; break;
+        case 22: event = 14; break; // Save accepted
+        case 23: event = 15; break; // Load accepted
         }
         int actor = p_->get(100,56);
-        if (actor < 0 || actor > 2) actor = int(p_->random()%3);
+        if (!event || actor < 0 || actor > 2) return {};
         char name[64];
         std::snprintf(name,sizeof(name),"VOICE/DM_SYS/DM_SYS%02d%c",event,'A'+actor);
         return name;
@@ -2378,6 +2446,7 @@ std::string SystemMenu::title_music() const {
     return "music/001.pcm";
 }
 std::string SystemMenu::scene_ui_script() const { return p_->dc2pc || p_->dc2dm ? "start.mes" : "win_size.mes"; }
+bool SystemMenu::is_dc2dm() const { return p_->dc2dm; }
 int SystemMenu::variable(int b,int i)const{return p_->get(b,i);}
 void SystemMenu::set_variable(int b,int i,int value){p_->put(b,i,value);p_->rebuild();}
 void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) const {
@@ -2395,6 +2464,11 @@ void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) cons
     }
 }
 void SystemMenu::restore_scene_progress(dc4scene::SceneRunner& scene) const {
+    if (p_->dc2dm) {
+        for (int i = 0; i < 100; ++i)
+            scene.set_variable(100, uint16_t(i), i<23 ? std::max(scene.variable(100,uint16_t(i)),p_->get(100,i)) : p_->get(100,i));
+        return;
+    }
     if (!p_->dc4_profile) return;
     // Route completions are global; loading an older slot must not roll them back.
     for (int i = 100; i < 150; ++i)
@@ -2424,10 +2498,6 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
 }
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
-    if (p_->dc2dm) {
-        if (error) *error = "Native DC2DM system.dat import is not supported; use an emulator profile";
-        return false;
-    }
     if (p_->dc2pc) {
         std::error_code ec;
         const auto size = std::filesystem::file_size(path, ec);
@@ -2442,6 +2512,29 @@ bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
         return false;
     }
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (p_->dc2dm) {
+        // DC2DM stores catalogue flags as bits, following the 100-byte global bank.
+        if (data.size() != 0x3D64 || data[0xE5] > 1 || data[0xE6] > 1) {
+            if (error) *error = "Unsupported or truncated DC2DM system data";
+            return false;
+        }
+        for (int i = 0; i < 100; ++i)
+            p_->vars[{100,i}] = i<23 ? std::max(p_->get(100,i), int(data[0xE4+i])) : int(data[0xE4+i]);
+        const auto catalogue = [&](int bank, size_t offset, int count,
+                                   const std::vector<std::string>& names, std::set<std::string>& seen) {
+            for (int i = 0; i < count; ++i)
+                if (data[offset+i/8] & (1 << (i%8))) {
+                    p_->vars[{bank,i}] = 1;
+                    if(size_t(i)<names.size())seen.insert(key(names[i]));
+                }
+        };
+        catalogue(96, 0x148, 400, p_->bgm_names, p_->seen_music);
+        catalogue(97, 0x17A, 1200, p_->cg_names, p_->seen_cg);
+        catalogue(98, 0x210, 650, p_->scene_names, p_->seen_scene);
+        p_->progress_vars(); p_->rebuild();
+        if (error) error->clear();
+        return true;
+    }
     if (p_->dc2pc) {
         // DC2PC's native system block (619CD0) is independent of the newer
         // Circus layout. The detected MES profile supplies game identity;
@@ -2562,7 +2655,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         if(type=='v'){
             int b,i,value;
             if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}
-            const bool progress=b==100 && ((p_->dc2pc && i<23) || (p_->dc4_profile && i>=100 && i<150));
+            const bool progress=b==100 && (((p_->dc2pc || p_->dc2dm) && i<23) || (p_->dc4_profile && i>=100 && i<150));
             vars[{b,i}]=progress?std::max(vars[{b,i}],value):value;
         }
         else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
@@ -2573,7 +2666,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         if (vars.find({94, i}) == vars.end()) vars[{94, i}] = 100;
         if (vars.find({95, i}) == vars.end() || vars[{95, i}] == 0) vars[{95, i}] = 1;
     }
-    for (int i = 100; !p_->dc2pc && !p_->dc4_profile && i <= 119; ++i) {
+    for (int i = 100; !p_->dc2pc && !p_->dc2dm && !p_->dc4_profile && i <= 119; ++i) {
         if (vars.find({100, i}) == vars.end() || vars[{100, i}] == 0) vars[{100, i}] = 1;
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);

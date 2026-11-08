@@ -1,4 +1,5 @@
 #include "arisa32/dc2pc_menu_transition.h"
+#include <algorithm>
 #include <iostream>
 
 int main() {
@@ -36,6 +37,28 @@ int main() {
     check(transition.update(1)); // SC_END's authored wait does not add a second fade-out.
     transition.reveal({160,80,32,255});
     check(!transition.update(160)); transition.draw(&frame); check(frame[0] == 80);
+    transition.finish();
+    std::vector<uint8_t> scene(1280u*720u*4u,255);
+    transition.start_dc2dm_title(scene,{});
+    check(!transition.update(200)); transition.draw(&frame); check(frame==scene);
+    check(!transition.update(40)); transition.draw(&frame);
+    const auto visible = [](const std::vector<uint8_t>& pixels) {
+        size_t count=0;
+        for(size_t i=0;i<pixels.size();i+=4) if(pixels[i]) ++count;
+        return count;
+    };
+    const auto first=visible(frame);
+    check(first>0 && first<1280u*720u);
+    const auto paused=frame;
+    transition.draw(&frame); check(frame==paused);
+    check(!transition.update(320)); transition.draw(&frame); check(visible(frame)<first);
+    check(transition.update(640)); transition.draw(&frame); check(visible(frame)==0);
+    check(!transition.update(10000));
+    transition.reveal(scene); transition.draw(&frame); check(visible(frame)==0);
+    check(!transition.update(320) && !transition.active());
+    // Reusing the object for another profile must reset the particle mode.
+    transition.start(scene,1); transition.update(160); transition.draw(&frame);
+    check(frame[0]==127 && frame[4000]==127);
     transition.finish();
     if (failures) std::cerr << failures << " DC2PC presentation checks failed\n";
     return failures ? 1 : 0;

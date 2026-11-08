@@ -39,6 +39,10 @@ public interface GameProfile {
     /** Optional native latest-save copy, separate from numbered write targets. */
     default File resolveLatestSaveCopy(File savesDir) { return null; }
 
+    default File resolveAutoSaveFile(File savesDir) {
+        return savesDir == null ? null : Dc2PlusCommunicationProfile.child(savesDir, "autosave.dc4sav");
+    }
+
     /** Write target, independent of an existing legacy snapshot. -1 means quicksave. */
     default File saveTarget(File savesDir, int slotIndex) {
         return new File(savesDir, slotIndex < 0 ? "quicksave.dc4sav" : "slot"+(slotIndex+1)+".dc4sav");

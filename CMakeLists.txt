@@ -24,6 +24,9 @@ add_library(arisa32_core STATIC
     core/src/scene_dc4_effects.cpp
     core/src/scene_state.cpp
     core/src/scene_dc2dm_ending.cpp
+    core/src/dc2dm_minigame.cpp
+    core/src/dc2dm_suit.cpp
+    core/src/dc2dm_reversi.cpp
     core/src/log_screen.cpp
     core/src/save_screen.cpp
     core/src/resource.cpp
@@ -90,12 +93,20 @@ target_include_directories(arisa32_core PRIVATE third_party/miniaudio third_part
 
 include(CTest)
 if(BUILD_TESTING)
+    foreach(minigame_test dc2dm_suit_test dc2dm_reversi_test dc2dm_minigame_test dc2dm_minigame_script_test)
+        add_executable(${minigame_test} tests/${minigame_test}.cpp)
+        target_link_libraries(${minigame_test} PRIVATE arisa32_core)
+        add_test(NAME ${minigame_test} COMMAND ${minigame_test})
+    endforeach()
     add_executable(dc4_sprite_motion_test tests/dc4_sprite_motion_test.cpp)
     target_link_libraries(dc4_sprite_motion_test PRIVATE arisa32_core)
     add_test(NAME dc4_sprite_motion_test COMMAND dc4_sprite_motion_test)
     add_executable(dc4_effect_test tests/dc4_effect_test.cpp)
     target_link_libraries(dc4_effect_test PRIVATE arisa32_core)
     add_test(NAME dc4_effect_test COMMAND dc4_effect_test)
+    add_executable(dc2dm_transition_test tests/dc2dm_transition_test.cpp)
+    target_link_libraries(dc2dm_transition_test PRIVATE arisa32_core)
+    add_test(NAME dc2dm_transition_test COMMAND dc2dm_transition_test)
     add_executable(dc2pc_menu_transition_test tests/dc2pc_menu_transition_test.cpp)
     target_include_directories(dc2pc_menu_transition_test PRIVATE core/include)
     add_test(NAME dc2pc_menu_transition_test COMMAND dc2pc_menu_transition_test)

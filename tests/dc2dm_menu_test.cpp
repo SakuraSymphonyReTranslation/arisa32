@@ -1,5 +1,10 @@
 #include "arisa32/system_menu.h"
 #include "arisa32/resource.h"
+#include "arisa32/crx.h"
+#include "arisa32/names.h"
+#include "arisa32/scene.h"
+#include "arisa32/dc2pc_menu_transition.h"
+#include "arisa32/dc2dm_title_particles.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -171,6 +176,7 @@ void preview_regressions(const std::filesystem::path& root, const char* font_pat
     CHECK(frame(japanese,font)==expected_preview(font,u"\u30c6\u30b9\u30c8\u30fc\u3002_A",false));
     preview_fixture(root/"modern","AB_CD\nEF.",true,false,true);
     Menu modern; CHECK(modern.load((root/"modern").string(),&error)); modern.open(Page::Config);
+    CHECK(!modern.is_dc2dm());
     const auto modern_text=frame(modern,font);
     std::vector<uint8_t> generic(1280u*720u*4u,0);
     for (size_t i=3; i<generic.size(); i+=4) generic[i]=255;
@@ -235,6 +241,23 @@ int main(int argc, char** argv) {
     CHECK(menu.load(data,&error));
     if (!error.empty()) { std::cerr << error << '\n'; return 1; }
     CHECK(menu.page() == Page::Title);
+    CHECK(menu.is_dc2dm());
+    CHECK(menu.page_voice_event()==2);
+    CHECK(menu.page_voice_event(Page::Extras)==0);
+    const std::pair<int,int> voice_events[] = {{2,2},{7,3},{8,7},{10,8},{13,7},
+        {14,13},{15,10},{16,11},{17,9},{18,16},{19,12},{20,20},{21,21},{22,14},{23,15}};
+    for (int style=0; style<4; ++style) {
+        menu.set_variable(100,56,style);
+        for (const auto& event : voice_events) {
+            char asset[64];
+            std::snprintf(asset,sizeof(asset),"VOICE/DM_SYS/DM_SYS%02d%c",event.second,'A'+style);
+            CHECK(menu.system_voice(event.first) == (style==3 ? "" : asset));
+        }
+        CHECK(menu.system_voice(11).empty());
+        CHECK(menu.system_voice(12).empty());
+        CHECK(menu.system_voice(99).empty());
+    }
+    menu.set_variable(100,56,0);
     CHECK(has(menu,"sce_start")); CHECK(has(menu,"load")); CHECK(has(menu,"extra"));
     CHECK(has(menu,"config")); CHECK(has(menu,"end")); CHECK(!has(menu,"qload"));
     for (const auto& control : menu.controls()) {
@@ -262,6 +285,16 @@ int main(int argc, char** argv) {
     CHECK(menu.variable(99,7) == 14);
     menu.set_variable(99,7,music);
     click(menu,"voice"); CHECK(!has(menu,"v00")); CHECK(has(menu,"v01"));
+    for (int style : {1,2,3,0}) {
+        const auto selected=click(menu,"sys_v0"+std::to_string(style));
+        CHECK(menu.variable(100,56)==style);
+        if (style==3) CHECK(selected.type!=Type::PlayVoice);
+        else {
+            CHECK(selected.type==Type::PlayVoice);
+            CHECK(selected.asset==std::string("VOICE\\DM_SYS\\DM_SYS16")+char('A'+style));
+        }
+        CHECK(!has(menu,"sys_v0"+std::to_string(style)));
+    }
     capture(menu,"config-voice");
     click(menu,"v01"); CHECK(menu.variable(3,0) == 1); CHECK(has(menu,"v00"));
     click(menu,"v00");
@@ -283,15 +316,78 @@ int main(int argc, char** argv) {
     capture(menu,"config-system");
     menu.back(); CHECK(menu.page() == Page::Title);
     click(menu,"extra"); CHECK(menu.page() == Page::Extras); CHECK(menu.error().empty());
+    CHECK(menu.page_voice_event(Page::Title)==10);
+    CHECK(menu.page_voice_event(Page::Gallery)==0);
+    CHECK(menu.page_voice_event(Page::Config)==0);
     CHECK(has(menu,"cgmode")); CHECK(has(menu,"scemode")); CHECK(has(menu,"musmode"));
     capture(menu,"extras");
+    menu.set_variable(100,20,1);
+    const auto minigame=click(menu,"minigame");
+    CHECK(minigame.type==Type::NewGame && minigame.voice_event==19);
+    menu.open(Page::Extras);
     click(menu,"cgmode"); CHECK(menu.page() == Page::Gallery); CHECK(menu.error().empty());
+    CHECK(menu.page_voice_event(Page::Extras)==15);
+    CHECK(menu.page_voice_event(Page::Config)==0);
     CHECK(menu.variable(3,2) == 1);
     CHECK(!has(menu,"cg0"));
     menu.set_variable(97,0,1); CHECK(has(menu,"cg0"));
     capture(menu,"gallery");
-    click(menu,"cg0"); capture(menu,"gallery-view");
-    menu.back(); CHECK(menu.page() == Page::Gallery);
+    menu.set_variable(97,1,1); menu.set_variable(97,10,1); menu.set_variable(97,145,1);
+    menu.set_variable(97,146,1);
+    dc4scene::FontRenderer gallery_font;
+    const auto gallery_menu=frame(menu,gallery_font);
+    click(menu,"cg0");
+    CHECK(menu.gallery_preview_active());
+    CHECK(frame(menu,gallery_font)==gallery_menu);
+    menu.update(160);
+    const auto entering=frame(menu,gallery_font);
+    CHECK(entering!=gallery_menu);
+    CHECK(frame(menu,gallery_font)==entering);
+    menu.update(160);
+    const auto first_cg=frame(menu,gallery_font);
+    CHECK(first_cg!=entering);
+    capture(menu,"gallery-view");
+    std::vector<uint8_t> native_cg, high_cg;
+    CHECK(menu.draw_gallery(1024,576,&native_cg));
+    CHECK(menu.draw_gallery(1920,1080,&high_cg));
+    CHECK(high_cg.size()==1920u*1080u*4u);
+    CHECK(!menu.draw_gallery(1920,1200,&high_cg));
+    std::ifstream names_file(std::filesystem::path(data)/"GRP/NAMES.DAT",std::ios::binary);
+    std::vector<uint8_t> names_bytes(std::istreambuf_iterator<char>(names_file),{});
+    dc4::GameNames names; CHECK(dc4::decode_game_names(names_bytes,&names));
+    std::ifstream cg_file(std::filesystem::path(data)/"GRP"/(names.cg[0]+".CRX"),std::ios::binary);
+    std::vector<uint8_t> cg_bytes(std::istreambuf_iterator<char>(cg_file),{}), decoded;
+    dc4::CrxInfo info;
+    CHECK(dc4::crx_decode(cg_bytes.data(),cg_bytes.size(),&decoded,&info));
+    CHECK(info.width==1024 && info.height==576);
+    CHECK(native_cg==decoded);
+    bool filtered=false;
+    for(int y=100;y<110;++y) for(int x=100;x<110;++x) {
+        const size_t dst=(size_t(y)*1920+x)*4, nearest=(size_t(y*576/1080)*1024+x*1024/1920)*4;
+        for(int c=0;c<3;++c) if(high_cg[dst+c]!=decoded[nearest+c]) filtered=true;
+    }
+    CHECK(filtered);
+    menu.scroll(1); CHECK(menu.variable(99,100)==1);
+    CHECK(frame(menu,gallery_font)==first_cg);
+    menu.update(160); const auto between=frame(menu,gallery_font);
+    CHECK(between!=first_cg); CHECK(frame(menu,gallery_font)==between);
+    menu.scroll(1); CHECK(menu.variable(99,100)==1);
+    const auto second_cg=frame(menu,gallery_font); CHECK(second_cg!=between);
+    menu.scroll(1); CHECK(menu.variable(99,100)==10);
+    menu.update(320);
+    menu.scroll(1); CHECK(menu.variable(99,100)==145);
+    menu.update(320); menu.scroll(1); CHECK(menu.variable(99,100)==0);
+    menu.update(320); menu.scroll(-1); CHECK(menu.variable(99,100)==145);
+    menu.update(320); menu.back();
+    CHECK(menu.page()==Page::Gallery && !menu.gallery_preview_active());
+    CHECK(menu.variable(3,6)==1);
+    click(menu,"page--");
+    menu.set_variable(99,10,0); click(menu,"cg0");
+    CHECK(frame(menu,gallery_font)==first_cg);
+    menu.scroll(1); CHECK(menu.variable(99,100)==1);
+    CHECK(frame(menu,gallery_font)==second_cg);
+    menu.back(); menu.set_variable(99,10,1);
+    CHECK(menu.page() == Page::Gallery);
     click(menu,"page++"); CHECK(menu.variable(3,6) == 1);
     click(menu,"page--"); CHECK(menu.variable(3,6) == 0);
     click(menu,"sin"); CHECK(menu.variable(3,5) == 1); CHECK(menu.error().empty());
@@ -344,6 +440,45 @@ int main(int argc, char** argv) {
     CHECK(menu.system_voice(14) == "VOICE/DM_SYS/DM_SYS13A");
     CHECK(menu.scene_ui_script() == "start.mes");
     CHECK(menu.error().empty());
+    {
+        const auto sheet=dc4ui::dc2dm_title_particle_sheet(data);
+        CHECK(sheet.size()==800u*32u*4u);
+        dc4scene::FontRenderer font;
+        auto outgoing=frame(menu,font);
+        if(const char* source=std::getenv("DC2DM_TRANSITION_RGBA")) {
+            std::ifstream input(source,std::ios::binary);
+            outgoing.assign(std::istreambuf_iterator<char>(input),{});
+            CHECK(outgoing.size()==1280u*720u*4u);
+        }
+        dc4ui::Dc2pcMenuTransition transition;
+        const auto lit_pixels = [](const std::vector<uint8_t>& pixels) {
+            size_t count=0;
+            for(size_t i=0;i<pixels.size();i+=4)if(pixels[i])++count;
+            return count;
+        };
+        std::vector<uint8_t> solid(1280u*720u*4u,255), masked;
+        transition.start_dc2dm_title(solid,sheet);
+        transition.update(240);transition.draw(&masked);
+        const auto first_area=lit_pixels(masked);
+        CHECK(first_area>0 && first_area<1280u*720u);
+        transition.update(360);transition.draw(&masked);
+        CHECK(lit_pixels(masked)<first_area/2);
+        transition.update(400);transition.draw(&masked);
+        CHECK(lit_pixels(masked)==0);
+        transition.start_dc2dm_title(outgoing,sheet);
+        transition.update(200);
+        for(int step=0;step<25;++step) {
+            std::vector<uint8_t> pixels;
+            transition.update(40);transition.draw(&pixels);
+            CHECK(pixels.size()==outgoing.size());
+            if(const char* output=std::getenv("DC2DM_MENU_CAPTURES")) {
+                std::ofstream file(std::filesystem::path(output)/("particles-"+std::to_string(step)+".ppm"),std::ios::binary);
+                file << "P6\n1280 720\n255\n";
+                for(size_t i=0;i<pixels.size();i+=4)file.write(reinterpret_cast<const char*>(pixels.data()+i),3);
+            }
+            if(step==24)for(size_t i=0;i<pixels.size();i+=4)CHECK(!pixels[i]&&!pixels[i+1]&&!pixels[i+2]);
+        }
+    }
     const auto temporary = std::filesystem::temp_directory_path()/
         ("dc2dm-menu-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     {
@@ -353,13 +488,72 @@ int main(int argc, char** argv) {
     }
     const int progress = menu.variable(100,1);
     CHECK(!menu.load_system_dat(temporary.string(),&error));
-    CHECK(error.find("Native DC2DM system.dat import is not supported") != std::string::npos);
+    CHECK(error.find("Unsupported or truncated DC2DM system data") != std::string::npos);
     CHECK(menu.variable(100,1) == progress);
+    {
+        std::string bytes(0x3D64,'\0');
+        bytes[0xE5]=1;bytes[0xE6]=1;bytes[0xF4]=3;
+        bytes[0x148]=1;bytes[0x17A]=1;bytes[0x210]=1;
+        std::ofstream native(temporary,std::ios::binary);
+        native.write(bytes.data(),bytes.size());
+    }
+    CHECK(menu.load_system_dat(temporary.string(),&error));
+    CHECK(menu.variable(100,1)==1 && menu.variable(100,2)==1 && menu.variable(100,16)==3);
+    CHECK(menu.variable(10,1)==1 && menu.variable(96,0)==1 && menu.variable(97,0)==1 && menu.variable(98,0)==1);
+    CHECK(menu.variable(100,100)==0);
     menu.set_variable(100,1,1);
     CHECK(menu.save_profile(temporary.string(),&error));
     menu.set_variable(100,1,0);
     CHECK(menu.load_profile(temporary.string(),&error));
     CHECK(menu.variable(100,1) == 1 && menu.music_seen("music/001"));
+    std::vector<uint8_t> previous_title;
+    dc4scene::FontRenderer title_font;
+    for(int stage=0;stage<3;++stage) {
+        Menu stage_menu;CHECK(stage_menu.load(data,&error));
+        std::vector<uint8_t> native(0x3D64,0);
+        native[0xE5]=stage>=1;native[0xE6]=stage>=2;
+        native[0x148]=1;native[0x17A]=1;native[0x210]=1;
+        write_bytes(temporary,native);
+        CHECK(stage_menu.load_system_dat(temporary.string(),&error));
+        const auto title=frame(stage_menu,title_font);
+        if(stage)CHECK(title!=previous_title);
+        previous_title=title;
+        capture(stage_menu,"title-stage-"+std::to_string(stage));
+        auto stage_start = click(stage_menu,"sce_start");
+        CHECK(stage_menu.confirming() == (stage == 0));
+        if (stage == 0) {
+            CHECK(stage_start.type == Type::None);
+            CHECK(stage_menu.answer_confirmation(false).type == Type::None);
+            CHECK(!stage_menu.confirming() && stage_menu.variable(100,1) == 0);
+            CHECK(click(stage_menu,"sce_start").type == Type::None);
+            CHECK(stage_menu.confirming());
+            stage_start = stage_menu.answer_confirmation(true);
+        }
+        CHECK(stage_start.type == Type::NewGame && stage_start.asset == "SCESELECT");
+        if (stage > 0) {
+            dc4scene::SceneRunner selector(data);
+            CHECK(selector.load_ui_script(std::string(data)+"/MES/start.mes"));
+            CHECK(selector.load_script(std::string(data)+"/MES/sceselect.mes"));
+            stage_menu.initialize_scene(selector,false);
+            CHECK(!selector.advance_to_next_text() && selector.waiting_for_time());
+            const auto choice_present = [&](const std::string& action) {
+                return std::any_of(selector.buttons().begin(),selector.buttons().end(),
+                    [&](const auto& button) { return button.action == action; });
+            };
+            CHECK(choice_present("sce01") && choice_present("sce02"));
+            CHECK(choice_present("sce03") == (stage == 2));
+        }
+        CHECK(stage_menu.save_profile(temporary.string(),&error));
+        Menu restarted;CHECK(restarted.load(data,&error));
+        CHECK(restarted.load_profile(temporary.string(),&error));
+        CHECK(frame(restarted,title_font)==title);
+        CHECK(restarted.variable(96,0)==1 && restarted.variable(97,0)==1 && restarted.variable(98,0)==1);
+        dc4scene::SceneRunner old_save(data);
+        CHECK(old_save.load_script(std::string(data)+"/MES/main.mes"));
+        old_save.set_variable(100,1,0);old_save.set_variable(100,2,0);
+        restarted.restore_scene_progress(old_save);
+        CHECK(old_save.variable(10,1)==(stage>=1) && old_save.variable(10,2)==(stage>=2));
+    }
     std::filesystem::remove(temporary);
     return failures ? 1 : 0;
 }

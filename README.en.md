@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.6.9](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.9)**. This release fixes DC4/DC4PH sprite animation, D.C. unlock requirements, dialogue portraits, and the CG gallery, and adds Android cursor mode. All 0.6.8 fixes remain included. Read the [release notes](docs/releases/v0.6.9/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.7.0](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.0)**. This release adds DC2DM PC saves and minigames, and fixes its progression, menus, voices, choices, CG gallery, and scene transitions. All 0.6.9 fixes remain included. Read the [release notes](docs/releases/v0.7.0/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -40,7 +40,7 @@ Arisa32 recognizes 21 official CIRCUS adv32 titles from the Da Capo and Dal Segn
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
 
-According to user testing, D.C. II Dearest Marriage is playable through to the end. Version 0.6.3 fixes the CONFIG text preview, image-based popups, portraits, and repeated voice playback. Support remains in beta; not every route or translation patch has been verified. See the [DC2DM limitations](docs/releases/v0.6.3/en.md#limitations).
+According to user testing, D.C. II Dearest Marriage is playable through to the end. Version 0.7.0 adds PC saves, progress import, rock-paper-scissors, and Reversi, and fixes menus, choices, voices, the CG gallery, and selected transitions following the game scripts. Support remains in beta; not every route, translation patch, or original effect has been verified. See the [DC2DM 0.7.0 notes](docs/releases/v0.7.0/en.md).
 
 ### Original Da Capo series
 
@@ -145,10 +145,12 @@ The save format depends on the game:
 | Game | Format |
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Native PC `.dat` files, with `.dat.arisa` companions for additional Arisa32 state |
-| D.C. II Dearest Marriage | Portable `.dc4sav` files; PC save import is not supported yet |
+| D.C. II Dearest Marriage (beta) | Native PC `.dat` + `.dat.arisa` files; existing portable saves remain loadable |
 | Profiles without native PC save support | Portable `.dc4sav` files, with preview and metadata files |
 
-Arisa32 can read and write the PC save format for the three titles in the first row. The `.dat.arisa` companion stores additional state, including audio playback positions. PC games ignore this companion. Arisa32 can still load `.dat` files without it, but music may restart and some additional state will be unavailable.
+Arisa32 can read and write the PC save format for the four titles above. The `.dat.arisa` companion stores additional state, including audio playback positions. PC games ignore this companion. Arisa32 can still load `.dat` files without it, but music may restart and some additional state will be unavailable.
+
+For DC2DM, quicksave uses `DC2DM01.dat`, autosave uses `DC2DM02.dat`, and the 100 regular slots use `DC2DM04.dat` through `DC2DM103.dat`. Arisa32 also reads the PC latest-save copy `DC2DM03.dat`, but does not refresh that separate copy; latest-save selection also considers regular slots. Save/Load rows show scenario titles, including titles from translated executables. Menu and gallery progress is imported from `system.dat`, then stored by Arisa32 in `system-profile.dat`. Exporting global progress back to `system.dat` is not available, and loading exported slots in the PC executable has not been directly verified. See the [DC2DM validation](docs/dc2dm-save-progress-validation.md).
 
 On Windows, Arisa32 uses an existing game save directory, then tries to create one inside `AdvData`. It falls back to `build/desktop/saves/`. Set `DC4_SAVE_DIR` to choose another location. On Android, Arisa32 uses the game save directory when it is writable, or app-specific internal storage otherwise.
 
@@ -181,6 +183,12 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
+The DC2DM Android probe uses the APK's JNI library and copied PC saves in a separate temporary directory. It does not install the app or write to the game directory:
+
+```sh
+python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves path/to/copied/SaveData --serial DEVICE_SERIAL --data "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/AdvData" --exe "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/DC2DM.EXE" --font path/to/msgothic.ttc
+```
+
 ## Repository layout
 
 - `core/`: C++17 script VM, MES interpreter, CRX/CRM decoders, XPCM audio, and scene rendering.
@@ -194,7 +202,7 @@ ctest --test-dir build/desktop --output-on-failure
 
 - The project covers CIRCUS adv32 scripts and assets for the Da Capo and Dal Segno series. Games using other engines are not supported.
 - Dialogue flow, branching choices, character voices, background transitions, CGs, BGM, and system menus are implemented. Some opcodes and game behavior still need verification. The audit in [RE-HANDOFF.md](docs/RE-HANDOFF.md), section 12, recorded that about 39% of opcode instances lacked an explicit code path on October 13, 2026; that historical figure does not measure coverage in the current release.
-- PC save compatibility is limited to the titles listed under [save data](#save-data). DC2DM still uses portable saves and has UI and voice bugs.
+- PC save compatibility is limited to the titles listed under [save data](#save-data). DC2DM support remains in beta; not every route or translation patch has been verified.
 - Arisa32 is an independent clean-room reverse-engineering project for research and preservation, not an official CIRCUS product. Development is ongoing.
 
 ## Copyright and trademarks

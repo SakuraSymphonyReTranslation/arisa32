@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-**Rilis terbaru: [v0.6.9](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.6.9)**. Rilis ini memperbaiki animasi sprite, syarat membuka D.C., portrait dialog, dan galeri CG DC4/DC4PH, serta menambahkan mode kursor Android. Seluruh perbaikan 0.6.8 tetap disertakan. Baca [catatan rilis](docs/releases/v0.6.9/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
+**Rilis terbaru: [v0.7.0](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.0)**. Rilis ini menambahkan save PC dan minigame DC2DM, serta memperbaiki progres, menu, suara, pilihan, galeri CG, dan transisi adegannya. Seluruh perbaikan 0.6.9 tetap disertakan. Baca [catatan rilis](docs/releases/v0.7.0/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -40,7 +40,7 @@ Arisa32 mengenali 21 judul resmi berbasis CIRCUS adv32 dari seri Da Capo dan Dal
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
 
-Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Versi 0.6.3 memperbaiki pratinjau teks CONFIG, popup bergambar, portrait, dan pemutaran suara berulang. Dukungan tetap berstatus beta; seluruh rute dan varian patch belum diverifikasi. Lihat [batasan DC2DM](docs/releases/v0.6.3/id.md#batasan).
+Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Versi 0.7.0 menambahkan save PC, impor progres, suit, dan Reversi, serta memperbaiki menu, pilihan, suara, galeri CG, dan sebagian transisi sesuai skrip game. Dukungan tetap berstatus beta; seluruh rute, varian patch, dan efek asli belum diverifikasi. Lihat [catatan DC2DM 0.7.0](docs/releases/v0.7.0/id.md).
 
 ### Seri Da Capo pertama
 
@@ -145,10 +145,12 @@ Format simpan bergantung pada game:
 | Game | Format |
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Format PC `.dat`, dengan berkas pendamping `.dat.arisa` untuk keadaan tambahan Arisa32 |
-| D.C. II Dearest Marriage | Format portabel `.dc4sav`; impor save PC belum didukung |
+| D.C. II Dearest Marriage (beta) | Format PC `.dat` + `.dat.arisa`; save portabel lama tetap dapat dimuat |
 | Profil tanpa dukungan format PC | Format portabel `.dc4sav`, dengan berkas pratinjau dan metadata |
 
-Arisa32 dapat membaca dan menulis format PC untuk tiga judul pada baris pertama. Berkas `.dat.arisa` menyimpan keadaan tambahan, termasuk posisi pemutaran audio. Game PC mengabaikan berkas pendamping ini. Arisa32 tetap dapat memuat `.dat` tanpa pendampingnya, tetapi musik dapat mulai dari awal dan sebagian keadaan tambahan tidak tersedia.
+Arisa32 dapat membaca dan menulis format PC untuk empat judul di atas. Berkas `.dat.arisa` menyimpan keadaan tambahan, termasuk posisi pemutaran audio. Game PC mengabaikan berkas pendamping ini. Arisa32 tetap dapat memuat `.dat` tanpa pendampingnya, tetapi musik dapat mulai dari awal dan sebagian keadaan tambahan tidak tersedia.
+
+Untuk DC2DM, quicksave memakai `DC2DM01.dat`, autosave `DC2DM02.dat`, dan 100 slot biasa `DC2DM04.dat` sampai `DC2DM103.dat`. Arisa32 juga membaca salinan save terakhir PC `DC2DM03.dat`, tetapi tidak memperbarui salinan terpisah tersebut; pemilihan save terakhir turut memeriksa slot biasa. Judul di layar Save/Load mengikuti judul skenario, termasuk judul dari executable terjemahan. Progres menu dan galeri diimpor dari `system.dat`, kemudian disimpan oleh Arisa32 dalam `system-profile.dat`. Ekspor balik progres global ke `system.dat` belum tersedia; pemuatan hasil ekspor slot dengan executable PC juga belum diverifikasi langsung. Lihat [validasi DC2DM](docs/dc2dm-save-progress-validation.md).
 
 Di Windows, Arisa32 memakai folder simpan game jika tersedia, lalu mencoba membuat folder simpan di dalam `AdvData`. `build/desktop/saves/` menjadi lokasi cadangan. Gunakan `DC4_SAVE_DIR` untuk menentukan lokasi sendiri. Di Android, Arisa32 memakai folder simpan game jika dapat ditulisi, atau penyimpanan internal khusus aplikasi jika tidak.
 
@@ -181,6 +183,12 @@ cmake --build build/desktop --parallel
 ctest --test-dir build/desktop --output-on-failure
 ```
 
+Probe Android DC2DM memakai pustaka JNI dari APK dan salinan save PC dalam folder sementara terpisah. Probe tidak memasang aplikasi atau menulis ke folder game:
+
+```sh
+python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves path/to/copied/SaveData --serial DEVICE_SERIAL --data "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/AdvData" --exe "/sdcard/Gamehub/Da Capo 2 Dearest Marriage/DC2DM.EXE" --font path/to/msgothic.ttc
+```
+
 ## Struktur repositori
 
 - `core/`: VM skrip C++17, interpreter MES, dekoder CRX/CRM, audio XPCM, dan render adegan.
@@ -194,7 +202,7 @@ ctest --test-dir build/desktop --output-on-failure
 
 - Cakupan proyek adalah skrip dan aset CIRCUS adv32 untuk seri Da Capo dan Dal Segno. Game dengan engine lain tidak didukung.
 - Alur dialog, percabangan pilihan, suara karakter, transisi latar, CG, BGM, dan menu sistem sudah tersedia. Sebagian opcode dan perilaku game masih memerlukan pemeriksaan. Audit dalam [RE-HANDOFF.md](docs/RE-HANDOFF.md) bagian 12 mencatat sekitar 39% kemunculan opcode belum memiliki jalur kode eksplisit pada 13 Oktober 2026; angka historis ini bukan pengukuran cakupan rilis saat ini.
-- Kompatibilitas save PC terbatas pada judul yang tercantum di [data simpan](#data-simpan). DC2DM masih memakai save portabel dan memiliki bug UI serta suara.
+- Kompatibilitas save PC terbatas pada judul yang tercantum di [data simpan](#data-simpan). Dukungan DC2DM masih beta; seluruh rute dan varian patch belum diverifikasi.
 - Arisa32 adalah proyek rekayasa balik independen dengan pendekatan clean-room untuk riset dan pelestarian, bukan produk resmi CIRCUS. Proyek ini masih dalam pengembangan.
 
 ## Hak cipta dan merek dagang

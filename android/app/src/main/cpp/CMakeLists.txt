@@ -26,6 +26,9 @@ set(DC4_CORE_SRC
     ${DC4_CORE}/src/scene_dc4_effects.cpp
     ${DC4_CORE}/src/scene_state.cpp
     ${DC4_CORE}/src/scene_dc2dm_ending.cpp
+    ${DC4_CORE}/src/dc2dm_minigame.cpp
+    ${DC4_CORE}/src/dc2dm_suit.cpp
+    ${DC4_CORE}/src/dc2dm_reversi.cpp
     ${DC4_CORE}/src/log_screen.cpp
     ${DC4_CORE}/src/save_screen.cpp
     ${DC4_CORE}/src/resource.cpp

@@ -231,6 +231,16 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     // Prepare allocations before changing live state. Do not replay variable
     // setters: aliases and future engine-service side effects must not fire.
     auto variables = snapshot.variables;
+    if(mes_->dialect==MesDialect::ClassicDM) {
+        for(int i=0;i<=20;++i) {
+            const auto old=variables.find({10,uint16_t(i)});
+            if(old!=variables.end()) {
+                auto& value=variables[{100,uint16_t(i)}];value=std::max(value,old->second);
+                variables.erase(old);
+            }
+        }
+        for(int i=100;i<150;++i)variables.erase({100,uint16_t(i)});
+    }
     auto choices = snapshot.choices;
     auto entry_label = snapshot.entry_label;
     variables_.swap(variables);
@@ -346,6 +356,9 @@ bool MesVm::choose(size_t index) {
 }
 
 int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
+    const bool dc2dm = mes_ && mes_->dialect == MesDialect::ClassicDM;
+    if (dc2dm && bank == 10) return index <= 20 ? read_variable(100,index) : 0;
+    if (dc2dm && bank == 100 && index >= 100) return 0;
     const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
     if (dc2pc && bank >= 200 && bank < 210) {
         if (index >= 97) return 0;
@@ -355,7 +368,7 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
     }
     const bool dc4 = mes_ && mes_->dialect == MesDialect::Modern &&
         (mes_->version == 0xAAB6 || mes_->version == 0xABB6);
-    if (!dc2pc && !dc4 && bank == 100 && index >= 100 && index <= 119) {
+    if (!dc2pc && !dc2dm && !dc4 && bank == 100 && index >= 100 && index <= 119) {
         const auto found = variables_.find({bank, index});
         if (found == variables_.end()) return 1;
         return found->second;
@@ -383,6 +396,9 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
 }
 
 void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
+    const bool dc2dm = mes_ && mes_->dialect == MesDialect::ClassicDM;
+    if (dc2dm && bank == 10) { if (index <= 20) write_variable(100,index,value); return; }
+    if (dc2dm && bank == 100 && index >= 100) return;
     const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
     if (dc2pc && bank >= 200 && bank < 210) {
         if (index >= 97) return;
@@ -395,7 +411,7 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
         if (index >= size) return;
         variables_[{bank, index}] = dc2pc && bank < 10 ? std::clamp(value,0,255) : uint8_t(value);
         if (dc2pc) return;
-        if (bank == 100 && index == 49)
+        if (!dc2dm && bank == 100 && index == 49)
             write_variable(99, 11, value);
         return;
     }

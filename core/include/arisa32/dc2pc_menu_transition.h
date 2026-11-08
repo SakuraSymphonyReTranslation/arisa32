@@ -13,6 +13,8 @@ public:
     bool active() const { return phase_ != Phase::Idle; }
     bool revealing() const { return phase_ == Phase::In; }
     void start(std::vector<uint8_t> outgoing, int native_speed, uint32_t wait_ms = 0, bool fade_out = true) {
+        circles_ = false;
+        circle_sheet_.clear();
         frame_ = std::move(outgoing);
         step_ = 1 << std::clamp(native_speed, 0, 3);
         duration_ = 640 / step_;
@@ -20,6 +22,14 @@ public:
         wait_ = wait_ms;
         elapsed_ = 0;
         phase_ = Phase::Out;
+    }
+    // DC2DM advmenu/title1 breaks the captured scene into moving EFF tiles.
+    // Only the return-to-title host path opts in; regular DC2PC fades stay intact.
+    void start_dc2dm_title(std::vector<uint8_t> outgoing, std::vector<uint8_t> sheet) {
+        start(std::move(outgoing), 1, 200);
+        circles_ = frame_.size() == 1280u * 720u * 4u;
+        circle_sheet_ = std::move(sheet);
+        out_duration_ = 1000;
     }
     // True exactly once, when the host may replace the scene behind black.
     bool update(uint32_t elapsed_ms) {
@@ -41,10 +51,15 @@ public:
     void finish() {
         phase_ = Phase::Idle;
         frame_.clear();
+        circle_sheet_.clear();
     }
     bool draw(std::vector<uint8_t>* output) const {
         if (!active() || frame_.empty()) return false;
         *output = frame_;
+        if (circles_ && phase_ == Phase::Out && elapsed_ > wait_) {
+            draw_circles(output, std::min(24u, (elapsed_ - wait_) / 40));
+            return true;
+        }
         int level = 0;
         if (phase_ == Phase::Out) {
             level = elapsed_ <= wait_ ? 16 :
@@ -59,9 +74,39 @@ public:
         return true;
     }
 private:
+    void draw_circles(std::vector<uint8_t>* output, unsigned tick) const {
+        std::fill(output->begin(), output->end(), 0);
+        for (size_t i = 3; i < output->size(); i += 4) (*output)[i] = 255;
+        uint32_t random = 0x9D72;
+        const auto velocity = [&random] {
+            random = random * 1664525u + 1013904223u;
+            return int((random >> 16) % 9) - 4;
+        };
+        for (int row = 0; row < 18; ++row) for (int col = 0; col < 32; ++col) {
+            const int dx = velocity() * int(tick), dy = velocity() * int(tick);
+            for (int y = 0; y < 40; ++y) for (int x = 0; x < 40; ++x) {
+                const int u = x * 32 / 40, v = y * 32 / 40;
+                bool visible;
+                if (circle_sheet_.size() == 800u * 32u * 4u) {
+                    const size_t mask = (size_t(v) * 800 + tick * 32 + u) * 4;
+                    visible = circle_sheet_[mask+3] != 0;
+                } else {
+                    const int radius = std::max(0, 16 - int(tick));
+                    visible = radius && (u-16)*(u-16)+(v-16)*(v-16) < radius*radius;
+                }
+                const int ox = col * 40 + x + dx, oy = row * 40 + y + dy;
+                if (!visible || ox < 0 || ox >= 1280 || oy < 0 || oy >= 720) continue;
+                const size_t source = (size_t(row * 40 + y) * 1280 + col * 40 + x) * 4;
+                const size_t dest = (size_t(oy) * 1280 + ox) * 4;
+                for (size_t c = 0; c < 3; ++c) (*output)[dest+c] = frame_[source+c];
+            }
+        }
+    }
     enum class Phase { Idle, Out, Black, In } phase_ = Phase::Idle;
     std::vector<uint8_t> frame_;
     uint32_t wait_ = 0, elapsed_ = 0, duration_ = 320, out_duration_ = 320;
     int step_ = 2;
+    bool circles_ = false;
+    std::vector<uint8_t> circle_sheet_;
 };
 } // namespace dc4ui

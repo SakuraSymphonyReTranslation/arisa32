@@ -28,7 +28,7 @@ void BstSprite::finish_motion() {
 }
 
 bool SceneRunner::animating() const {
-    return !dialogue_actions_.empty() || !camera_motion_.empty() || dc2pc_transition_active_ ||
+    return !dialogue_actions_.empty() || !camera_motion_.empty() || dc2pc_transition_active_ || dc2dm_transition_.active ||
         std::any_of(sprites_.begin(), sprites_.end(), [](const BstSprite& s) { return s.moving() || s.fade.active(); }) ||
         (is_dc4_or_dc4ph_ && (transition_active_ || !screen_effect_.empty()));
 }
