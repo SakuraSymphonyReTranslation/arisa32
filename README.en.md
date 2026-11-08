@@ -77,7 +77,7 @@ Standard, Limited, Deluxe, and Download editions are grouped under their main ti
 - An adv32/CIRCUS-themed `ArisaUi` interface with an Arisa crest icon.
 - ZIP save archive import and export.
 - Full-screen touch controls, dialogue backlog, and dialogue skipping.
-- Android API 36 target, with support for `arm64-v8a` and `armeabi-v7a`, including 16 KB memory pages on ARM64. Universal packages support Android 5.0 / API 21 and later; packages optimized for one ABI require Android 6.0 / API 23 and later.
+- Android API 36 target, with support for Android 5.0 / API 21 and later. The release and debug APKs each contain `arm64-v8a` and `armeabi-v7a`, including support for 16 KB memory pages on ARM64.
 
 ## Prepare the game folders
 
@@ -133,28 +133,24 @@ The script creates `android/Arisa32-debug.apk` from the same Gradle project used
 - CMake `3.22.1`.
 - JDK 17 or later.
 
-To build a release APK, choose one of these commands and run it from the `android` directory:
+To build a release APK, run this command from the `android` directory:
 
 ```bash
 ./gradlew assembleRelease
-./gradlew assembleRelease -ParisaAbi=arm64-v8a
-./gradlew assembleRelease -ParisaAbi=armeabi-v7a
 ```
 
-Without `-ParisaAbi`, the build still produces a universal APK. The next two commands build a package for the selected ABI. In PowerShell, use `.\gradlew.bat` instead of `./gradlew`. See the [Android guide](android/README.md) for build details, storage setup, and installation through ADB.
+The build produces a universal APK containing ARM64 and ARMv7. In PowerShell, use `.\gradlew.bat` instead of `./gradlew`. See the [Android guide](android/README.md) for build details, storage setup, and installation through ADB.
 
 Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
 | v0.7.1 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.1-all.apk` | 5.0 / API 21 | Universal, with ARM64 and ARMv7; choose this if unsure which your device supports or still using Android 5 |
-| `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARM64 support |
-| `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARMv7 support |
-| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Universal debug build for testing and diagnosis |
+| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Release build for normal use |
+| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
 
-Choose the package matching your device's ABI to reduce installed storage. Packages for one ABI load native libraries directly from the APK without creating an extracted copy. Universal packages keep legacy packaging for Android 5 support. `SHA256SUMS.txt` contains checksums for all four APKs.
+Both APKs are universal, each containing ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both APKs.
 
-Starting with 0.7.1, the in-app updater automatically selects the matching ABI package on Android 6.0+ and the universal package on Android 5. Updaters from earlier versions still download the universal package. Install updates without uninstalling the app to retain existing data.
+The in-app updater downloads the universal release package. Install updates without uninstalling the app to retain existing data.
 
 ## Desktop reading controls
 

@@ -28,26 +28,22 @@ The Bahasa Indonesia and English READMEs also explain how to separate original g
 
 ### Testing and limitations
 
-Feature reports record desktop tests and Android probes for [DC2DM menus and read history](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-menu-font-validation.md), [Pretendard layout](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-pretendard-layout-validation.md), [COMU text](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/comu-pretendard-padding-validation.md), and [the DC2PC gallery](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2pc-cgmode-validation.md). Those results belong to the development builds identified in each report. Checks for the 0.7.1 packages are recorded separately in the [release report](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/release-qa-0.7.1.md).
+Feature reports record desktop tests and Android probes for [DC2DM menus and read history](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-menu-font-validation.md), [Pretendard layout](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-pretendard-layout-validation.md), [COMU text](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/comu-pretendard-padding-validation.md), and [the DC2PC gallery](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2pc-cgmode-validation.md). Those results belong to the development builds identified in each report. Checks for the 0.7.1 packages are recorded separately in the [release report](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/main/docs/release-qa-0.7.1.md).
 
 - Some COMU messages in the DC4/DC4PH patches contain explicit line breaks that produce a third row. That row remains clipped by the original two-row area; this release does not rewrite patch text.
 - DC2DM global progress is still stored in `system-profile.dat`; exporting it back to `system.dat` is not supported yet. Loading exported slots directly in the PC executable has not been verified.
-- Feature tests on a device use ARM64. An ARMv7 package is available but has not been tested on a 32-bit device. These targeted checks do not establish pixel-for-pixel parity with PC or cover every patch variant and device.
+- Feature tests on a device use ARM64. ARMv7 support has not been tested on a 32-bit device. These targeted checks do not establish pixel-for-pixel parity with PC or cover every patch variant and device.
 
 ### Downloads and installation
 
 [Open the v0.7.1 download page](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
 
-- `Arisa32-v0.7.1-all.apk`: universal package for Android 5.0+ (API 21), with ARM64 and ARMv7. Choose this if you are unsure which your device supports or still use Android 5.
-- `Arisa32-v0.7.1-arm64-v8a.apk`: package for Android 6.0+ (API 23) with ARM64 support, using less installed storage.
-- `Arisa32-v0.7.1-armeabi-v7a.apk`: package for Android 6.0+ (API 23) with ARMv7 support, using less installed storage.
-- `Arisa32-v0.7.1-debug.apk`: universal debug package for Android 5.0+ (API 21), for testing and diagnosis.
-- `SHA256SUMS.txt`: checksums for all four APKs.
+- `Arisa32-v0.7.1.apk`: release package for normal use.
+- `Arisa32-v0.7.1-debug.apk`: debug package for testing and diagnosis.
+- `SHA256SUMS.txt`: checksums for both APKs.
 
-To reduce installed storage, choose the package matching your device's ABI. The ARM64 and ARMv7 packages load native libraries directly from the APK without creating an extracted copy. Universal packages keep legacy packaging for Android 5 support.
+Both APKs are universal, each containing ARM64 and ARMv7, and support Android 5.0+ (API 21).
 
-On the iQOO Z9x, the ARM64 package used **31.54 MB for app + data** after installation and launch, with MS Gothic and Pretendard already extracted. Game files in separate folders are excluded; storage use can change with data and cache. The release report above records the measurements.
-
-Starting with 0.7.1, the in-app updater automatically selects the matching ABI package on Android 6.0+ and the universal package on Android 5. Updaters from earlier versions still download the universal package.
+The in-app updater downloads the universal release package.
 
 Install the update without uninstalling the app to retain existing data. Game files and translation patches are supplied separately.

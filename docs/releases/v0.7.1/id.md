@@ -28,26 +28,22 @@ README Bahasa Indonesia dan English juga menjelaskan pemisahan data game asli da
 
 ### Pengujian dan batasan
 
-Laporan fitur mencatat pengujian desktop dan probe Android untuk [menu dan riwayat baca DC2DM](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-menu-font-validation.md), [tata letak Pretendard](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-pretendard-layout-validation.md), [teks COMU](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/comu-pretendard-padding-validation.md), dan [galeri DC2PC](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2pc-cgmode-validation.md). Hasil tersebut berasal dari build pengembangan yang disebutkan di setiap laporan. Pemeriksaan paket 0.7.1 dicatat terpisah dalam [laporan rilis](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/release-qa-0.7.1.md).
+Laporan fitur mencatat pengujian desktop dan probe Android untuk [menu dan riwayat baca DC2DM](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-menu-font-validation.md), [tata letak Pretendard](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2dm-pretendard-layout-validation.md), [teks COMU](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/comu-pretendard-padding-validation.md), dan [galeri DC2PC](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.1/docs/dc2pc-cgmode-validation.md). Hasil tersebut berasal dari build pengembangan yang disebutkan di setiap laporan. Pemeriksaan paket 0.7.1 dicatat terpisah dalam [laporan rilis](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/main/docs/release-qa-0.7.1.md).
 
 - Beberapa pesan COMU pada patch DC4/DC4PH memiliki baris baru eksplisit yang menghasilkan baris ketiga. Baris itu masih terpotong oleh area dua baris asli; rilis ini tidak menulis ulang teks patch.
 - Progres global DC2DM tetap disimpan dalam `system-profile.dat`; ekspor balik ke `system.dat` belum tersedia. Pemuatan slot hasil ekspor langsung dengan executable PC belum diverifikasi.
-- Pengujian fitur pada perangkat memakai ARM64. Paket ARMv7 tersedia, tetapi belum diuji pada perangkat 32-bit. Pemeriksaan terarah ini tidak menjamin kesamaan setiap piksel dengan PC atau mencakup semua varian patch dan perangkat.
+- Pengujian fitur pada perangkat memakai ARM64. Dukungan ARMv7 belum diuji pada perangkat 32-bit. Pemeriksaan terarah ini tidak menjamin kesamaan setiap piksel dengan PC atau mencakup semua varian patch dan perangkat.
 
 ### Unduhan dan pemasangan
 
 [Buka halaman unduhan v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
 
-- `Arisa32-v0.7.1-all.apk`: paket universal untuk Android 5.0+ (API 21), berisi ARM64 dan ARMv7. Pilih ini jika belum tahu jenis perangkat atau masih memakai Android 5.
-- `Arisa32-v0.7.1-arm64-v8a.apk`: paket hemat ruang untuk Android 6.0+ (API 23) dengan dukungan ARM64.
-- `Arisa32-v0.7.1-armeabi-v7a.apk`: paket hemat ruang untuk Android 6.0+ (API 23) dengan dukungan ARMv7.
-- `Arisa32-v0.7.1-debug.apk`: paket debug universal untuk Android 5.0+ (API 21), untuk pengujian dan diagnosis.
-- `SHA256SUMS.txt`: checksum keempat APK.
+- `Arisa32-v0.7.1.apk`: paket rilis untuk penggunaan biasa.
+- `Arisa32-v0.7.1-debug.apk`: paket debug untuk pengujian dan diagnosis.
+- `SHA256SUMS.txt`: checksum kedua APK.
 
-Untuk menghemat penyimpanan setelah pemasangan, pilih paket yang sesuai dengan ABI perangkat. Paket ARM64 dan ARMv7 membaca pustaka native langsung dari APK, tanpa membuat salinan hasil ekstraksi. Paket universal tetap memakai pengemasan lama agar mendukung Android 5.
+Kedua APK bersifat universal, masing-masing berisi ARM64 dan ARMv7, serta mendukung Android 5.0+ (API 21).
 
-Pada iQOO Z9x, paket ARM64 memakai **31,54 MB total aplikasi + data** setelah dipasang dan dibuka, dengan MS Gothic serta Pretendard sudah tersimpan. Berkas game di folder terpisah tidak termasuk angka ini; penggunaan ruang dapat berubah sesuai data dan cache. Rinciannya tersedia dalam laporan rilis di atas.
-
-Mulai versi 0.7.1, pembaru di dalam aplikasi memilih paket sesuai ABI secara otomatis pada Android 6.0+, dan paket universal pada Android 5. Pembaru dari versi sebelumnya tetap mengunduh paket universal.
+Pembaru di dalam aplikasi mengunduh paket rilis universal.
 
 Pasang pembaruan tanpa menghapus aplikasi agar data tetap tersimpan. Berkas game dan patch terjemahan disediakan terpisah.

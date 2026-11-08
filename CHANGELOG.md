@@ -12,7 +12,7 @@
 - Memperbaiki lebar huruf Pretendard pada pesan COMU DC4/DC4PH yang memakai spasi padding, dengan ukuran teks dan susunan dua baris tetap. Tata letak Sakuramusubi dan font lain dipertahankan.
 - Memperbaiki urutan CG DC2PC antarkelompok thumbnail, potongan dan gerakan gambar tinggi, serta pratinjau dari gambar sumber. Cache sampel mengurangi pekerjaan render saat gambar bergerak.
 - Memperbarui README Indonesia dan Inggris dengan petunjuk folder data asli, patch terjemahan, dan pemilihan bahasa.
-- Menyediakan APK ARM64 dan ARMv7 untuk Android 6.0+ yang menghemat penyimpanan dengan memuat pustaka native langsung dari APK. Paket universal dan debug tetap mendukung Android 5.0+; pembaru 0.7.1 memilih paket sesuai ABI pada Android 6.0+ dan universal pada Android 5. Pembaru versi lama tetap memilih universal.
+- Menyediakan APK rilis dan debug universal, masing-masing berisi ARM64 dan ARMv7 untuk Android 5.0+. Pembaru di dalam aplikasi mengunduh paket rilis universal.
 
 ### English
 
@@ -24,7 +24,7 @@
 - Corrects Pretendard letter widths in DC4/DC4PH COMU messages that use padding spaces while preserving text size and the two-line layout. Sakuramusubi layouts and other fonts remain unchanged.
 - Fixes DC2PC CG order between thumbnail groups, tall-image crops and movement, and previews rendered from source images. Cached samples reduce rendering work during movement.
 - Updates the Indonesian and English READMEs with original-data and translation-patch folder instructions and language selection.
-- Provides ARM64 and ARMv7 APKs for Android 6.0+ that reduce installed storage by loading native libraries directly from the APK. Universal and debug packages retain Android 5.0+ support; the 0.7.1 updater selects the matching ABI on Android 6.0+ and universal on Android 5. Older updaters still select universal.
+- Provides universal release and debug APKs, each containing ARM64 and ARMv7 for Android 5.0+. The in-app updater downloads the universal release package.
 
 Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.1/id.md) | [English](docs/releases/v0.7.1/en.md).
 

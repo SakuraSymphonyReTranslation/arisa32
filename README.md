@@ -77,7 +77,7 @@ Edisi Standard, Limited, Deluxe, dan Download dikelompokkan ke judul utamanya. G
 - Antarmuka `ArisaUi` bertema adv32/CIRCUS dengan ikon lambang Arisa.
 - Impor dan ekspor arsip data simpan dalam format ZIP.
 - Kontrol sentuh layar penuh, riwayat dialog, dan skip dialog.
-- Target Android API 36, mendukung `arm64-v8a` dan `armeabi-v7a`, dengan dukungan halaman memori 16 KB pada ARM64. Paket universal mendukung Android 5.0 / API 21 ke atas; paket per ABI yang lebih hemat ruang memerlukan Android 6.0 / API 23 ke atas.
+- Target Android API 36 dan mendukung Android 5.0 / API 21 ke atas. APK rilis dan debug masing-masing berisi `arm64-v8a` dan `armeabi-v7a`, dengan dukungan halaman memori 16 KB pada ARM64.
 
 ## Menyiapkan folder game
 
@@ -133,28 +133,24 @@ Skrip menghasilkan `android/Arisa32-debug.apk` dari proyek Gradle yang sama deng
 - CMake `3.22.1`.
 - JDK 17 atau lebih baru.
 
-Untuk membuat APK rilis, pilih salah satu perintah berikut dan jalankan dari folder `android`:
+Untuk membuat APK rilis, jalankan perintah berikut dari folder `android`:
 
 ```bash
 ./gradlew assembleRelease
-./gradlew assembleRelease -ParisaAbi=arm64-v8a
-./gradlew assembleRelease -ParisaAbi=armeabi-v7a
 ```
 
-Tanpa `-ParisaAbi`, build tetap menghasilkan APK universal. Dua perintah berikutnya membuat paket untuk ABI yang dipilih. Di PowerShell, gunakan `.\gradlew.bat` sebagai pengganti `./gradlew`. Lihat [panduan Android](android/README.md) untuk rincian build, pengaturan penyimpanan, dan pemasangan lewat ADB.
+Build menghasilkan APK universal yang berisi ARM64 dan ARMv7. Di PowerShell, gunakan `.\gradlew.bat` sebagai pengganti `./gradlew`. Lihat [panduan Android](android/README.md) untuk rincian build, pengaturan penyimpanan, dan pemasangan lewat ADB.
 
 APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
 | APK v0.7.1 | Android minimum | Kegunaan |
 | --- | --- | --- |
-| `Arisa32-v0.7.1-all.apk` | 5.0 / API 21 | Universal, berisi ARM64 dan ARMv7; pilih jika belum tahu jenis perangkat atau masih memakai Android 5 |
-| `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARM64 |
-| `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARMv7 |
-| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug universal untuk pengujian dan diagnosis |
+| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
+| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
 
-Pilih paket sesuai ABI perangkat untuk menghemat penyimpanan setelah pemasangan. Paket per ABI membaca pustaka native langsung dari APK tanpa membuat salinan hasil ekstraksi. Paket universal tetap memakai pengemasan lama untuk mendukung Android 5. `SHA256SUMS.txt` memuat checksum keempat APK.
+Kedua APK bersifat universal dan masing-masing berisi ARM64 serta ARMv7. `SHA256SUMS.txt` memuat checksum kedua APK.
 
-Mulai versi 0.7.1, pembaru di dalam aplikasi memilih paket sesuai ABI secara otomatis pada Android 6.0+, dan paket universal pada Android 5. Pembaru versi sebelumnya tetap mengunduh paket universal. Pasang pembaruan tanpa menghapus aplikasi agar data tetap tersimpan.
+Pembaru di dalam aplikasi mengunduh paket rilis universal. Pasang pembaruan tanpa menghapus aplikasi agar data tetap tersimpan.
 
 ## Kontrol membaca di desktop
 
