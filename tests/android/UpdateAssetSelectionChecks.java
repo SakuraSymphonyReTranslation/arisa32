@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.Locale;
 
 public final class UpdateAssetSelectionChecks {
-    private static final String UNIVERSAL = "Arisa32-v0.7.1.apk";
+    private static final String UNIVERSAL = "Arisa32-v0.7.1-all.apk";
     private static final String ARM64 = "Arisa32-v0.7.1-arm64-v8a.apk";
     private static final String ARM32 = "Arisa32-v0.7.1-armeabi-v7a.apk";
     private static final String DEBUG = "Arisa32-v0.7.1-debug.apk";
@@ -40,6 +40,12 @@ public final class UpdateAssetSelectionChecks {
 
     public static void main(String[] args) {
         checkOrders(new String[]{UNIVERSAL, ARM64, ARM32, DEBUG}, 0);
+        String[] sorted = {ARM64, ARM32, DEBUG, UNIVERSAL};
+        Arrays.sort(sorted);
+        checks++;
+        if (!UNIVERSAL.equals(sorted[0])) {
+            throw new AssertionError("Alphabetical release assets must put universal first for older updaters");
+        }
         expect(ARM32, new String[]{ARM32, UNIVERSAL}, ARM64_DEVICE, 23, "secondary supported ABI");
         expect(ARM64, new String[]{ARM32, ARM64}, ARM64_DEVICE, 36, "preferred ABI order");
         expect(ARM32, new String[]{ARM64, ARM32}, new String[]{"armeabi-v7a", "arm64-v8a"}, 36,

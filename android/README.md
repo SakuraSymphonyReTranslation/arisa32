@@ -48,7 +48,7 @@ checked scene snapshots.
 The [v0.7.1 release](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
 provides four APKs:
 
-- `Arisa32-v0.7.1.apk`: universal release, Android 5.0+.
+- `Arisa32-v0.7.1-all.apk`: universal release, Android 5.0+.
 - `Arisa32-v0.7.1-arm64-v8a.apk`: ARM64 release, Android 6.0+.
 - `Arisa32-v0.7.1-armeabi-v7a.apk`: ARMv7 release, Android 6.0+.
 - `Arisa32-v0.7.1-debug.apk`: universal debug build, Android 5.0+.

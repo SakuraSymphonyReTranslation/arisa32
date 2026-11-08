@@ -38,7 +38,7 @@ Feature reports record desktop tests and Android probes for [DC2DM menus and rea
 
 [Open the v0.7.1 download page](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
 
-- `Arisa32-v0.7.1.apk`: universal package for Android 5.0+ (API 21), with ARM64 and ARMv7. Choose this if you are unsure which your device supports or still use Android 5.
+- `Arisa32-v0.7.1-all.apk`: universal package for Android 5.0+ (API 21), with ARM64 and ARMv7. Choose this if you are unsure which your device supports or still use Android 5.
 - `Arisa32-v0.7.1-arm64-v8a.apk`: package for Android 6.0+ (API 23) with ARM64 support, using less installed storage.
 - `Arisa32-v0.7.1-armeabi-v7a.apk`: package for Android 6.0+ (API 23) with ARMv7 support, using less installed storage.
 - `Arisa32-v0.7.1-debug.apk`: universal debug package for Android 5.0+ (API 21), for testing and diagnosis.

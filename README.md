@@ -147,7 +147,7 @@ APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyR
 
 | APK v0.7.1 | Android minimum | Kegunaan |
 | --- | --- | --- |
-| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Universal, berisi ARM64 dan ARMv7; pilih jika belum tahu jenis perangkat atau masih memakai Android 5 |
+| `Arisa32-v0.7.1-all.apk` | 5.0 / API 21 | Universal, berisi ARM64 dan ARMv7; pilih jika belum tahu jenis perangkat atau masih memakai Android 5 |
 | `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARM64 |
 | `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARMv7 |
 | `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug universal untuk pengujian dan diagnosis |

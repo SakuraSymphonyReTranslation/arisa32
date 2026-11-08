@@ -38,7 +38,7 @@ Laporan fitur mencatat pengujian desktop dan probe Android untuk [menu dan riway
 
 [Buka halaman unduhan v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
 
-- `Arisa32-v0.7.1.apk`: paket universal untuk Android 5.0+ (API 21), berisi ARM64 dan ARMv7. Pilih ini jika belum tahu jenis perangkat atau masih memakai Android 5.
+- `Arisa32-v0.7.1-all.apk`: paket universal untuk Android 5.0+ (API 21), berisi ARM64 dan ARMv7. Pilih ini jika belum tahu jenis perangkat atau masih memakai Android 5.
 - `Arisa32-v0.7.1-arm64-v8a.apk`: paket hemat ruang untuk Android 6.0+ (API 23) dengan dukungan ARM64.
 - `Arisa32-v0.7.1-armeabi-v7a.apk`: paket hemat ruang untuk Android 6.0+ (API 23) dengan dukungan ARMv7.
 - `Arisa32-v0.7.1-debug.apk`: paket debug universal untuk Android 5.0+ (API 21), untuk pengujian dan diagnosis.

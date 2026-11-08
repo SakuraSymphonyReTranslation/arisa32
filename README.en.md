@@ -147,7 +147,7 @@ Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSympho
 
 | v0.7.1 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Universal, with ARM64 and ARMv7; choose this if unsure which your device supports or still using Android 5 |
+| `Arisa32-v0.7.1-all.apk` | 5.0 / API 21 | Universal, with ARM64 and ARMv7; choose this if unsure which your device supports or still using Android 5 |
 | `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARM64 support |
 | `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARMv7 support |
 | `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Universal debug build for testing and diagnosis |

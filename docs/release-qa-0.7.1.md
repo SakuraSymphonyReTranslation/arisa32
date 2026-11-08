@@ -7,7 +7,7 @@ versionCode is `18`, and the package remains `org.dc4engine`.
 
 | Artifact | Bytes | SHA256 |
 | --- | ---: | --- |
-| Arisa32-v0.7.1.apk | 16,440,457 | `9d5fe8a369560ed552486ecbc7cb76621410b088c5eb92656d7df4ca65b58251` |
+| Arisa32-v0.7.1-all.apk | 16,440,457 | `9d5fe8a369560ed552486ecbc7cb76621410b088c5eb92656d7df4ca65b58251` |
 | Arisa32-v0.7.1-debug.apk | 17,427,868 | `b9ab181ce72ad2c4c89e2fa9ebb3347839a8b0cb4d03aac8456471a7ccd823ec` |
 | Arisa32-v0.7.1-arm64-v8a.apk | 18,029,003 | `1a14d6a4afce0f9eee86698693cf40250d7669199562734282074c6569d66655` |
 | Arisa32-v0.7.1-armeabi-v7a.apk | 16,510,555 | `0028ed1f3ba35666a4796e057a851e395204060b66a4383f12e9d29cbf155615` |
@@ -51,9 +51,10 @@ and `package-checks.log`. Distribution checksums are in `SHA256SUMS.txt`.
   and the final source check.
 - Java profile checks passed 328 assertions. The release-note parser passed
   171 checks against the bilingual release documents.
-- The ABI selector passed 119 JVM checks, including all 24 permutations of
+- The ABI selector passed 120 JVM checks, including all 24 permutations of
   the four APK names, release/debug preference, unsupported ABIs, fallback
-  to universal packages, and the API 22/23 boundary.
+  to universal packages, the API 22/23 boundary, and alphabetical ordering
+  that keeps the universal APK first for older updaters.
 - Source and fixture review excludes the unrelated top-level AGP edit,
   generated outputs, and local player saves. The added test fixtures create
   synthetic data or read original assets from caller-supplied locations.
@@ -63,8 +64,10 @@ and `package-checks.log`. Distribution checksums are in `SHA256SUMS.txt`.
 
 The new updater selects a compatible individual ABI package on API 23+
 and the universal package on API 21/22. Older updaters select the first
-non-debug APK in the release asset list; the universal release APK is
-uploaded first to preserve their compatibility.
+non-debug APK in the release asset list. The universal package is named
+`Arisa32-v0.7.1-all.apk` so it appears before the ABI packages in the observed
+alphabetical order of GitHub's REST response, preserving compatibility with
+those updaters.
 
 ## Final ARM64 device checks
 
