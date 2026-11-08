@@ -1,5 +1,10 @@
 # Arisa32 0.7.1 release verification
 
+The later v0.7.1 updater rebuild uses version code 19. Its package hashes and
+download verification are recorded in
+[Updater rebuild verification](update-download-fallback-validation.md).
+The measurements below describe the original version-code-18 APKs.
+
 Verified on 2026-11-08, Asia/Bangkok. Android versionName is `0.7.1`,
 versionCode is `18`, and the package remains `org.dc4engine`.
 

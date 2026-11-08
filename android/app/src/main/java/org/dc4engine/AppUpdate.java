@@ -29,10 +29,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class AppUpdate {
     enum Stage { IDLE, DOWNLOADING, VERIFYING, PREPARING, CANCELLING, READY, INSTALLING, CONFIRM, SUCCESS, FAILED, CANCELLED }
     static final class Asset {
-        final String tag, url, digest;
+        final String tag, url, apiUrl, digest;
         final long size;
         Asset(String tag, String url, long size, String digest) {
-            this.tag = tag; this.url = url; this.size = size; this.digest = digest;
+            this(tag, url, null, size, digest);
+        }
+        Asset(String tag, String url, String apiUrl, long size, String digest) {
+            this.tag = tag; this.url = url; this.apiUrl = apiUrl; this.size = size; this.digest = digest;
         }
     }
     static final class State {
@@ -125,9 +128,9 @@ final class AppUpdate {
         String error = "";
         try {
             final long[] lastUpdate = {0};
-            UpdateDownload.fetch(asset.url, asset.size, asset.digest, temporary, job, (received, total) -> {
+            UpdateDownload.fetch(asset.url, asset.apiUrl, asset.size, asset.digest, temporary, job, (received, total) -> {
                 long now = SystemClock.elapsedRealtime();
-                if (now - lastUpdate[0] < 100 && received != total) return;
+                if (now - lastUpdate[0] < 100 && received != 0 && received != total) return;
                 lastUpdate[0] = now;
                 synchronized (this) {
                     if (!job.get()) publish(Stage.DOWNLOADING, asset, received, total, "");

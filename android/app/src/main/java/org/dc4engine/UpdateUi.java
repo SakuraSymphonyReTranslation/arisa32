@@ -140,6 +140,11 @@ final class UpdateUi implements AppUpdate.Listener {
 
     private boolean canInstall() { return Build.VERSION.SDK_INT < 26 || activity.getPackageManager().canRequestPackageInstalls(); }
     private String error(String code) {
+        if ("timeout".equals(code) || "network".equals(code) || "response".equals(code) ||
+                (code != null && code.startsWith("HTTP "))) return tr(
+                "GitHub could not send the update file. Try again or use another connection.",
+                "GitHub belum dapat mengirim berkas pembaruan. Coba lagi atau gunakan koneksi lain.",
+                "GitHubから更新ファイルを取得できませんでした。再試行するか、別の接続をお試しください。");
         if ("missing".equals(code)) return tr("No APK is available for this release yet. Check again later.",
                 "APK untuk rilis ini belum tersedia. Periksa kembali nanti.", "このリリースのAPKはまだありません。後でもう一度確認してください。");
         if ("package".equals(code) || "signature".equals(code)) return tr(

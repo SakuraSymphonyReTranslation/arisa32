@@ -84,9 +84,11 @@ javac -encoding UTF-8 -d build/update-download-check android/app/src/main/java/o
 java -cp build/update-download-check org.dc4engine.UpdateDownloadChecks
 ```
 
-The 15 cases cover known/unknown lengths, byte progress, checksum verification,
+The 48 cases cover known/unknown lengths, byte progress, checksum verification,
 absolute/relative redirects, redirect loops, HTTPS downgrades, HTTP failures,
 truncation, excess bytes, incorrect metadata, oversize payloads and cancellation.
+They also cover the scoped GitHub API fallback, retry limits, network failures,
+progress resets, and cancellation during retry delays.
 Every failure must remove the partial file and close its connection.
 
 For device tests, prepare these APK fixtures under the QA application's

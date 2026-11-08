@@ -4,6 +4,15 @@
 
 D.C. II Dearest Marriage kini dapat dimainkan sampai selesai (fully playable). Rilis 8 November 2026 ini memperbaiki perpindahan menu dan riwayat baca DC2DM, menambahkan font Pretendard JP Bold, serta memperbaiki teks COMU dan galeri CG DC2PC. Seluruh perbaikan 0.7.0 tetap disertakan.
 
+### Perbaikan pembaru di dalam aplikasi
+
+- APK v0.7.1 yang diperbarui menambahkan percobaan ulang terbatas dan jalur unduhan cadangan melalui API GitHub resmi saat unduhan langsung mengalami gangguan koneksi atau error sementara, termasuk HTTP 504.
+- Pembaru tetap memeriksa ukuran dan checksum unduhan, identitas aplikasi, versi, serta sertifikat APK sebelum pemasangan. Membatalkan pembaruan juga menghentikan percobaan ulang dan membersihkan berkas sementara.
+
+Versi lama seperti v0.6.6 dan v0.6.7 dapat langsung memperbarui ke v0.7.1. Jika jalur unduhan GitHub tidak dapat diakses, gunakan VPN atau jaringan lain untuk mendapatkan APK ini; jalur cadangan baru tersedia setelah APK yang diperbarui terpasang. Unduhan tetap memerlukan koneksi ke server GitHub.
+
+Jika sudah memakai v0.7.1 sebelum perbaikan pembaru ini, unduh APK v0.7.1 yang diperbarui dari halaman rilis lalu pasang tanpa menghapus aplikasi. Pemeriksaan otomatis tidak menawarkan ulang nomor versi yang sama.
+
 ### D.C. II Dearest Marriage
 
 - Perpindahan Title ke pilihan cerita mengikuti transisi skrip tanpa jeda hitam tambahan. Latar, logo, dan label cerita ikut meredup saat cerita dimulai; label tidak lagi tertinggal pada layar hitam atau muncul kembali saat opening dibatalkan.

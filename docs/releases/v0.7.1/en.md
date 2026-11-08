@@ -4,6 +4,15 @@
 
 D.C. II Dearest Marriage is now fully playable through to completion. This November 8, 2026 release fixes DC2DM menu transitions and read history, adds the Pretendard JP Bold font, and improves COMU text and the DC2PC CG gallery. All fixes from 0.7.0 remain included.
 
+### In-app updater fix
+
+- The revised v0.7.1 APK adds limited retries and an alternative download route through the official GitHub API when a direct download encounters a connection problem or temporary server error, including HTTP 504.
+- The updater still checks the download size and checksum, app identity, version, and APK signing certificate before installation. Canceling an update also stops retries and removes temporary files.
+
+Older versions such as v0.6.6 and v0.6.7 can update directly to v0.7.1. If GitHub's download route is unreachable, use a VPN or another network to obtain this APK; the alternative route becomes available after the revised APK is installed. Downloads still require a connection to GitHub's servers.
+
+If you already installed v0.7.1 before this updater fix, download the revised v0.7.1 APK from the release page and install it without uninstalling the app. Automatic checks do not offer the same version number again.
+
 ### D.C. II Dearest Marriage
 
 - Moving from Title to story selection follows the scripted transition without an extra black gap. The background, logo, and story labels fade together when a story starts; labels no longer remain over black or reappear when an opening is canceled.

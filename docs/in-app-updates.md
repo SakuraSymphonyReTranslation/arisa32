@@ -13,6 +13,15 @@ asset sizes or SHA-256 digests. A missing asset never falls back to downloading
 the release's HTML page. When GitHub supplies no digest, package-signature
 verification still applies.
 
+The revised v0.7.1 updater uses the selected release asset's `url` as a fallback
+when `browser_download_url` fails with a connection problem or a temporary HTTP
+error. The fallback is restricted to the official repository's HTTPS asset API
+endpoint and requests the binary with `Accept: application/octet-stream`.
+It uses public API access without embedding a GitHub token. Retries are bounded,
+and cancellation also stops the delay before another attempt. Each attempt
+starts with a fresh partial file and applies the same size and checksum checks;
+an integrity failure is not retried as a network error.
+
 `AppUpdate` verifies the package name, release version name, strictly increasing
 version code, and signing certificate before staging the APK in Android's
 `PackageInstaller`. It supports verified certificate rotation on Android 9+
@@ -45,6 +54,19 @@ already granted, subsequent updates proceed to the system confirmation.
 Installer callbacks use an explicit receiver, a per-session random token, and
 the Android session ID. The receiver is not exported. A stale or unrelated
 callback cannot complete or cancel another update.
+
+## Updating from older versions
+
+Versions such as v0.6.6 and v0.6.7 can update directly to v0.7.1 without installing
+intermediate releases. Their installed downloader still uses the direct GitHub
+release URL. If that route is unreachable, a VPN or another working network may
+be needed once to obtain the revised APK. The API fallback takes effect only
+after that APK is installed, and still requires access to GitHub's servers.
+
+This updater fix keeps the v0.7.1 version name. Clients that already report
+v0.7.1 will not offer the revised APK because release discovery compares version
+names. Those users can download the revised APK from the release page and
+install it over the existing app without uninstalling it.
 
 ## Interface and verification
 
@@ -81,8 +103,9 @@ Recorded results on 2026-11-02:
 
 Evidence is stored in `build/updater-validation/` (ignored build output).
 
-See `tests/android/README.md` for reproducible commands. Production version
-0.6.4 uses code 11. The isolated QA fixture keeps its baseline at 0.6.3 / code 10
-and its candidate at 0.6.4 / code 11, independently of production. Future published updates must increment the version
-code and match the release tag; changing only the release description or
-replacing an APK under the same tag does not produce a newer application.
+See `tests/android/README.md` for reproducible commands. The run above used
+production version 0.6.4 / code 11. The isolated QA fixture keeps its baseline
+at 0.6.3 / code 10 and its candidate at 0.6.4 / code 11, independently of
+production. Updated APKs must increment the version code and match the release
+tag. A rebuild under the same version name can be installed manually with a
+higher version code, but only a newer version name triggers the update offer.

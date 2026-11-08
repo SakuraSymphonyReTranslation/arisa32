@@ -3953,6 +3953,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
                 final AppUpdate.Asset download = new AppUpdate.Asset(tagName,
                         apkAsset == null ? null : apkAsset.optString("browser_download_url", null),
+                        apkAsset == null ? null : apkAsset.optString("url", null),
                         apkAsset == null ? 0 : apkAsset.optLong("size", 0),
                         apkAsset == null || apkAsset.isNull("digest") ? null : apkAsset.optString("digest", null));
 

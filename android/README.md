@@ -43,6 +43,13 @@ Each APK contains ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both
 APKs. The in-app updater downloads the universal release package. Install
 updates without uninstalling the app to retain existing data.
 
+The revised v0.7.1 APK adds limited retries and a fallback through the official
+GitHub API when direct downloads fail with a connection problem or temporary
+server error. Older versions, including v0.6.6 and v0.6.7, can update directly
+to v0.7.1, but may need a VPN or another working network to obtain this fix.
+If v0.7.1 is already installed, download and install the revised APK manually;
+automatic checks do not offer the same version number again.
+
 ## Add and choose games
 
 - **Add game folder → Choose folder** uses Android's Storage Access Framework.
