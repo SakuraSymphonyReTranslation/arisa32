@@ -4,6 +4,21 @@
 
 namespace dc4scene {
 
+inline bool comu_padded_latin_text(const std::string& text) {
+    bool padding = false, latin = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const auto ch = static_cast<unsigned char>(text[i]);
+        if ((ch >= 0x81 && ch <= 0x9F) || (ch >= 0xE0 && ch <= 0xFC)) {
+            if (++i >= text.size()) return false;
+            continue;
+        }
+        if (ch == 0x7F) return false;
+        padding = padding || ch == 0xA5;
+        latin = latin || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+    }
+    return padding && latin;
+}
+
 inline bool comu_prose_text(const std::string& text) {
     bool del = false, space = true, ascii = true;
     for (size_t i = 0; i < text.size(); ++i) {

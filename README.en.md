@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.7.0](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.0)**. This release adds DC2DM PC saves and minigames, and fixes its progression, menus, voices, choices, CG gallery, and scene transitions. All 0.6.9 fixes remain included. Read the [release notes](docs/releases/v0.7.0/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)**. D.C. II Dearest Marriage is now fully playable. This release fixes DC2DM menu transitions and text layout, the DC2PC CG gallery, and COMU letter spacing in D.C.4 and Plus Harmony when using Pretendard JP Bold. The font is now bundled with the Android app. Read the [release notes](docs/releases/v0.7.1/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -38,9 +38,9 @@ Arisa32 recognizes 21 official CIRCUS adv32 titles from the Da Capo and Dal Segn
 - `D.C. II P.C. ~Da Capo II Plus Communication~`
 - `D.C. II To You ~Da Capo II To You~`
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
-- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
+- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
 
-According to user testing, D.C. II Dearest Marriage is playable through to the end. Version 0.7.0 adds PC saves, progress import, rock-paper-scissors, and Reversi, and fixes menus, choices, voices, the CG gallery, and selected transitions following the game scripts. Support remains in beta; not every route, translation patch, or original effect has been verified. See the [DC2DM 0.7.0 notes](docs/releases/v0.7.0/en.md).
+According to user testing, D.C. II Dearest Marriage is fully playable through to the end. Support includes PC saves, progress import, rock-paper-scissors, Reversi, menus, choices, voices, and the CG gallery. Version 0.7.1 fixes story selector and minigame transitions, preserves read history when importing PC progress, and adjusts text layout for Pretendard JP Bold. See the [DC2DM 0.7.1 notes](docs/releases/v0.7.1/en.md).
 
 ### Original Da Capo series
 
@@ -72,12 +72,31 @@ Standard, Limited, Deluxe, and Download editions are grouped under their main ti
 
 - A persistent game library with automatic detection for the 21 titles above.
 - Direct reading from MicroSD and USB OTG storage (`/storage/XXXX-XXXX`) without copying all game files to internal storage.
-- A bundled `MSGOTHIC.TTC` font for Japanese text, with options for system fonts and custom TTF/OTF/TTC fonts.
+- Bundled `MSGOTHIC.TTC` for Japanese text and an optional Pretendard JP Bold font, with options for system fonts and custom TTF/OTF/TTC fonts.
 - Game removal from the library with an option to delete copied files, plus duplicate entry detection.
 - An adv32/CIRCUS-themed `ArisaUi` interface with an Arisa crest icon.
 - ZIP save archive import and export.
 - Full-screen touch controls, dialogue backlog, and dialogue skipping.
-- Android API 36 target, with support for Android 5.0 / API 21 and later, `arm64-v8a` and `armeabi-v7a`, and 16 KB memory pages.
+- Android API 36 target, with support for `arm64-v8a` and `armeabi-v7a`, including 16 KB memory pages on ARM64. Universal packages support Android 5.0 / API 21 and later; packages optimized for one ABI require Android 6.0 / API 23 and later.
+
+## Prepare the game folders
+
+Keep the original game files and translation patch in separate folders inside the game directory:
+
+| Contents | Folder |
+| --- | --- |
+| Raw / original game files without a patch | `AdvData` |
+| An Indonesian or English translation patch, if used | `id_data` |
+
+For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place one translation pack in an `id_data` folder beside it. Preserve the patch's subfolder and file structure.
+
+On Android:
+
+1. Add the `AdvData` folder to the game library.
+2. To use a patch, open the game settings and choose **Import language pack**. Select **Bahasa Indonesia** or **English** to match the patch, choose the text encoding specified by its author, then select the `id_data` folder.
+3. Select the language to play under **Game language**. The original version uses the Japanese option; each language has separate save data.
+
+Arisa32 detects the name `id_data` as an Indonesian pack. If that folder contains an English patch, register it through **Import language pack** with **English** selected so it is available as English.
 
 ## Build and run on Windows
 
@@ -114,7 +133,28 @@ The script creates `android/Arisa32-debug.apk` from the same Gradle project used
 - CMake `3.22.1`.
 - JDK 17 or later.
 
-Prebuilt APKs are also available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases). See the [Android guide](android/README.md) for permissions, storage setup, and installation through ADB.
+To build a release APK, choose one of these commands and run it from the `android` directory:
+
+```bash
+./gradlew assembleRelease
+./gradlew assembleRelease -ParisaAbi=arm64-v8a
+./gradlew assembleRelease -ParisaAbi=armeabi-v7a
+```
+
+Without `-ParisaAbi`, the build still produces a universal APK. The next two commands build a package for the selected ABI. In PowerShell, use `.\gradlew.bat` instead of `./gradlew`. See the [Android guide](android/README.md) for build details, storage setup, and installation through ADB.
+
+Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
+
+| v0.7.1 APK | Minimum Android | Use |
+| --- | --- | --- |
+| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Universal, with ARM64 and ARMv7; choose this if unsure which your device supports or still using Android 5 |
+| `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARM64 support |
+| `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Reduced installed storage on devices with ARMv7 support |
+| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Universal debug build for testing and diagnosis |
+
+Choose the package matching your device's ABI to reduce installed storage. Packages for one ABI load native libraries directly from the APK without creating an extracted copy. Universal packages keep legacy packaging for Android 5 support. `SHA256SUMS.txt` contains checksums for all four APKs.
+
+Starting with 0.7.1, the in-app updater automatically selects the matching ABI package on Android 6.0+ and the universal package on Android 5. Updaters from earlier versions still download the universal package. Install updates without uninstalling the app to retain existing data.
 
 ## Desktop reading controls
 
@@ -145,7 +185,7 @@ The save format depends on the game:
 | Game | Format |
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Native PC `.dat` files, with `.dat.arisa` companions for additional Arisa32 state |
-| D.C. II Dearest Marriage (beta) | Native PC `.dat` + `.dat.arisa` files; existing portable saves remain loadable |
+| D.C. II Dearest Marriage | Native PC `.dat` + `.dat.arisa` files; existing portable saves remain loadable |
 | Profiles without native PC save support | Portable `.dc4sav` files, with preview and metadata files |
 
 Arisa32 can read and write the PC save format for the four titles above. The `.dat.arisa` companion stores additional state, including audio playback positions. PC games ignore this companion. Arisa32 can still load `.dat` files without it, but music may restart and some additional state will be unavailable.
@@ -202,7 +242,7 @@ python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves
 
 - The project covers CIRCUS adv32 scripts and assets for the Da Capo and Dal Segno series. Games using other engines are not supported.
 - Dialogue flow, branching choices, character voices, background transitions, CGs, BGM, and system menus are implemented. Some opcodes and game behavior still need verification. The audit in [RE-HANDOFF.md](docs/RE-HANDOFF.md), section 12, recorded that about 39% of opcode instances lacked an explicit code path on October 13, 2026; that historical figure does not measure coverage in the current release.
-- PC save compatibility is limited to the titles listed under [save data](#save-data). DC2DM support remains in beta; not every route or translation patch has been verified.
+- PC save compatibility is limited to the titles listed under [save data](#save-data).
 - Arisa32 is an independent clean-room reverse-engineering project for research and preservation, not an official CIRCUS product. Development is ongoing.
 
 ## Copyright and trademarks

@@ -216,10 +216,114 @@ static void deferred_channel_adoption() {
           "new channels inherit the adopted script group ramps");
 }
 
+static void dc2dm_retained_title_bgm() {
+    using namespace dc4;
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("arisa32-title-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto write = [&](const std::filesystem::path& relative, const std::vector<uint8_t>& bytes) {
+        const auto path = directory / relative;
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        check(bool(file), "write retained title audio fixture");
+    };
+    std::vector<uint8_t> names(772 + 4 + 2 * 192 + 12);
+    put32(names, 0, 6); put32(names, 772, 2);
+    for (size_t id = 0; id < 2; ++id) {
+        const std::string name = id ? "BGM\\STORY" : "BGM\\TITLE";
+        for (size_t i = 0; i < name.size(); ++i) names[776 + id * 192 + i] = uint8_t(name[i]);
+        std::vector<uint8_t> pcm(28 + 16);
+        pcm[0] = 'X'; pcm[1] = 'P'; pcm[2] = 'C'; pcm[3] = 'M';
+        put32(pcm, 4, 16); pcm[12] = 1; pcm[14] = 1;
+        put32(pcm, 16, 44100); put32(pcm, 20, 44100);
+        pcm[24] = 1; pcm[26] = 8;
+        for (size_t i = 0; i < 16; ++i) pcm[28 + i] = uint8_t(129 + id * 32 + i);
+        write(id ? "BGM/STORY.pcm" : "BGM/TITLE.pcm", pcm);
+    }
+    write("GRP/NAMES.DAT", names);
+    auto command = [](uint16_t id, uint16_t mode) {
+        MesCommand raw;
+        raw.dc2dm = true; raw.kind = CmdKind::Words4; raw.op = 0x52;
+        raw.words[0] = id; raw.words[1] = mode;
+        return mes_engine_command(raw);
+    };
+    AudioEngine live, expected;
+    const auto title = (directory / "BGM/TITLE.pcm").string();
+    for (auto* audio : {&live, &expected}) {
+        check(audio->play_bgm_file(title), "start retained title fixture");
+        audio->set_master_volume(80);
+        audio->set_user_volume(AudioGroup::Bgm, 90);
+        audio->set_group_volume(AudioGroup::Bgm, 70, 100);
+        audio->fade_group_pan(AudioGroup::Bgm, 2500, 100);
+        render(*audio, 7);
+    }
+    SceneAudio scene(directory.string());
+    scene.set_engine(&live, nullptr);
+    check(!scene.adopt_playing_bgm("BGM/unknown") && scene.current_bgm() == -1,
+          "unknown title asset cannot claim the live channel");
+    check(scene.adopt_playing_bgm("bgm/title.PCM"), "match retained title name across case, slash and extension");
+    const auto adopted = scene.capture_snapshot();
+    check(adopted.bgm_id == 0 && adopted.bgm_mode == 1 && !adopted.bgm_alternate &&
+          adopted.bgm_playing && adopted.bgm_position_frames == 7 && adopted.bgm_volume == 70 &&
+          adopted.saved_bgm_volume == -1 && adopted.groups[0].volume_remaining_frames == 4403 &&
+          adopted.groups[0].pan_remaining_frames == 4403,
+          "adoption records current title position and in-progress script controls");
+    check(scene.dispatch(command(0, 1)) && !live.channel_playing(1) && live.channel_position(0) == 7,
+          "native same-ID mode1 keeps title channel without a second fading copy");
+    check(render(live, 64) == render(expected, 64),
+          "native selector BGM preserves every sample, user control and ramp");
+    AudioEngine restored;
+    SceneAudio restored_scene(directory.string());
+    restored_scene.set_engine(&restored, nullptr);
+    restored.set_master_volume(80); restored.set_user_volume(AudioGroup::Bgm, 90);
+    check(restored_scene.restore_snapshot(scene.capture_snapshot()) &&
+          render(restored, 64) == render(expected, 64), "retained title metadata can restore matching playback");
+    check(scene.dispatch(command(0, 0)) && live.channel_playing(1) && live.channel_position(0) == 0,
+          "native explicit restart still replaces the adopted title channel");
+    render(live, 3);
+    check(scene.dispatch(command(1, 1)) && scene.current_bgm() == 1 &&
+          live.channel_position(0) == 0 && live.channel_position(1) == 3,
+          "native different-ID mode1 still starts its new track");
+    live.stop_bgm();
+    check(!scene.adopt_playing_bgm("BGM/TITLE"), "stopped channel cannot be adopted");
+    SceneAudio headless(directory.string()), missing((directory / "missing").string());
+    missing.set_engine(&live, nullptr);
+    check(!headless.adopt_playing_bgm("BGM/TITLE") && !missing.adopt_playing_bgm("BGM/TITLE"),
+          "adoption requires both an audio engine and its names catalogue");
+
+    std::vector<uint8_t> script{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,
+                              0x52,0,0,1,0,0,0,0,0,0x4F,0x2D,0x25,0x2E,0x35,0,
+                              0x06,0,0,0x0D,1,0,0};
+    const auto path = directory / "MES/selector.mes";
+    write("MES/selector.mes", script);
+    dc4scene::SceneRunner runner(directory.string());
+    runner.set_audio(&live, nullptr);
+    check(runner.load_script(path.string()), "load seeded selector audio fixture");
+    check(live.play_bgm_file(title), "restart host title before selector handoff");
+    render(live, 7);
+    check(!runner.seed_dc2dm_bgm("BGM/TITLE"), "unseeded scene cannot inherit host title metadata");
+    check(runner.seed_dc2dm_presentation(runner.frame()) && runner.seed_dc2dm_bgm("BGM/TITLE"),
+          "DC2DM scene accepts audio only with its pending presentation seed");
+    check(runner.advance_to_next_text() && runner.current_line() == "MENU" &&
+          live.channel_position(0) == 7 && !live.channel_playing(1),
+          "native raw52 through SceneRunner preserves the retained title");
+    runner.advance_to_next_text();
+    check(!runner.seed_dc2dm_bgm("BGM/TITLE"), "authored transition consumes permission to seed title metadata");
+    for (uint16_t version : {0xAAB6, 0xABB6, 0x9969}) {
+        script = {1,0,0,0,3,0,0,0,0,0,uint8_t(version),uint8_t(version >> 8),0,0};
+        write("MES/other.mes", script);
+        check(runner.load_script((directory / "MES/other.mes").string()) &&
+              !runner.seed_dc2dm_presentation(runner.frame()) && !runner.seed_dc2dm_bgm("BGM/TITLE"),
+              "other game profiles cannot adopt DC2DM title presentation or BGM");
+    }
+    std::filesystem::remove_all(directory);
+}
+
 int main(int argc, char** argv) {
     using namespace dc4;
     dc2dm_voice_prefetch();
     deferred_channel_adoption();
+    dc2dm_retained_title_bgm();
     AudioEngine audio;
     check(audio.play_pcm(0, {100, 200, 300, 400, 500}, 44100, 1, {true, 1, 4}), "loop PCM load");
     auto output = render(audio, 8);

@@ -120,6 +120,11 @@ if(BUILD_TESTING)
     target_link_libraries(text_render_test PRIVATE dc4core)
     add_test(NAME text_render_test COMMAND text_render_test
         "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
+    add_executable(dc2dm_font_test tests/dc2dm_font_test.cpp)
+    target_link_libraries(dc2dm_font_test PRIVATE arisa32_core)
+    add_test(NAME dc2dm_font_test COMMAND dc2dm_font_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC"
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/PretendardJP-Bold.ttf")
     add_executable(comu_text_test tests/comu_text_test.cpp)
     target_link_libraries(comu_text_test PRIVATE arisa32_core)
     add_test(NAME comu_text_test COMMAND comu_text_test
@@ -130,6 +135,9 @@ if(BUILD_TESTING)
     add_executable(dc2pc_menu_test tests/dc2pc_menu_test.cpp)
     target_link_libraries(dc2pc_menu_test PRIVATE dc4core)
     add_test(NAME dc2pc_menu_test COMMAND dc2pc_menu_test)
+    add_executable(dc2pc_gallery_test tests/dc2pc_gallery_test.cpp)
+    target_link_libraries(dc2pc_gallery_test PRIVATE arisa32_core)
+    add_test(NAME dc2pc_gallery_test COMMAND dc2pc_gallery_test)
     add_executable(dc2dm_menu_test tests/dc2dm_menu_test.cpp)
     target_link_libraries(dc2dm_menu_test PRIVATE arisa32_core)
     add_test(NAME dc2dm_menu_test COMMAND dc2dm_menu_test

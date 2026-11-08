@@ -1,7 +1,9 @@
 #include "arisa32/scene.h"
+#include "arisa32/system_menu.h"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -33,6 +35,13 @@ struct Script {
     std::vector<uint8_t> bytes{1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0x72, 0x9D, 0};
     void param(uint8_t op, uint8_t a, uint8_t b = 0) {
         bytes.insert(bytes.end(), {op, a, b});
+    }
+    void words(uint8_t op, uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
+        bytes.push_back(op);
+        for (uint16_t word : {a, b, c, d}) {
+            bytes.push_back(uint8_t(word));
+            bytes.push_back(uint8_t(word >> 8));
+        }
     }
     void str(uint8_t op, const std::string& value) {
         bytes.push_back(op);
@@ -91,15 +100,19 @@ void next(dc4scene::SceneRunner& scene, const char* expected) {
     scene.draw(-1);
 }
 
-void capture(const dc4scene::SceneRunner& scene, const std::string& name) {
+void capture(const std::vector<uint8_t>& frame, const std::string& name) {
     const char* directory = std::getenv("DC2DM_TRANSITION_CAPTURES");
     if (!directory || !*directory) return;
     fs::create_directories(directory);
     std::ofstream output(fs::path(directory) / (name + ".ppm"), std::ios::binary);
     output << "P6\n1280 720\n255\n";
-    for (size_t i = 0; i < scene.frame().size(); i += 4)
-        output.write(reinterpret_cast<const char*>(scene.frame().data() + i), 3);
+    for (size_t i = 0; i < frame.size(); i += 4)
+        output.write(reinterpret_cast<const char*>(frame.data() + i), 3);
     if (!output) throw std::runtime_error("cannot write transition capture");
+}
+
+void capture(const dc4scene::SceneRunner& scene, const std::string& name) {
+    capture(scene.frame(), name);
 }
 
 bool near(Color value, Color expected, int tolerance = 2) {
@@ -365,6 +378,192 @@ void global_fades(const fs::path& root) {
     }
 }
 
+std::vector<uint8_t> solid_frame(Color color) {
+    std::vector<uint8_t> frame(1280 * 720 * 4, 255);
+    for (size_t i = 0; i < frame.size(); i += 4)
+        for (int c = 0; c < 3; ++c) frame[i + c] = color[c];
+    return frame;
+}
+
+void control(Script& script, const char* action, int x, int y, int sheet) {
+    script.words(0x54, uint16_t(x), uint16_t(y), uint16_t(x + 24), uint16_t(y + 24));
+    script.str(0x3D, action);
+    script.words(0x55, uint16_t(x), uint16_t(y), 0, 0);
+    script.words(0x57, 24, 24, uint16_t(sheet), 99);
+}
+
+void menu_control_transitions(const fs::path& root) {
+    image(root / "GRP/UI/white.CRX", 24, 24, white);
+    image(root / "GRP/UI/blue.CRX", 24, 24, blue);
+    Script ui;
+    ui.bytes.push_back(0x2C); ui.str(0, "UI\\white");
+    control(ui, ":toolbar", 100, 440, 21);
+    ui.param(0x17, 0);
+    ui.save(root / "MES/menu-ui.mes");
+
+    Script script;
+    script.background("BG\\red");
+    script.slot(10, "UI\\white");
+    control(script, "old", 100, 100, 10);
+    script.param(0x09, 0);
+    script.param(0x0D, 32);
+    script.param(0x21, 0);
+    script.slot(10, "UI\\blue");
+    control(script, "new", 200, 100, 10);
+    script.param(0x0D, 0, 1);
+    script.param(0x09, 0);
+    script.param(0x0D, 2, 3);
+    script.param(0x09, 0);
+    script.str(0x3B, "opening");
+    script.str(0x38, "after-menu");
+    script.save(root / "MES/menu-controls.mes");
+    Script after;
+    after.background("BG\\blue");
+    after.param(0x0D, 1, 1);
+    after.text("AFTER");
+    after.save(root / "MES/after-menu.mes");
+
+    dc4scene::SceneRunner scene(root.string());
+    scene.set_animation_enabled(true);
+    CHECK(scene.load_ui_script((root / "MES/menu-ui.mes").string()));
+    CHECK(scene.load_script((root / "MES/menu-controls.mes").string()));
+    CHECK(!scene.advance_to_next_text() && scene.waiting_for_time());
+    scene.draw(-1);
+    CHECK(scene.buttons().size() == 2 && pixel(scene, 137, 137) == white);
+    CHECK(pixel(scene, 137, 562) == red);
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.draw(-1);
+    CHECK(pixel(scene, 137, 137) == global_blend(white, red, 32));
+    CHECK(pixel(scene, 262, 137) == global_blend(red, blue, 32));
+    scene.update(34);
+    scene.draw(-1);
+    CHECK(pixel(scene, 137, 137) == global_blend(white, red, 64));
+    CHECK(pixel(scene, 262, 137) == global_blend(red, blue, 64));
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.waiting_for_time());
+    scene.draw(-1);
+    CHECK(pixel(scene, 137, 137) == red && pixel(scene, 262, 137) == blue);
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.draw(-1);
+    CHECK(pixel(scene, 137, 137) == global_blend(red, black, 8));
+    CHECK(pixel(scene, 262, 137) == global_blend(blue, black, 8));
+    scene.update(272);
+    scene.draw(-1);
+    CHECK(pixel(scene, 262, 137) == global_blend(blue, black, 72));
+    scene.update(306);
+    CHECK(!scene.animating() && scene.script_ready());
+    CHECK(!scene.advance_to_next_text() && scene.waiting_for_time());
+    scene.draw(-1);
+    CHECK(scene.frame() == solid_frame(black));
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.pending_movie() == "opening");
+    CHECK(scene.buttons().size() == 1 && scene.buttons().front().action == ":toolbar");
+    scene.draw(-1);
+    CHECK(scene.frame() == solid_frame(black));
+    scene.finish_movie();
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.finish_script_wait();
+    next(scene, "AFTER");
+    CHECK(scene.buttons().size() == 1 && pixel(scene, 137, 562) == white);
+    CHECK(pixel(scene, 137, 137) == blue);
+
+    CHECK(scene.load_script((root / "MES/menu-controls.mes").string()));
+    CHECK(!scene.advance_to_next_text() && scene.buttons().size() == 2);
+    CHECK(scene.load_script((root / "MES/after-menu.mes").string()));
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.finish_script_wait();
+    next(scene, "AFTER");
+    CHECK(scene.buttons().size() == 1 && pixel(scene, 137, 137) == blue);
+}
+
+void initial_menu_presentation(const fs::path& root) {
+    Script script;
+    script.param(0x0D, 32);
+    script.background("BG\\blue");
+    script.param(0x0D, 0, 1);
+    script.param(0x09, 0);
+    script.param(0x0D, 2, 3);
+    script.param(0x09, 0);
+    script.save(root / "MES/seeded-menu.mes");
+    dc4scene::SceneRunner scene(root.string());
+    scene.set_animation_enabled(true);
+    CHECK(scene.load_script((root / "MES/seeded-menu.mes").string()));
+    CHECK(!scene.seed_dc2dm_presentation({}));
+    CHECK(scene.seed_dc2dm_presentation(solid_frame(red)));
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.draw(-1);
+    CHECK(pixel(scene, 640, 200) == global_blend(red, blue, 32));
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.waiting_for_time());
+    scene.draw(-1);
+    CHECK(pixel(scene, 640, 200) == blue);
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.draw(-1);
+    CHECK(pixel(scene, 640, 200) == global_blend(blue, black, 8));
+
+    Script first_story;
+    first_story.param(0x0D, 2, 3);
+    first_story.param(0x09, 0);
+    first_story.save(root / "MES/first-story.mes");
+    CHECK(scene.load_script((root / "MES/first-story.mes").string()));
+    CHECK(scene.seed_dc2dm_presentation(solid_frame(red)));
+    CHECK(!scene.advance_to_next_text() && scene.animating());
+    scene.draw(-1);
+    CHECK(pixel(scene, 640, 200) == global_blend(red, black, 8));
+    scene.finish_script_wait();
+    CHECK(!scene.advance_to_next_text());
+    scene.draw(-1);
+    CHECK(scene.frame() == solid_frame(black));
+
+    CHECK(scene.load_script((root / "MES/seeded-menu.mes").string()));
+    CHECK(scene.seed_dc2dm_presentation(solid_frame(red)));
+    CHECK(scene.load_script((root / "MES/first-story.mes").string()));
+    CHECK(!scene.advance_to_next_text());
+    scene.draw(-1);
+    CHECK(pixel(scene, 640, 200) == global_blend(blue, black, 8));
+}
+
+void black_script_transfer(const fs::path& root) {
+    Script outgoing;
+    outgoing.background("BG\\red");
+    outgoing.param(0x0D, 2, 3);
+    outgoing.str(0x38, "incoming-black");
+    outgoing.save(root / "MES/outgoing-black.mes");
+    Script incoming;
+    incoming.param(0x0D, 2, 0);
+    incoming.param(0x0D, 32);
+    incoming.background("BG\\blue");
+    incoming.param(0x0D, 0, 1);
+    incoming.param(0x09, 0);
+    incoming.save(root / "MES/incoming-black.mes");
+
+    for (bool skipped : {false, true}) {
+        dc4scene::SceneRunner scene(root.string());
+        scene.set_animation_enabled(true);
+        CHECK(scene.load_script((root / "MES/outgoing-black.mes").string()));
+        CHECK(!scene.advance_to_next_text() && scene.animating());
+        if (skipped) scene.finish_script_wait();
+        else scene.update(4000);
+        CHECK(!scene.advance_to_next_text() && scene.animating());
+        CHECK(scene.script_name() == "incoming-black.mes");
+        scene.draw(-1);
+        CHECK(scene.frame() == solid_frame(black));
+        scene.update(102);
+        scene.draw(-1);
+        CHECK(scene.frame() == solid_frame(black));
+        scene.finish_script_wait();
+        CHECK(!scene.advance_to_next_text() && scene.animating());
+        scene.draw(-1);
+        CHECK(pixel(scene, 640, 200) == global_blend(black, blue, 32));
+        scene.finish_script_wait();
+        scene.draw(-1);
+        CHECK(scene.frame() == solid_frame(blue));
+    }
+}
+
 void consumed_masks(const fs::path& root) {
     for (int first_mode : {20, 21}) for (bool skipped : {false, true}) {
         Script script;
@@ -498,6 +697,16 @@ void profile_reset(const fs::path& root) {
         next(scene, "BLACK");
         CHECK(pixel(scene, 640, 200) == black);
         CHECK(scene.load_script((root / "MES/other.mes").string()));
+        CHECK(!scene.seed_dc2dm_presentation(solid_frame(red)));
+        next(scene, "OTHER");
+        CHECK(!scene.animating() && pixel(scene, 640, 200) == blue);
+
+        Script transfer;
+        transfer.background("BG\\red");
+        transfer.param(0x0D, 2, 1);
+        transfer.str(0x38, "other");
+        transfer.save(root / "MES/transfer-profile.mes");
+        CHECK(scene.load_script((root / "MES/transfer-profile.mes").string()));
         next(scene, "OTHER");
         CHECK(!scene.animating() && pixel(scene, 640, 200) == blue);
     }
@@ -639,6 +848,124 @@ void recorded_checkpoint(const fs::path& data) {
     CHECK(!selector.waiting_for_time() && !selector.script_ready() && !selector.animating());
 }
 
+void recorded_selectors(const fs::path& data) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load("C:/Windows/Fonts/msgothic.ttc", 0, 15, false));
+    for (int stage : {1, 2}) {
+        dc4ui::SystemMenu menu;
+        std::string error;
+        CHECK(menu.load(data.string(), &error));
+        menu.set_variable(100, 1, 1);
+        menu.set_variable(100, 2, stage == 2 ? 1 : 0);
+        std::vector<uint8_t> title;
+        menu.draw(-1, -1, false, font, &title);
+        const size_t backdrop = (50 * 1280 + 80) * 4;
+        const Color backdrop_color{title[backdrop], title[backdrop + 1], title[backdrop + 2]};
+        for (const char* action : {"sce01", "sce02", "sce03"}) {
+            if (stage == 1 && std::string(action) == "sce03") continue;
+            dc4scene::SceneRunner selector(data.string());
+            selector.set_animation_enabled(true);
+            selector.set_font(&font);
+            CHECK(selector.load_ui_script((data / "MES/start.mes").string()));
+            const size_t toolbar_count = selector.buttons().size();
+            CHECK(selector.load_script((data / "MES/sceselect.mes").string()));
+            menu.initialize_scene(selector, false);
+            CHECK(selector.seed_dc2dm_presentation(title));
+            CHECK(!selector.advance_to_next_text() && selector.animating());
+            constexpr int steps[]{4, 8, 16, 32};
+            const int step = steps[std::clamp(selector.variable(99, 12), 0, 3)];
+            selector.draw(-1);
+            const auto initial = selector.frame();
+            selector.update(102);
+            selector.draw(-1);
+            const auto at_102ms = selector.frame();
+            selector.finish_script_wait();
+            CHECK(!selector.advance_to_next_text() && selector.waiting_for_time());
+            CHECK(selector.buttons().size() == toolbar_count + size_t(stage + 2));
+            const auto has_control = [&](const char* tag) {
+                return std::any_of(selector.buttons().begin(), selector.buttons().end(),
+                    [&](const auto& button) { return button.action == tag; });
+            };
+            CHECK(has_control("sce01") && has_control("sce02") && has_control("ret"));
+            CHECK(has_control("sce03") == (stage == 2));
+            selector.draw(-1);
+            capture(selector, "selector-stage-" + std::to_string(stage));
+            const auto before = selector.frame();
+            const auto matches_title_blend = [&](const std::vector<uint8_t>& frame, int progress) {
+                if (frame.size() != title.size() || before.size() != title.size()) return false;
+                for (size_t i = 0; i < title.size(); i += 4) {
+                    const Color source{title[i], title[i + 1], title[i + 2]};
+                    const Color target{before[i], before[i + 1], before[i + 2]};
+                    const Color expected = global_blend(source, target, progress);
+                    for (int channel = 0; channel < 3; ++channel)
+                        if (frame[i + channel] != expected[channel]) return false;
+                }
+                return true;
+            };
+            CHECK(matches_title_blend(initial, step));
+            CHECK(matches_title_blend(at_102ms, step * 4));
+            if (std::string(action) == "sce01") {
+                const auto name = "selector-stage-" + std::to_string(stage);
+                capture(title, name + "-source");
+                capture(initial, name + "-initial");
+                capture(at_102ms, name + "-102ms");
+                std::cout << "DC2DM selector stage " << stage << " backdrop RGB: source ";
+                for (auto channel : backdrop_color) std::cout << unsigned(channel) << ' ';
+                for (const auto* frame : {&before, &initial, &at_102ms}) {
+                    std::cout << "| ";
+                    for (int channel = 0; channel < 3; ++channel)
+                        std::cout << unsigned((*frame)[backdrop + channel]) << ' ';
+                }
+                std::cout << "(target, initial, 102ms; step " << step << ")\n";
+            }
+            CHECK(selector.jump_to_label(action));
+            CHECK(!selector.advance_to_next_text() && selector.animating());
+            selector.draw(-1);
+            bool faded_together = true;
+            for (size_t i = 0; i < before.size(); i += 4)
+                for (int channel = 0; channel < 3; ++channel)
+                    faded_together &= selector.frame()[i + channel] == unsigned(before[i + channel]) * 119 / 127;
+            CHECK(faded_together);
+            selector.update(4000);
+            CHECK(selector.script_ready() && !selector.animating());
+            if (std::string(action) != "sce01") {
+                CHECK(!selector.advance_to_next_text() && !selector.pending_movie().empty());
+                CHECK(selector.buttons().size() == toolbar_count);
+                selector.draw(-1);
+                CHECK(selector.frame() == solid_frame(black));
+                selector.finish_movie();
+            }
+            CHECK(!selector.advance_to_next_text() && selector.animating());
+            CHECK(selector.buttons().size() == toolbar_count);
+            const std::string expected_story = std::string(action) == "sce01" ? "mar_0101_f1.mes" :
+                std::string(action) == "sce02" ? "sin_0326_f1.mes" : "suc60_0811_a1_otm.mes";
+            std::string actual_story = selector.script_name();
+            std::cout << "DC2DM selector " << stage << '/' << action << " -> " << actual_story << '\n';
+            std::transform(actual_story.begin(), actual_story.end(), actual_story.begin(),
+                           [](unsigned char character) { return char(std::tolower(character)); });
+            CHECK(actual_story == expected_story);
+            selector.draw(-1);
+            const auto incoming_initial = selector.frame();
+            selector.update(102);
+            selector.draw(-1);
+            const auto incoming_102ms = selector.frame();
+            selector.finish_script_wait();
+            selector.draw(-1);
+            const auto incoming_target = selector.frame();
+            const auto matches_black_blend = [&](const std::vector<uint8_t>& frame, int progress) {
+                for (size_t i = 0; i < frame.size(); i += 4)
+                    for (int channel = 0; channel < 3; ++channel)
+                        if (frame[i + channel] != unsigned(incoming_target[i + channel]) * std::min(127, progress) / 127)
+                            return false;
+                return true;
+            };
+            CHECK(matches_black_blend(incoming_initial, step));
+            CHECK(matches_black_blend(incoming_102ms, step * 4));
+            capture(incoming_initial, "selector-" + std::string(action) + "-story-initial");
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -653,6 +980,9 @@ int main(int argc, char** argv) {
             configured_mask_steps(root);
             native_mask_crop(root);
             global_fades(root);
+            menu_control_transitions(root);
+            initial_menu_presentation(root);
+            black_script_transfer(root);
             consumed_masks(root);
             masked_black(root);
             sweep(root);
@@ -660,7 +990,10 @@ int main(int argc, char** argv) {
             lifecycle(root);
         }
         if (const char* data = std::getenv("DC2DM_DATA")) {
-            if (*data) recorded_checkpoint(data);
+            if (*data) {
+                recorded_checkpoint(data);
+                recorded_selectors(data);
+            }
         } else {
             std::cout << "DC2DM_DATA unset; recorded-scene check skipped\n";
         }

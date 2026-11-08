@@ -26,7 +26,9 @@ def main():
     parser.add_argument('--choice-save', type=Path, help='Native PC save at the MAR_0129_E1 birthday choice')
     parser.add_argument('--transition-save', type=Path, help='Native PC save before the MAR_0129_E1 classroom mask wipe')
     parser.add_argument('--cases', nargs='+', choices=['stages', 'DC2DM01.dat', 'DC2DM02.dat',
-                        'DC2DM03.dat', 'DC2DM04.dat', 'DC2DM06.dat', 'rows', 'menus', 'choices', 'transitions', 'minigames',
+                        'DC2DM03.dat', 'DC2DM04.dat', 'DC2DM06.dat', 'rows', 'menus', 'choices', 'transitions', 'selectors',
+                        'selector-story0', 'selector-story1', 'selector-story2', 'minigames', 'minigame-entry',
+                        'read-history', 'read-history-pc-profile', 'read-history-pc-new', 'read-history-profile-only',
                         'minigames-suit', 'minigames-reversi-0', 'minigames-reversi-1', 'minigames-reversi-2'],
                         help='Run only selected cases; stages includes all title restart checks')
     args = parser.parse_args()
@@ -85,6 +87,10 @@ def main():
                               'DC2DM04.dat', 'DC2DM06.dat', 'rows']:
         if case == 'stages':
             modes += [mode for stage in range(3) for mode in ('stage' + str(stage), 'stage' + str(stage) + '-restart')]
+        elif case == 'selectors':
+            modes += ['selector-story' + str(story) for story in range(3)]
+        elif case == 'read-history':
+            modes += ['read-history-pc-profile', 'read-history-pc-new', 'read-history-profile-only']
         elif case == 'minigames':
             modes += ['minigames-suit', 'minigames-reversi-0', 'minigames-reversi-1', 'minigames-reversi-2']
         else:

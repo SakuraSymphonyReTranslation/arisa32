@@ -120,6 +120,21 @@ void break_tests() {
     CHECK(comu_line_break(std::string(27, 'A') + u8"ｱB", true) == std::string(27, 'A') + u8"ｱ\nB");
 }
 
+void padded_latin_detection_tests() {
+    using dc4scene::comu_padded_latin_text;
+    CHECK(comu_padded_latin_text(patch_spaces("  WiMi   words")));
+    CHECK(comu_padded_latin_text(patch_spaces("WiMi ")));
+    CHECK(!comu_padded_latin_text("  WiMi   words"));
+    CHECK(!comu_padded_latin_text("Understood"));
+    CHECK(!comu_padded_latin_text(del_spaces("Two words")));
+    CHECK(!comu_padded_latin_text(patch_spaces(" A") + del_spaces(" B")));
+    CHECK(!comu_padded_latin_text("\x82\xA5" "A"));
+    CHECK(!comu_padded_latin_text("\x82\xA0\x82\xA2"));
+    CHECK(!comu_padded_latin_text("\x82\xA0\xA5\x82\xA2"));
+    CHECK(!comu_padded_latin_text(std::string(4, char(0xA5))));
+    CHECK(!comu_padded_latin_text(""));
+}
+
 void write_file(const fs::path& path, const std::vector<uint8_t>& bytes) {
     fs::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary);
@@ -313,9 +328,164 @@ void scene_tests(const fs::path& root, const dc4scene::FontRenderer& ui, const d
             CHECK(crop(rows, 538, 94 + slot * 81, 100, 62) == crop(plain, 538, 94, 100, 62));
     }
 }
-void write_ppm(const fs::path& path, const std::vector<uint8_t>& frame) {
-    std::ofstream out(path, std::ios::binary); out << "P6\n1280 720\n255\n";
+void write_ppm(const fs::path& path, const std::vector<uint8_t>& frame, int width = 1280, int height = 720) {
+    std::ofstream out(path, std::ios::binary); out << "P6\n" << width << ' ' << height << "\n255\n";
     for (size_t i = 0; i < frame.size(); i += 4) out.write(reinterpret_cast<const char*>(&frame[i]), 3);
+}
+
+void check_chat_mask(const std::vector<uint8_t>& frame, const std::vector<uint8_t>& expected) {
+    const auto actual = crop(frame, 538, 94, 240, 62);
+    bool equal = actual.size() == expected.size();
+    for (size_t i = 0; equal && i < expected.size(); i += 4)
+        for (size_t channel = 0; channel < 3; ++channel)
+            equal = equal && actual[i + channel] == int(expected[i + channel]) * expected[i + 3] / 255;
+    CHECK(equal);
+}
+
+void padded_custom_font_tests(const fs::path& root, const dc4scene::FontRenderer& ui,
+                              const dc4scene::FontRenderer& fixed, const dc4scene::FontRenderer& font,
+                              const fs::path& font_path, const fs::path& fixed_font_path) {
+    CHECK(font.is_pretendard_jp_bold());
+    CHECK(!ui.is_pretendard_jp_bold() && !fixed.is_pretendard_jp_bold());
+    const auto relocated = root / "another library" / "user-chosen folder 17";
+    write_sheet(relocated / "GRP/SYSTEM/COMUCHIP.CRX", 740, 891);
+    write_sheet(relocated / "GRP/SYSTEM/comustamp.CRX", 640, 512);
+    fs::create_directories(relocated / "fonts");
+    const auto renamed_font = relocated / "fonts/selected-face.bin";
+    const auto misleading_font = relocated / "fonts/PretendardJP-Bold.ttf";
+    fs::copy_file(font_path, renamed_font, fs::copy_options::overwrite_existing);
+    fs::copy_file(fixed_font_path, misleading_font, fs::copy_options::overwrite_existing);
+    dc4scene::FontRenderer renamed, misleading;
+    CHECK(renamed.load(renamed_font.string(), 0, 22, false));
+    CHECK(renamed.is_pretendard_jp_bold());
+    CHECK(misleading.load(misleading_font.string(), 0, 22, false));
+    CHECK(!misleading.is_pretendard_jp_bold());
+    for (uint8_t version : {0xAA, 0xAB}) {
+        Script identity; identity.bytes[11] = version;
+        write_file(relocated / "MES/main.mes", identity.bytes);
+        write_file(relocated / "MES/dc4_start.mes", identity.bytes);
+        const auto plain = render(root, version, {"WiMi "}, ui, &font);
+        std::vector<uint8_t> expected(240 * 62 * 4, 0);
+        font.rasterize_line(u"WiMi", 2, 30, &expected, 240, 62, 16);
+        check_chat_mask(plain, expected);
+        const auto padded = render(root, version, {"  WiMi"}, ui, &font);
+        CHECK(crop(plain, 538, 94, 100, 34) == crop(padded, 554, 94, 100, 34));
+        CHECK(!ink(crop(padded, 538, 94, 16, 34)));
+
+        std::string first = "  WiMi   WWii";
+        first.resize(28, ' ');
+        const std::string message = first + "  Wm   iW";
+        const auto frame = render(root, version, {message}, ui, &font);
+        expected.assign(expected.size(), 0);
+        font.rasterize_line(u"WiMi", 18, 30, &expected, 240, 62, 16);
+        font.rasterize_line(u"WWii", 18 + font.text_width(u"WiMi", 16) + 24,
+                            30, &expected, 240, 62, 16);
+        font.rasterize_line(u"Wm", 18, 58, &expected, 240, 62, 16);
+        font.rasterize_line(u"iW", 18 + font.text_width(u"Wm", 16) + 24,
+                            58, &expected, 240, 62, 16);
+        check_chat_mask(frame, expected);
+        const auto smaller_dialogue = render(root, version, {message}, ui, &font, 18);
+        CHECK(frame != smaller_dialogue);
+        CHECK(crop(frame, 440, 16, 372, 518) == crop(smaller_dialogue, 440, 16, 372, 518));
+        CHECK(frame == render(relocated, version, {message}, ui, &renamed));
+
+        const dc4scene::FontRenderer* other_fonts[] = {&ui, &fixed, &misleading};
+        for (const auto* other : other_fonts) {
+            expected.assign(expected.size(), 0);
+            other->rasterize_line(u"  WiMi   WWii", 2, 30, &expected, 240, 62,
+                                  16, 0xFFFFFF, false, 0, true);
+            check_chat_mask(render(root, version, {"  WiMi   WWii"}, ui, other), expected);
+        }
+        for (const std::string& raw : {std::string("\x82\xA5" "A"), std::string("\x82\xA0\x82\xA2"),
+                                      std::string("\x82\xA0\xA5\x82\xA2"),
+                                      patch_spaces(" Wi") + del_spaces(" Mi")}) {
+            CHECK(!dc4scene::comu_padded_latin_text(raw));
+            expected.assign(expected.size(), 0);
+            font.rasterize_line(dc4scene::sjis_to_utf16(raw), 2, 30, &expected, 240, 62,
+                                16, 0xFFFFFF, false, 0, true);
+            check_chat_mask(render(root, version, {raw}, ui, &font), expected);
+        }
+    }
+}
+
+void manual_corpus_tests(const fs::path& root, const dc4scene::FontRenderer& ui,
+                         const dc4scene::FontRenderer& font, const fs::path& corpus_path,
+                         const fs::path& assets) {
+    std::ifstream corpus(corpus_path); CHECK(bool(corpus));
+    std::vector<std::string> messages;
+    std::string hex;
+    int padded = 0, max_width = 0, overflow_lines = 0, max_ink_width = 0, max_ink_height = 0;
+    int clipped_messages = 0;
+    while (std::getline(corpus, hex)) {
+        if (!hex.empty() && hex.back() == '\r') hex.pop_back();
+        if (hex.empty()) continue;
+        CHECK(hex.size() % 2 == 0);
+        std::string raw;
+        for (size_t i = 0; i + 1 < hex.size(); i += 2)
+            raw.push_back(char(std::stoi(hex.substr(i, 2), nullptr, 16)));
+        messages.push_back(raw);
+        if (!dc4scene::comu_padded_latin_text(raw)) continue;
+        ++padded;
+        CHECK(!dc4scene::comu_prose_text(raw));
+        const auto text = dc4scene::sjis_to_utf16(dc4scene::comu_line_break(raw));
+        int width = 0, message_width = 0;
+        for (char16_t ch : text + u'\n') {
+            if (ch == u'\r') continue;
+            if (ch == u'\n') {
+                max_width = std::max(max_width, width);
+                message_width = std::max(message_width, width);
+                if (width > 236) ++overflow_lines;
+                width = 0;
+            } else width += ch == u' ' ? 8 : font.glyph_advance(ch, 16);
+        }
+        const int canvas_width = std::max(280, message_width + 44);
+        const int canvas_height = 104 + int(std::count(text.begin(), text.end(), u'\n')) * 28;
+        std::vector<uint8_t> full_ink(size_t(canvas_width) * canvas_height * 4, 0);
+        int x = 22, baseline = 50;
+        std::u16string word;
+        auto draw_word = [&] {
+            if (word.empty()) return;
+            font.rasterize_line(word, x, baseline, &full_ink, canvas_width, canvas_height, 16);
+            x += font.text_width(word, 16);
+            word.clear();
+        };
+        for (char16_t ch : text) {
+            if (ch == u'\r') continue;
+            if (ch == u' ' || ch == u'\n') {
+                draw_word();
+                if (ch == u' ') x += 8;
+                else { x = 22; baseline += 28; }
+            } else word.push_back(ch);
+        }
+        draw_word();
+        int left = canvas_width, right = -1, top = canvas_height, bottom = -1;
+        bool clipped = false;
+        for (int y = 0; y < canvas_height; ++y) for (int at = 0; at < canvas_width; ++at) {
+            if (!full_ink[(size_t(y) * canvas_width + at) * 4 + 3]) continue;
+            left = std::min(left, at); right = std::max(right, at);
+            top = std::min(top, y); bottom = std::max(bottom, y);
+            clipped = clipped || at < 20 || at >= 260 || y < 20 || y >= 82;
+        }
+        max_ink_width = std::max(max_ink_width, right - left + 1);
+        max_ink_height = std::max(max_ink_height, bottom - top + 1);
+        if (clipped) ++clipped_messages;
+    }
+    CHECK(padded > 0);
+    const auto output = root / "manual-corpus";
+    fs::create_directories(output);
+    for (uint8_t version : {0xAA, 0xAB}) {
+        for (size_t first = 0; first < messages.size(); first += 5) {
+            const size_t end = std::min(first + 5, messages.size());
+            const std::vector<std::string> group(messages.begin() + first, messages.begin() + end);
+            const auto frame = render(root, version, group, ui, &font, 22, assets);
+            write_ppm(output / (std::string(version == 0xAA ? "dc4-" : "dc4ph-") +
+                      std::to_string(first) + ".ppm"), crop(frame, 440, 16, 372, 518), 372, 518);
+        }
+    }
+    std::cout << "Manual corpus messages: " << messages.size() << "; padded Latin: " << padded
+              << "; max line advance: " << max_width << "; lines beyond 236px: " << overflow_lines
+              << "; max ink: " << max_ink_width << 'x' << max_ink_height
+              << "; messages outside two-line buffer: " << clipped_messages << '\n';
 }
 
 void custom_font_tests(const fs::path& root, const dc4scene::FontRenderer& ui,
@@ -364,19 +534,20 @@ void custom_font_tests(const fs::path& root, const dc4scene::FontRenderer& ui,
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::cerr << "usage: comu_text_test FONT [OUTPUT_DIR] [ORIGINAL_ADVDATA] [CORPUS_HEX] [CUSTOM_FONT]\n"; return 2; }
+    if (argc < 2) { std::cerr << "usage: comu_text_test FONT [OUTPUT_DIR] [ORIGINAL_ADVDATA] [CORPUS_HEX] [CUSTOM_FONT] [MANUAL_CORPUS_HEX]\n"; return 2; }
     const fs::path root = argc > 2 ? fs::path(argv[2]) : fs::current_path() / "comu-text-test-data";
     fs::create_directories(root);
     dc4::set_language(dc4::Language::Indonesian);
     dc4scene::FontRenderer ui, text;
     CHECK(ui.load(argv[1], 1, 22, false)); CHECK(text.load(argv[1], 0, 22, false));
-    break_tests(); prose_tests(text); scene_tests(root, ui, text);
+    break_tests(); padded_latin_detection_tests(); prose_tests(text); scene_tests(root, ui, text);
     custom_font_tests(root, ui, ui);
     dc4scene::FontRenderer custom;
     if (argc > 5) {
         CHECK(custom.load(argv[5], 0, 22, false));
         CHECK(dc4scene::comu_prose_layout(u"see", custom).size == 22);
         custom_font_tests(root, ui, custom);
+        padded_custom_font_tests(root, ui, text, custom, argv[5], argv[1]);
     }
     if (argc > 3) {
         const std::string kazuto = "\x81\x75\x88\xEA\x93\x6F\x81\x76";
@@ -411,6 +582,7 @@ int main(int argc, char** argv) {
             std::string raw;
             for (size_t i = 0; i + 1 < hex.size(); i += 2)
                 raw.push_back(char(std::stoi(hex.substr(i, 2), nullptr, 16)));
+            CHECK(!dc4scene::comu_padded_latin_text(raw));
             if (raw.find(char(0x7F)) == std::string::npos) {
                 CHECK(raw.size() <= 28);
                 CHECK(dc4scene::comu_line_break(raw) == raw);
@@ -429,6 +601,7 @@ int main(int argc, char** argv) {
         if (argc > 5) std::cout << "Custom font sizes: " << custom_min << '-' << custom_max
                                << "; three-line messages: " << three_lines << '\n';
     }
+    if (argc > 6) manual_corpus_tests(root, ui, custom, argv[6], argv[3]);
     std::cout << "COMU checks: " << failures << " failures\n";
     return failures ? 1 : 0;
 }

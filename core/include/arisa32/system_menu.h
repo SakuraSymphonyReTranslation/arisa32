@@ -44,6 +44,7 @@ public:
     SystemMenu& operator=(const SystemMenu&) = delete;
     bool load(const std::string& data_dir, std::string* error = nullptr);
     bool loaded() const;
+    bool is_dc2pc() const;
     bool is_dc2dm() const;
     void open(SystemMenuPage page);
     // Restore the character tab and page from the last selected replay.

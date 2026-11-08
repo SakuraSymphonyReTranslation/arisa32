@@ -2,6 +2,10 @@ package org.dc4engine;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.Charset;
@@ -28,6 +32,9 @@ public final class Arisa32Activity {
     private native String dc4Load(String path);
     private native boolean dc4MenuActive();
     private native boolean dc4MenuFrame(Bitmap target);
+    private native int dc4MovieFrameSize();
+    private native boolean dc4MovieFrame(Bitmap target,boolean force);
+    private native void dc4MovieCompleted();
     private native boolean dc4GalleryPreviewActive();
     private native boolean dc4GalleryFrame(Bitmap target);
     private native String dc4BackOrSidemenu(boolean slots,boolean backlog);
@@ -368,7 +375,7 @@ public final class Arisa32Activity {
         minigameFrame(bitmap);
         check(!redEdge(bitmap,295,190,690),"menu Back does not also open quit");
     }
-    private void minigameTitle(File choice,File saves,int[] previousCounters,Bitmap bitmap,File captures) throws Exception {
+    private void minigameTitle(File choice,File saves,int[] previousCounters,Bitmap bitmap,File captures,String name) throws Exception {
         check(dc4RequestConfirm("title").isEmpty() && dc4ConfirmActive(),"reopen Title confirmation");
         dc4ConfirmFrame(bitmap);
         dc4ConfirmTouch(0,520,390);
@@ -382,14 +389,14 @@ public final class Arisa32Activity {
                 check(dc4SaveLoadAllowed(),"confirmed Title tears down minigame and restores save/load access");
                 check(java.util.Arrays.equals(previousCounters,minigameCounters(saves)),
                       "forced Title discards this session's scored suit round and preserves previous suit/Reversi totals");
-                png(bitmap,new File(captures,"minigames-returned-title.png"));
+                png(bitmap,new File(captures,name+"-returned-title.png"));
                 load(choice,bitmap);
                 check(dc4SaveLoadAllowed() && "1".equals(dc4Status().split(";")[1]),
                       "load after minigame Title restores the isolated native choice");
                 check(dialogue().contains("main yang mana"),"loaded minigame choice has its native prompt");
                 check(java.util.Arrays.equals(previousCounters,minigameCounters(saves)),
                       "loading after forced Title preserves the previous minigame totals");
-                png(bitmap,new File(captures,"minigames-title-loaded-choice.png"));return;
+                png(bitmap,new File(captures,name+"-title-loaded-choice.png"));return;
             }
             Thread.sleep(20);
         }while(System.nanoTime()<deadline);
@@ -532,17 +539,155 @@ public final class Arisa32Activity {
             chooseMinigame(choice,bitmap,0);
             scoreSuitRound(bitmap,0);
             png(bitmap,new File(captures,"suit-scored-before-forced-title.png"));
-            minigameTitle(choice,saves,previousCounters,bitmap,captures);
+            minigameTitle(choice,saves,previousCounters,bitmap,captures,"minigames");
         }
         System.out.println("PASS "+mode+" through native MINI GAME menu and script choices, touch states, authored Back/Continue/Exit, and isolated runtime save fixture");
     }
+    private void minigameEntry(File saves,File captures,Bitmap bitmap) throws Exception {
+        minigameDeadline=System.nanoTime()+110_000_000_000L;
+        check(dc4OpenMenu("extras").isEmpty(),"open Extra before native minigame entry");
+        dc4MenuTouch(3,-1,-1);minigameFrame(bitmap);
+        Bitmap menu=bitmap.copy(Bitmap.Config.ARGB_8888,false),incoming=null,fading=null;
+        StringBuilder rows=new StringBuilder("frame,fade_scale,pixel_error,black,extra_background_scale,extra_background_error,status\n");
+        try {
+            int[] extraPixels=pixels(menu),framePixels=new int[1280*720];
+            png(menu,new File(captures,"minigame-entry-extras.png"));
+            dc4MenuTouch(0,640,475);
+            check("start".equals(dc4MenuTouch(1,640,475)),"Extra MINI GAME starts its native script");
+            check(!dc4MenuActive(),"MINIGAME immediately owns rendering without the host title-entry hold");
+            check("1".equals(dc4Status().split(";")[3]),"MINIGAME starts at its authored transition barrier");
+            minigameFrame(bitmap);incoming=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+            int[] reference=pixels(incoming);
+            check(!black(reference),"native new entry begins revealing its scene");
+            long deadline=System.nanoTime()+10_000_000_000L;
+            boolean revealed=false;double previousScale=0;int frame=0;
+            do {
+                minigameFrame(bitmap);bitmap.getPixels(framePixels,0,1280,0,0,1280,720);
+                double[] fit=fadeFit(reference,framePixels,-1);boolean dark=black(framePixels);
+                double[] background=backgroundFit(extraPixels,framePixels);
+                rows.append(frame).append(',').append(fit[0]).append(',').append(fit[1]).append(',')
+                    .append(dark).append(',').append(background[0]).append(',').append(background[1]).append(',')
+                    .append(dc4Status()).append('\n');
+                check(!dc4MenuActive(),"native MINIGAME keeps ownership throughout its entry fade");
+                check(background[0]<0.08 || background[1]>=1.2,"Extra background cannot return during the native minigame reveal, frame="+frame);
+                if("0".equals(dc4Status().split(";")[3]) && !dc4CurrentLine().isEmpty()) {revealed=true;break;}
+                check(fit[0]>=previousScale-0.02,"native minigame reveal cannot darken again, frame="+frame);
+                check(fit[1]<3,"all incoming minigame artwork fades together, frame="+frame+", error="+fit[1]);
+                previousScale=fit[0];
+                if(fading==null && fit[0]>1.05)fading=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+                Thread.sleep(16);frame++;
+            }while(System.nanoTime()<deadline);
+            check(fading!=null && revealed,"native full-frame reveal reaches the minigame introduction");
+            png(incoming,new File(captures,"minigame-entry-native-incoming.png"));
+            png(fading,new File(captures,"minigame-entry-fading.png"));
+            png(bitmap,new File(captures,"minigame-entry-intro.png"));
+        } finally {
+            Files.write(new File(captures,"minigame-entry-fade.csv").toPath(),rows.toString().getBytes(Charset.forName("UTF-8")));
+            menu.recycle();if(incoming!=null)incoming.recycle();if(fading!=null)fading.recycle();
+        }
+        long deadline=System.nanoTime()+20_000_000_000L;
+        boolean intro=false;
+        do {
+            minigameFrame(bitmap);
+            if("Otome".equals(dc4Speaker()) && dialogue().contains("Otouto-kun"))intro=true;
+            if("1".equals(dc4Status().split(";")[1]))break;
+            dc4Advance();Thread.sleep(20);
+        }while(System.nanoTime()<deadline);
+        check(intro,"native Otome introduction precedes the minigame choices");
+        check("1".equals(dc4Status().split(";")[1]) && dialogue().contains("main yang mana"),
+              "native minigame script reaches the suit/Reversi choice prompt");
+        File choice=new File(saves,"minigame-choice.dat");
+        check(dc4Save(choice.getAbsolutePath()).isEmpty(),"save isolated native minigame choice");
+        png(bitmap,new File(captures,"minigame-entry-native-choice.png"));
+        dc4SetPaused(true,"");dc4SetPaused(false,"");
+        int[] previousCounters=minigameCounters(saves);
+        chooseMinigame(choice,bitmap,1);
+        check(redEdge(bitmap,205,300,230) && redEdge(bitmap,845,300,230),"Reversi choice reaches its authored difficulty controls");
+        png(bitmap,new File(captures,"minigame-entry-reversi.png"));
+        minigameTitle(choice,saves,previousCounters,bitmap,captures,"minigame-entry-reversi");
+        chooseMinigame(choice,bitmap,0);scoreSuitRound(bitmap,0);
+        png(bitmap,new File(captures,"minigame-entry-suit-scored.png"));
+        minigameTitle(choice,saves,previousCounters,bitmap,captures,"minigame-entry-suit");
+        System.out.println("PASS minigame-entry: immediate native ownership, authored full-frame fade, Otome intro, suit/Reversi choices, forced Title restores Load and discards interrupted scores");
+    }
+    private static double backgroundMean(Bitmap bitmap) {
+        double sum=0;int count=0;
+        for(int y=40;y<680;y+=16)for(int x=40;x<300;x+=16) {
+            int c=bitmap.getPixel(x,y);sum+=((c>>16)&255)+((c>>8)&255)+(c&255);count+=3;
+        }
+        return sum/count;
+    }
+    private static int[] pixels(Bitmap bitmap) {
+        int[] result=new int[1280*720];bitmap.getPixels(result,0,1280,0,0,1280,720);return result;
+    }
+    private static double[] fadeFit(int[] reference,int[] frame,int excludedRow) {
+        double numerator=0,denominator=0,error=0;int count=0;
+        for(int y=40;y<680;y+=8)for(int x=40;x<1240;x+=8) {
+            if(excludedRow>=0 && y>=330+60*excludedRow && y<390+60*excludedRow)continue;
+            int a=reference[y*1280+x],b=frame[y*1280+x];
+            for(int shift=0;shift<=16;shift+=8) {
+                int ca=(a>>shift)&255,cb=(b>>shift)&255;numerator+=ca*cb;denominator+=ca*ca;
+            }
+        }
+        double scale=denominator==0?0:numerator/denominator;
+        int left=excludedRow<0?40:400,right=excludedRow<0?1240:880;
+        int top=excludedRow<0?40:330,bottom=excludedRow<0?680:600;
+        int stride=excludedRow<0?4:2;
+        for(int y=top;y<bottom;y+=stride)for(int x=left;x<right;x+=stride) {
+            if(excludedRow>=0 && y>=330+60*excludedRow && y<390+60*excludedRow)continue;
+            int a=reference[y*1280+x],b=frame[y*1280+x];
+            for(int shift=0;shift<=16;shift+=8) {
+                error+=Math.abs(((b>>shift)&255)-((a>>shift)&255)*scale);count++;
+            }
+        }
+        return new double[]{scale,error/count};
+    }
+    private static boolean black(int[] pixels) {
+        for(int pixel:pixels)if((pixel&0xFFFFFF)!=0)return false;
+        return true;
+    }
+    private static int whiteFadeLevel(int[] pixels) {
+        int low=255,high=0;
+        for(int pixel:pixels)for(int shift=0;shift<=16;shift+=8) {
+            int value=(pixel>>shift)&255;low=Math.min(low,value);high=Math.max(high,value);
+            if(high-low>3)return -1;
+        }
+        return low;
+    }
+    private static double[] backgroundFit(int[] reference,int[] frame) {
+        double a=0,b=0,aa=0,ab=0,error=0;int count=0;
+        for(int y=40;y<680;y+=16)for(int x=40;x<1240;x+=16) {
+            if(x>=320 && x<960)continue;
+            for(int shift=0;shift<=16;shift+=8) {
+                int source=(reference[y*1280+x]>>shift)&255,target=(frame[y*1280+x]>>shift)&255;
+                a+=source;b+=target;aa+=source*source;ab+=source*target;count++;
+            }
+        }
+        double scale=(ab-a*b/count)/(aa-a*a/count),offset=(b-scale*a)/count;
+        for(int y=40;y<680;y+=16)for(int x=40;x<1240;x+=16) {
+            if(x>=320 && x<960)continue;
+            for(int shift=0;shift<=16;shift+=8)
+                error+=Math.abs(((frame[y*1280+x]>>shift)&255)-(((reference[y*1280+x]>>shift)&255)*scale+offset));
+        }
+        return new double[]{scale,error/count};
+    }
     private void waitStageScreen(Bitmap bitmap,boolean title) throws Exception {
+        waitStageScreen(bitmap,title,null,null);
+    }
+    private void waitStageScreen(Bitmap bitmap,boolean title,Bitmap titleReference,File metrics) throws Exception {
         long deadline=System.nanoTime()+10_000_000_000L;
         Bitmap previous=null;
         long stableSince=0;
+        double original=titleReference==null?0:backgroundMean(titleReference);
+        StringBuilder rows=new StringBuilder("frame,background_ratio,status\n");int frame=0;
         try {
             do {
                 check(dc4MenuFrame(bitmap),"stage frame");
+                if(titleReference!=null) {
+                    double ratio=backgroundMean(bitmap)/original;
+                    rows.append(frame++).append(',').append(ratio).append(',').append(dc4Status()).append('\n');
+                    check(ratio>=0.98,"menu background stays visible on frame "+frame+", ratio="+ratio+", title="+title);
+                }
                 if(title && dc4MenuActive() && "0".equals(dc4Status().split(";")[3]))return;
                 if(!title && !dc4MenuActive()) {
                     if(previous!=null && previous.sameAs(bitmap)) {
@@ -554,7 +699,10 @@ public final class Arisa32Activity {
                 }
                 Thread.sleep(20);
             }while(System.nanoTime()<deadline);
-        } finally { if(previous!=null)previous.recycle(); }
+        } finally {
+            if(previous!=null)previous.recycle();
+            if(metrics!=null)Files.write(metrics.toPath(),rows.toString().getBytes(Charset.forName("UTF-8")));
+        }
         throw new AssertionError("stage screen did not settle, title="+title+": "+dc4Status());
     }
     private void selectorRow(Bitmap bitmap,int y,boolean present) {
@@ -600,7 +748,7 @@ public final class Arisa32Activity {
             }
             check("start".equals(action),"unlocked Start immediately enters sceselect: "+action);
             check(!dc4CancelConfirmation(),"unlocked Start has no confirmation");
-            waitStageScreen(bitmap,false);
+            waitStageScreen(bitmap,false,title,new File(captures,"selector-entry"+suffix+".csv"));
             dc4Touch(3,-1,-1);dc4MenuFrame(bitmap);
             check(!title.sameAs(bitmap),"sceselect differs from title");
             png(bitmap,new File(captures,"selector"+suffix+".png"));
@@ -611,18 +759,208 @@ public final class Arisa32Activity {
             check(!dc4MenuActive(),"checking selector rows does not leave sceselect");
             dc4Touch(0,640,returnY);
             check(dc4Touch(1,640,returnY).isEmpty(),"native selector Return");
-            waitStageScreen(bitmap,true);
+            waitStageScreen(bitmap,true,title,new File(captures,"selector-return"+suffix+".csv"));
             dc4MenuTouch(3,-1,-1);dc4MenuFrame(bitmap);
             check(title.sameAs(bitmap),"selector Return restores the same stage title");
             check(!dc4CancelConfirmation(),"selector Return leaves no confirmation");
             png(bitmap,new File(captures,"selector-return"+suffix+".png"));
         } finally { title.recycle(); }
     }
+    private void selectorStory(int story,File captures,Bitmap bitmap) throws Exception {
+        check(dc4MenuFrame(bitmap),"selector story title");
+        Bitmap title=bitmap.copy(Bitmap.Config.ARGB_8888,false),selector=null,fading=null,blackFrame=null,whiteFrame=null;
+        String name="selector-story"+story;
+        int[] pixels=new int[1280*720];
+        StringBuilder rows=new StringBuilder("frame,fade_scale,label_error,black,gray,old_background_scale,old_background_error,status\n");
+        try {
+            dc4MenuTouch(0,640,300);check("start".equals(dc4MenuTouch(1,640,300)),"unlocked story Start");
+            check(!dc4ConfirmActive(),"unlocked story has no prompt");
+            waitStageScreen(bitmap,false,title,new File(captures,name+"-entry.csv"));
+            dc4Touch(3,-1,-1);dc4MenuFrame(bitmap);
+            selector=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+            int[] referencePixels=pixels(selector);
+            png(selector,new File(captures,name+"-menu.png"));
+            dc4Touch(0,640,360+60*story);check(dc4Touch(1,640,360+60*story).isEmpty(),"select native story "+story);
+            long deadline=System.nanoTime()+12_000_000_000L;
+            boolean intermediate=false,reachedBlack=false,observedWhiteFade=false,arrived=false;
+            int frame=0,previousGray=0;double previousScale=Double.POSITIVE_INFINITY;
+            do {
+                check(dc4MenuFrame(bitmap),"story fade frame");
+                bitmap.getPixels(pixels,0,1280,0,0,1280,720);
+                double[] fit=fadeFit(referencePixels,pixels,story);boolean dark=black(pixels);
+                int gray=whiteFadeLevel(pixels);double[] background=backgroundFit(referencePixels,pixels);
+                rows.append(frame).append(',').append(fit[0]).append(',').append(fit[1]).append(',')
+                    .append(dark).append(',').append(gray).append(',').append(background[0]).append(',')
+                    .append(background[1]).append(',').append(dc4Status()).append('\n');
+                if(!reachedBlack) {
+                    check(fit[0]<=previousScale+0.02,"outgoing selector cannot brighten again before black, frame="+frame+", scale="+fit[0]);
+                    previousScale=fit[0];
+                    if(fit[0]>0.05 && fit[0]<0.9) {
+                        check(fit[1]<3,"all unselected labels fade with the background, story="+story+", frame="+frame+", error="+fit[1]);
+                        if(!intermediate)fading=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+                        intermediate=true;
+                    }
+                    if(dark) {
+                        reachedBlack=true;blackFrame=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+                        if(story>0)break;
+                    }
+                } else if(story==0) {
+                    check(background[0]<0.08 || background[1]>=1.2,"old Title artwork cannot return after black, frame="+frame);
+                    if(!observedWhiteFade) {
+                        check(gray>=previousGray,"Graduation fades toward authored WHITE (RGB252..255) without old selector pixels, frame="+frame+", level="+gray);
+                        previousGray=gray;
+                        if(gray>=240) {observedWhiteFade=true;whiteFrame=bitmap.copy(Bitmap.Config.ARGB_8888,false);}
+                    }
+                    if(!dc4CurrentLine().isEmpty()) {arrived=true;break;}
+                }
+                check(dc4MovieFrameSize()==0,"opening starts only after the full menu reaches black");
+                Thread.sleep(16);frame++;
+            }while(System.nanoTime()<deadline);
+            check(intermediate && reachedBlack,"story "+story+" has a whole-menu fade and exact black endpoint");
+            png(fading,new File(captures,name+"-fading.png"));
+            png(blackFrame,new File(captures,name+"-black.png"));
+            if(story>0)openingAbort(title,captures,bitmap,name);
+            else {
+                check(observedWhiteFade && arrived && dialogue().contains("Tahun baru telah dimulai"),
+                      "Graduation shows the near-white fade and reaches its first sky dialogue without reviving Title");
+                png(whiteFrame,new File(captures,name+"-white-fade.png"));
+                settle(bitmap);dc4Render(bitmap);png(bitmap,new File(captures,name+"-dialogue.png"));
+            }
+        } catch(Throwable failure) {
+            png(bitmap,new File(captures,name+"-failed-frame.png"));throw failure;
+        } finally {
+            Files.write(new File(captures,name+"-fade.csv").toPath(),rows.toString().getBytes(Charset.forName("UTF-8")));
+            title.recycle();if(selector!=null)selector.recycle();if(fading!=null)fading.recycle();
+            if(blackFrame!=null)blackFrame.recycle();if(whiteFrame!=null)whiteFrame.recycle();
+        }
+        System.out.println("PASS "+name+": seamless entry, full menu fade, exact black boundary"+(story>0?", actual opening frame, uniform abort fade, safe late completion":" and Graduation dialogue"));
+    }
+    private void openingAbort(Bitmap title,File captures,Bitmap bitmap,String name) throws Exception {
+        long deadline=System.nanoTime()+10_000_000_000L;Bitmap movie=null,source=null,expected=null,fading=null;
+        StringBuilder rows=new StringBuilder("frame,fade_scale,pixel_error,black,status\n");int[] pixels=new int[1280*720];
+        boolean foundImage=false;double variance=0;int range=0;
+        try {
+            do {
+                dc4MenuFrame(bitmap);int size=dc4MovieFrameSize();
+                if(size!=0) {
+                    int width=size>>>16,height=size&65535;
+                    if(movie==null)movie=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);
+                    if(dc4MovieFrame(movie,true)) {
+                        double[] sum=new double[3],squares=new double[3];
+                        int[] low={255,255,255},high={0,0,0};int samples=0;
+                        for(int y=height/10;y<height*9/10;y+=16)for(int x=width/10;x<width*9/10;x+=16) {
+                            int color=movie.getPixel(x,y);samples++;
+                            for(int channel=0;channel<3;channel++) {
+                                int value=(color>>(channel*8))&255;
+                                sum[channel]+=value;squares[channel]+=value*value;
+                                low[channel]=Math.min(low[channel],value);high[channel]=Math.max(high[channel],value);
+                            }
+                        }
+                        variance=0;range=0;
+                        for(int channel=0;channel<3;channel++) {
+                            double mean=sum[channel]/samples;
+                            variance+=(squares[channel]/samples-mean*mean)/3;
+                            range=Math.max(range,high[channel]-low[channel]);
+                        }
+                        foundImage=variance>225 && range>=80;
+                        if(foundImage)break;
+                    }
+                }
+                Thread.sleep(20);
+            }while(System.nanoTime()<deadline);
+            check(foundImage && movie!=null && dc4MovieFrame(movie,true),
+                  "native opening produces spatial image detail within 10s, variance="+variance+", range="+range);
+            System.out.println(name+" opening image variance="+variance+", RGB range="+range);
+            check(dc4SetPaused(true,"").isEmpty(),"freeze opening before forced Title");
+            png(movie,new File(captures,name+"-opening.png"));
+            expected=Bitmap.createBitmap(1280,720,Bitmap.Config.ARGB_8888);
+            Canvas canvas=new Canvas(expected);canvas.drawColor(Color.BLACK);
+            double scale=Math.min(1280.0/movie.getWidth(),720.0/movie.getHeight());
+            int width=(int)(movie.getWidth()*scale),height=(int)(movie.getHeight()*scale);
+            canvas.drawBitmap(movie,null,new Rect((1280-width)/2,(720-height)/2,(1280+width)/2,(720+height)/2),new Paint(Paint.FILTER_BITMAP_FLAG));
+            check(dc4OpenMenu("title").isEmpty(),"force Title during opening");
+            check(dc4SetPaused(false,"").isEmpty(),"resume opening abort transition");
+            dc4MenuFrame(bitmap);source=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+            int[] sourcePixels=pixels(source);
+            double[] actual=fadeFit(pixels(expected),sourcePixels,-1);
+            check(actual[0]>0.8 && actual[1]<8,"abort captures the actual movie, scale="+actual[0]+", error="+actual[1]);
+            deadline=System.nanoTime()+6_000_000_000L;boolean dark=false,intermediate=false;int frame=0;
+            do {
+                dc4MenuFrame(bitmap);
+                bitmap.getPixels(pixels,0,1280,0,0,1280,720);
+                boolean frameBlack=black(pixels);double[] fit=fadeFit(sourcePixels,pixels,-1);
+                rows.append(frame++).append(',').append(fit[0]).append(',').append(fit[1]).append(',')
+                    .append(frameBlack).append(',').append(dc4Status()).append('\n');
+                if(frameBlack)dark=true;
+                if(!dark) {
+                    check(fit[1]<2,"opening abort uses uniform fade without moving text/tile fragments, error="+fit[1]);
+                    if(fit[0]>0.1 && fit[0]<0.9) {
+                        if(!intermediate)fading=bitmap.copy(Bitmap.Config.ARGB_8888,false);
+                        intermediate=true;
+                    }
+                }
+                if("0".equals(dc4Status().split(";")[3]) && dc4MenuActive())break;
+                Thread.sleep(16);
+            }while(System.nanoTime()<deadline);
+            check(dark && intermediate,"opening abort fades through black");
+            png(source,new File(captures,name+"-abort-source.png"));
+            png(fading,new File(captures,name+"-abort-fading.png"));
+            dc4MenuTouch(3,-1,-1);dc4MenuFrame(bitmap);
+            check(title.sameAs(bitmap) && dc4MovieFrameSize()==0 && dc4SaveLoadAllowed(),"opening abort restores Title and Load");
+            png(bitmap,new File(captures,name+"-aborted-title.png"));
+            dc4MovieCompleted();
+            for(int frameAfter=0;frameAfter<12;++frameAfter) {
+                Thread.sleep(20);dc4MenuFrame(bitmap);
+                check(title.sameAs(bitmap) && "0".equals(dc4Status().split(";")[3]),"late movie completion cannot resume the abandoned story");
+            }
+        } finally {
+            Files.write(new File(captures,name+"-abort.csv").toPath(),rows.toString().getBytes(Charset.forName("UTF-8")));
+            if(movie!=null)movie.recycle();if(source!=null)source.recycle();if(expected!=null)expected.recycle();if(fading!=null)fading.recycle();
+        }
+    }
+    private void readHistory(File input,File saves,File captures,String data,String font,String mode) throws Exception {
+        saves.mkdirs();
+        if(!mode.equals("read-history-profile-only"))
+            Files.copy(new File(input,"system.dat").toPath(),new File(saves,"system.dat").toPath());
+        if(!mode.equals("read-history-pc-new"))
+            Files.write(new File(saves,"system-profile.dat").toPath(),
+                "DC4ENGINE_PROFILE 1\nv 100 1 1\nv 100 2 1\n".getBytes(Charset.forName("UTF-8")));
+        File history=new File(saves,"read-lines.txt");
+        String sentinel="mar_0129_e1.mes:10\nminigame.mes:20\n";
+        Files.write(history.toPath(),sentinel.getBytes(Charset.forName("UTF-8")));
+        Files.copy(history.toPath(),new File(captures,mode+"-before.txt").toPath());
+        java.util.Set<String> expected=new java.util.TreeSet<>(Files.readAllLines(history.toPath(),Charset.forName("UTF-8")));
+        java.util.Set<String> afterInit;
+        init(saves,data,font);
+        try {
+            afterInit=new java.util.TreeSet<>(Files.readAllLines(history.toPath(),Charset.forName("UTF-8")));
+            Files.copy(history.toPath(),new File(captures,mode+"-after-init.txt").toPath());
+        } finally {dc4Quit();}
+        java.util.Set<String> afterQuit=new java.util.TreeSet<>(Files.readAllLines(history.toPath(),Charset.forName("UTF-8")));
+        Files.copy(history.toPath(),new File(captures,mode+"-after-quit.txt").toPath());
+        System.out.println(mode+" keys: before="+expected+"; after init="+afterInit+"; after quit="+afterQuit);
+        check(expected.equals(afterInit),mode+": init preserves both existing read-history keys");
+        check(expected.equals(afterQuit),mode+": shutdown preserves both existing read-history keys");
+        System.out.println("PASS "+mode+": isolated read history retained across init and shutdown");
+    }
     private void verify(File root,String data,String font,String exe,String mode) throws Exception {
         File input=new File(root,"input"),captures=new File(root,"captures");captures.mkdirs();
+        if(mode.startsWith("read-history-")) {
+            readHistory(input,new File(root,mode),captures,data,font,mode);return;
+        }
         Map<String,String> titles=ScenarioTitles.readExe(new File(exe));
         check(titles.size()==279,"279 executable scenario titles: "+titles.size());
         Bitmap bitmap=Bitmap.createBitmap(1280,720,Bitmap.Config.ARGB_8888);
+        if(mode.startsWith("selector-story")) {
+            int story=mode.charAt(mode.length()-1)-'0';File saves=new File(root,mode);saves.mkdirs();
+            byte[] system=Files.readAllBytes(new File(input,"system.dat").toPath());
+            system[0xE5]=system[0xE6]=1;Files.write(new File(saves,"system.dat").toPath(),system);
+            init(saves,data,font);
+            try {selectorStory(story,captures,bitmap);}
+            catch(Throwable failure) {png(bitmap,new File(captures,mode+"-failed.png"));throw failure;}
+            finally {dc4Quit();bitmap.recycle();}
+            return;
+        }
         if(mode.startsWith("stage")) {
             int stage=mode.charAt(5)-'0';boolean restart=mode.endsWith("restart");
             File saves=new File(root,"stage"+stage);saves.mkdirs();
@@ -653,8 +991,8 @@ public final class Arisa32Activity {
             if(!restart)Files.delete(new File(saves,"system.dat").toPath());
             System.out.println("PASS title and Start flow "+mode);return;
         }
-        File saves=new File(root,"roundtrip");
-        if(mode.equals("menus") || mode.startsWith("minigames-")) {
+        File saves=new File(root,mode.equals("minigame-entry")?mode:"roundtrip");
+        if(mode.equals("menus") || mode.startsWith("minigames-") || mode.equals("minigame-entry")) {
             saves.mkdirs();
             Files.copy(new File(input,"system.dat").toPath(),new File(saves,"system.dat").toPath(),
                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -666,6 +1004,11 @@ public final class Arisa32Activity {
             }
             if(mode.equals("transitions")) {
                 transitions(input,saves,captures,bitmap);return;
+            }
+            if(mode.equals("minigame-entry")) {
+                try {minigameEntry(saves,captures,bitmap);}
+                catch(Throwable failure) {png(bitmap,new File(captures,mode+"-failed.png"));throw failure;}
+                return;
             }
             if(mode.startsWith("minigames-")) {
                 try {minigames(saves,captures,bitmap,mode);}

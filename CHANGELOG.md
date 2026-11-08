@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.1 - 2026-11-08
+
+### Bahasa Indonesia
+
+- Menetapkan D.C. II Dearest Marriage sebagai fully playable setelah konfirmasi permainan sampai selesai oleh pengguna.
+- Memperbaiki perpindahan Title dan pilihan cerita DC2DM tanpa jeda hitam tambahan, mempertahankan BGM, meredupkan seluruh label bersama latar, serta membersihkan kontrol saat opening dimulai atau dibatalkan.
+- Menghapus jeda aplikasi saat masuk ke minigame DC2DM dan mempertahankan transisi dari skrip asli.
+- Memuat riwayat baca DC2DM sebelum impor progres PC agar startup tidak menimpanya dengan riwayat kosong.
+- Menambahkan Pretendard JP Bold ke pemilih font Android, beserta lisensinya, dan memperbaiki ukuran serta jarak hurufnya pada dialog, nama pembicara, dan pilihan DC2DM.
+- Memperbaiki lebar huruf Pretendard pada pesan COMU DC4/DC4PH yang memakai spasi padding, dengan ukuran teks dan susunan dua baris tetap. Tata letak Sakuramusubi dan font lain dipertahankan.
+- Memperbaiki urutan CG DC2PC antarkelompok thumbnail, potongan dan gerakan gambar tinggi, serta pratinjau dari gambar sumber. Cache sampel mengurangi pekerjaan render saat gambar bergerak.
+- Memperbarui README Indonesia dan Inggris dengan petunjuk folder data asli, patch terjemahan, dan pemilihan bahasa.
+- Menyediakan APK ARM64 dan ARMv7 untuk Android 6.0+ yang menghemat penyimpanan dengan memuat pustaka native langsung dari APK. Paket universal dan debug tetap mendukung Android 5.0+; pembaru 0.7.1 memilih paket sesuai ABI pada Android 6.0+ dan universal pada Android 5. Pembaru versi lama tetap memilih universal.
+
+### English
+
+- Marks D.C. II Dearest Marriage as fully playable following the user's confirmation of completed play.
+- Fixes DC2DM Title and story-selection transitions without an extra black gap, preserves BGM, fades labels with the background, and clears controls when an opening begins or is canceled.
+- Removes the app delay when entering DC2DM minigames and retains the original scripted transitions.
+- Loads DC2DM read history before importing PC progress so startup cannot overwrite it with an empty history.
+- Adds Pretendard JP Bold and its license to Android's font picker, and corrects its glyph size and spacing in DC2DM dialogue, speaker names, and choices.
+- Corrects Pretendard letter widths in DC4/DC4PH COMU messages that use padding spaces while preserving text size and the two-line layout. Sakuramusubi layouts and other fonts remain unchanged.
+- Fixes DC2PC CG order between thumbnail groups, tall-image crops and movement, and previews rendered from source images. Cached samples reduce rendering work during movement.
+- Updates the Indonesian and English READMEs with original-data and translation-patch folder instructions and language selection.
+- Provides ARM64 and ARMv7 APKs for Android 6.0+ that reduce installed storage by loading native libraries directly from the APK. Universal and debug packages retain Android 5.0+ support; the 0.7.1 updater selects the matching ABI on Android 6.0+ and universal on Android 5. Older updaters still select universal.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.1/id.md) | [English](docs/releases/v0.7.1/en.md).
+
 ## 0.7.0 - 2026-11-08
 
 ### Bahasa Indonesia

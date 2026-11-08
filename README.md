@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-**Rilis terbaru: [v0.7.0](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.0)**. Rilis ini menambahkan save PC dan minigame DC2DM, serta memperbaiki progres, menu, suara, pilihan, galeri CG, dan transisi adegannya. Seluruh perbaikan 0.6.9 tetap disertakan. Baca [catatan rilis](docs/releases/v0.7.0/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
+**Rilis terbaru: [v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)**. D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Rilis ini memperbaiki transisi menu dan tata letak teks DC2DM, galeri CG DC2PC, serta jarak huruf COMU di D.C.4 dan Plus Harmony saat memakai Pretendard JP Bold. Font tersebut kini tersedia langsung di aplikasi Android. Baca [catatan rilis](docs/releases/v0.7.1/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -38,9 +38,9 @@ Arisa32 mengenali 21 judul resmi berbasis CIRCUS adv32 dari seri Da Capo dan Dal
 - `D.C. II P.C. ~Da Capo II Plus Communication~`
 - `D.C. II To You ~Da Capo II To You~`
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
-- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~` (beta)
+- `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
 
-Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Versi 0.7.0 menambahkan save PC, impor progres, suit, dan Reversi, serta memperbaiki menu, pilihan, suara, galeri CG, dan sebagian transisi sesuai skrip game. Dukungan tetap berstatus beta; seluruh rute, varian patch, dan efek asli belum diverifikasi. Lihat [catatan DC2DM 0.7.0](docs/releases/v0.7.0/id.md).
+Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai (fully playable). Dukungan mencakup save PC, impor progres, suit, Reversi, menu, pilihan, suara, dan galeri CG. Versi 0.7.1 memperbaiki transisi pemilih cerita dan minigame, mempertahankan riwayat baca saat mengimpor progres PC, serta menyesuaikan tata letak teks Pretendard JP Bold. Lihat [catatan DC2DM 0.7.1](docs/releases/v0.7.1/id.md).
 
 ### Seri Da Capo pertama
 
@@ -72,12 +72,31 @@ Edisi Standard, Limited, Deluxe, dan Download dikelompokkan ke judul utamanya. G
 
 - Pustaka game yang menyimpan daftar game dan mendeteksi 21 judul di atas secara otomatis.
 - Pembacaan langsung dari MicroSD dan USB OTG (`/storage/XXXX-XXXX`) tanpa harus menyalin semua berkas ke penyimpanan internal.
-- Font bawaan `MSGOTHIC.TTC` untuk teks Jepang, serta pilihan font sistem atau font TTF/OTF/TTC sendiri.
+- Font bawaan `MSGOTHIC.TTC` untuk teks Jepang dan pilihan Pretendard JP Bold, serta font sistem atau font TTF/OTF/TTC sendiri.
 - Penghapusan game dari pustaka dengan pilihan untuk menghapus berkas salinan, serta deteksi entri duplikat.
 - Antarmuka `ArisaUi` bertema adv32/CIRCUS dengan ikon lambang Arisa.
 - Impor dan ekspor arsip data simpan dalam format ZIP.
 - Kontrol sentuh layar penuh, riwayat dialog, dan skip dialog.
-- Target Android API 36, mendukung Android 5.0 / API 21 ke atas, `arm64-v8a` dan `armeabi-v7a`, serta ukuran halaman memori 16 KB.
+- Target Android API 36, mendukung `arm64-v8a` dan `armeabi-v7a`, dengan dukungan halaman memori 16 KB pada ARM64. Paket universal mendukung Android 5.0 / API 21 ke atas; paket per ABI yang lebih hemat ruang memerlukan Android 6.0 / API 23 ke atas.
+
+## Menyiapkan folder game
+
+Pisahkan berkas game asli dan patch terjemahan di dalam folder game:
+
+| Isi | Folder |
+| --- | --- |
+| Berkas game raw / original tanpa patch | `AdvData` |
+| Patch bahasa Indonesia atau Inggris, jika digunakan | `id_data` |
+
+Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`, lalu tempatkan satu paket terjemahan di `id_data` di sampingnya. Pertahankan susunan subfolder dan berkas dari paket patch.
+
+Di Android:
+
+1. Tambahkan folder `AdvData` ke pustaka game.
+2. Untuk memakai patch, buka pengaturan game dan pilih **Impor paket bahasa**. Pilih **Bahasa Indonesia** atau **English** sesuai isi patch, pilih enkode teks sesuai petunjuk pembuat patch, lalu pilih folder `id_data`.
+3. Pilih bahasa yang ingin dimainkan melalui **Bahasa game**. Versi original memakai pilihan bahasa Jepang; setiap bahasa memiliki data simpan terpisah.
+
+Arisa32 mendeteksi nama `id_data` sebagai paket bahasa Indonesia. Jika folder itu berisi patch Inggris, daftarkan melalui **Impor paket bahasa** dengan pilihan **English** agar tersedia sebagai bahasa Inggris.
 
 ## Build dan jalankan di Windows
 
@@ -114,7 +133,28 @@ Skrip menghasilkan `android/Arisa32-debug.apk` dari proyek Gradle yang sama deng
 - CMake `3.22.1`.
 - JDK 17 atau lebih baru.
 
-APK siap pasang juga tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases). Lihat [panduan Android](android/README.md) untuk izin aplikasi, pengaturan penyimpanan, dan pemasangan lewat ADB.
+Untuk membuat APK rilis, pilih salah satu perintah berikut dan jalankan dari folder `android`:
+
+```bash
+./gradlew assembleRelease
+./gradlew assembleRelease -ParisaAbi=arm64-v8a
+./gradlew assembleRelease -ParisaAbi=armeabi-v7a
+```
+
+Tanpa `-ParisaAbi`, build tetap menghasilkan APK universal. Dua perintah berikutnya membuat paket untuk ABI yang dipilih. Di PowerShell, gunakan `.\gradlew.bat` sebagai pengganti `./gradlew`. Lihat [panduan Android](android/README.md) untuk rincian build, pengaturan penyimpanan, dan pemasangan lewat ADB.
+
+APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
+
+| APK v0.7.1 | Android minimum | Kegunaan |
+| --- | --- | --- |
+| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Universal, berisi ARM64 dan ARMv7; pilih jika belum tahu jenis perangkat atau masih memakai Android 5 |
+| `Arisa32-v0.7.1-arm64-v8a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARM64 |
+| `Arisa32-v0.7.1-armeabi-v7a.apk` | 6.0 / API 23 | Hemat ruang untuk perangkat dengan dukungan ARMv7 |
+| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug universal untuk pengujian dan diagnosis |
+
+Pilih paket sesuai ABI perangkat untuk menghemat penyimpanan setelah pemasangan. Paket per ABI membaca pustaka native langsung dari APK tanpa membuat salinan hasil ekstraksi. Paket universal tetap memakai pengemasan lama untuk mendukung Android 5. `SHA256SUMS.txt` memuat checksum keempat APK.
+
+Mulai versi 0.7.1, pembaru di dalam aplikasi memilih paket sesuai ABI secara otomatis pada Android 6.0+, dan paket universal pada Android 5. Pembaru versi sebelumnya tetap mengunduh paket universal. Pasang pembaruan tanpa menghapus aplikasi agar data tetap tersimpan.
 
 ## Kontrol membaca di desktop
 
@@ -145,7 +185,7 @@ Format simpan bergantung pada game:
 | Game | Format |
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Format PC `.dat`, dengan berkas pendamping `.dat.arisa` untuk keadaan tambahan Arisa32 |
-| D.C. II Dearest Marriage (beta) | Format PC `.dat` + `.dat.arisa`; save portabel lama tetap dapat dimuat |
+| D.C. II Dearest Marriage | Format PC `.dat` + `.dat.arisa`; save portabel lama tetap dapat dimuat |
 | Profil tanpa dukungan format PC | Format portabel `.dc4sav`, dengan berkas pratinjau dan metadata |
 
 Arisa32 dapat membaca dan menulis format PC untuk empat judul di atas. Berkas `.dat.arisa` menyimpan keadaan tambahan, termasuk posisi pemutaran audio. Game PC mengabaikan berkas pendamping ini. Arisa32 tetap dapat memuat `.dat` tanpa pendampingnya, tetapi musik dapat mulai dari awal dan sebagian keadaan tambahan tidak tersedia.
@@ -202,7 +242,7 @@ python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves
 
 - Cakupan proyek adalah skrip dan aset CIRCUS adv32 untuk seri Da Capo dan Dal Segno. Game dengan engine lain tidak didukung.
 - Alur dialog, percabangan pilihan, suara karakter, transisi latar, CG, BGM, dan menu sistem sudah tersedia. Sebagian opcode dan perilaku game masih memerlukan pemeriksaan. Audit dalam [RE-HANDOFF.md](docs/RE-HANDOFF.md) bagian 12 mencatat sekitar 39% kemunculan opcode belum memiliki jalur kode eksplisit pada 13 Oktober 2026; angka historis ini bukan pengukuran cakupan rilis saat ini.
-- Kompatibilitas save PC terbatas pada judul yang tercantum di [data simpan](#data-simpan). Dukungan DC2DM masih beta; seluruh rute dan varian patch belum diverifikasi.
+- Kompatibilitas save PC terbatas pada judul yang tercantum di [data simpan](#data-simpan).
 - Arisa32 adalah proyek rekayasa balik independen dengan pendekatan clean-room untuk riset dan pelestarian, bukan produk resmi CIRCUS. Proyek ini masih dalam pengembangan.
 
 ## Hak cipta dan merek dagang

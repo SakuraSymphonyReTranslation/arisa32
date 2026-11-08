@@ -1,0 +1,9 @@
+Pretendard JP Bold
+Version 1.301;FEAKit 1.0
+Copyright © 2022 Kil Hyung-jin
+
+This font is distributed unchanged under the SIL Open Font License 1.1.
+See Pretendard-OFL.txt in this directory for the license and upstream notices.
+
+Upstream project: https://github.com/orioncactus/pretendard
+License source: https://raw.githubusercontent.com/orioncactus/pretendard/main/LICENSE

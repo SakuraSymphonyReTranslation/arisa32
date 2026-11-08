@@ -422,9 +422,17 @@ bool dc2pc_menu(const Engine* e) {
     return e->menu.loaded() && e->menu.scene_ui_script() == "start.mes";
 }
 
+bool dc2dm_script(const Engine* e, const std::string& script, const char* expected) {
+    auto name = std::filesystem::path(script).stem().string();
+    std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return char(std::tolower(c));});
+    return e->menu.is_dc2dm() && name == expected;
+}
+
 void capture_presentation(Engine* e, std::vector<uint8_t>* frame, bool outgoing = false) {
     if (outgoing && e->save_frame_visible && !e->save_frame.empty()) *frame = e->save_frame;
     else if (e->menu_open) e->menu.draw(-1,-1,false,e->font,frame);
+    else if (e->menu.is_dc2dm() && (e->movie.active() || e->movie_playing_in_java))
+        e->movie.draw_rgba(frame,dc4scene::kScreenW,dc4scene::kScreenH);
     else { e->scene->draw(reveal_count(e)); *frame = e->scene->frame(); }
 }
 
@@ -447,14 +455,15 @@ void begin_dc2pc_boundary(Engine* e, uint32_t wait_ms, bool reveal, std::functio
     e->tick = Clock::now();
 }
 
-std::string enter_scene(Engine* e, std::unique_ptr<dc4scene::SceneRunner> next, bool replay) {
+std::string enter_scene(Engine* e, std::unique_ptr<dc4scene::SceneRunner> next, bool replay, bool retain_title_music = false) {
     e->movie.close(); e->movie_suspended = false;
-    e->audio.stop_bgm();
+    if (!retain_title_music) e->audio.stop_bgm();
     e->audio.stop_group(dc4::AudioGroup::Se);
     e->audio.stop_channel(6);
     e->audio.stop_channel(7);
-    e->current_bgm.clear();
+    if (!retain_title_music) e->current_bgm.clear();
     next->set_audio(&e->audio, &e->voice);
+    if (retain_title_music) next->seed_dc2dm_bgm(e->current_bgm);
     next->set_observer([e](const dc4::MesCommand& c, const std::string& script) { e->menu.observe(c,script); });
     next->set_auto_save_path(dc4::auto_save_target(e->save_dir,next->save_format_version()).string());
     e->scene = std::move(next);
@@ -477,6 +486,13 @@ std::string start_scene(Engine* e, std::string name, const std::string& label = 
         !next->show_message_window("SYSTEM/MESWIN.CRX") ||
         !next->load_script(e->data_dir + "/MES/" + name, label)) return next->last_error();
     e->menu.initialize_scene(*next,replay);
+    const bool selector = dc2dm_script(e,name,"sceselect");
+    if (e->menu_open && (selector || dc2dm_script(e,name,"minigame"))) {
+        std::vector<uint8_t> outgoing;
+        e->menu.draw(-1,-1,false,e->font,&outgoing);
+        next->seed_dc2dm_presentation(outgoing);
+        return enter_scene(e,std::move(next),replay,selector);
+    }
     if (dc2pc_menu(e) && e->menu_open) {
         e->pending_scene = std::move(next);
         // title_*.mes waits six native 200 ms ticks before raw 0D/14.
@@ -587,6 +603,7 @@ bool play_menu_music(Engine* e, std::string asset, bool loop) {
 void return_to_title_now(Engine* e) {
     using P = dc4ui::SystemMenuPage;
     e->movie.close();
+    if (e->menu.is_dc2dm()) e->movie_from_scene = false;
     e->movie_suspended = false;
     e->scene->finish_movie();
     e->audio.stop_all();
@@ -625,6 +642,36 @@ void return_to_title_now(Engine* e) {
 
 void return_to_title(Engine* e) {
     if (e->presentation.active()) return;
+    if (e->menu.is_dc2dm() && e->in_game) {
+        const bool movie = e->movie.active() || e->movie_playing_in_java || !e->scene->pending_movie().empty();
+        if (!movie && dc2dm_script(e,e->scene->script_name(),"sceselect")) {
+            return_to_title_now(e);
+            return;
+        }
+        begin_dc2pc_boundary(e,0,true,[e] { return_to_title_now(e); },!movie);
+        if (movie) {
+            e->movie.close();
+            e->movie_from_scene = false;
+            e->scene->finish_movie();
+            e->audio.stop_all();
+            if (e->movie_playing_in_java) {
+                e->movie_playing_in_java = false;
+                JNIEnv* env = nullptr;
+                bool attached = false;
+                if (e->vm && e->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6) != JNI_OK)
+                    attached = e->vm->AttachCurrentThread(&env,nullptr) == JNI_OK;
+                if (env && e->activity) {
+                    jclass cls = env->GetObjectClass(e->activity);
+                    jmethodID stop = env->GetMethodID(cls,"stopMovie","()V");
+                    if (stop) env->CallVoidMethod(e->activity,stop);
+                    env->DeleteLocalRef(cls);
+                }
+                if (attached) e->vm->DetachCurrentThread();
+                e->audio.set_device_paused(false);
+            }
+        }
+        return;
+    }
     if (dc2pc_menu(e) && e->in_game) {
         // advmenu/go_title: five 200 ms ticks, then a black-out before transfer.
         begin_dc2pc_boundary(e,1000,true,[e] { return_to_title_now(e); },e->menu.is_dc2dm());
@@ -861,7 +908,7 @@ void tick_engine(Engine* e) {
             if (target == "cgmode" || target.rfind("cg_",0)==0) page = dc4ui::SystemMenuPage::Gallery;
             if (target == "scemode" || target == "sce_end" || target == "sc_end" || target.rfind("sce_",0)==0) page = dc4ui::SystemMenuPage::Scenes;
             if (target == "config" || target == "option") page = dc4ui::SystemMenuPage::Config;
-            if (dc2pc_menu(e))
+            if (dc2pc_menu(e) && !dc2dm_script(e,e->scene->script_name(),"sceselect"))
                 begin_dc2pc_boundary(e,target == "sc_end" ? 600 : 0,true,[e,page] { finish_scenario_menu(e,page); });
             else finish_scenario_menu(e,page);
         } else {
@@ -1033,13 +1080,18 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->menu.bind_confirmations(e->confirm);
     e->menu.bind_confirmations(e->save_screen.confirm_dialog());
     e->menu.set_confirmation_changed_callback([e] { save_profile(e); });
+    const auto load_read_lines = [&] {
+        std::ifstream read_file(e->save_dir + "/read-lines.txt",std::ios::binary);
+        std::string read_key;
+        while (e->read_lines.size() < 100000 && std::getline(read_file,read_key))
+            if (read_key.size() <= 300) e->read_lines.insert(read_key);
+    };
+    const bool dc2dm_read_history = e->menu.is_dc2dm();
+    if (dc2dm_read_history) load_read_lines();
     if (!e->save_dir.empty() && (imported_pc_progress || !std::filesystem::exists(e->save_dir + "/system-profile.dat"))) {
         save_profile(e);
     }
-    std::ifstream read_file(e->save_dir + "/read-lines.txt",std::ios::binary);
-    std::string read_key;
-    while (e->read_lines.size() < 100000 && std::getline(read_file,read_key))
-        if (read_key.size() <= 300) e->read_lines.insert(read_key);
+    if (!dc2dm_read_history) load_read_lines();
 
     e->scene.reset(new dc4scene::SceneRunner(e->data_dir));
     e->scene->set_use_system_menu(menu_ok);
@@ -2106,9 +2158,12 @@ JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4MovieCompleted(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e) return;
+    if (e->menu.is_dc2dm() && !e->movie_playing_in_java) return;
     e->movie_playing_in_java = false;
     e->audio.set_device_paused(false);
-    if (e->movie_from_scene && e->scene) {
+    const bool from_scene = e->movie_from_scene;
+    if (e->menu.is_dc2dm()) e->movie_from_scene = false;
+    if (from_scene && e->scene) {
         e->scene->finish_movie();
         advance_scene(e);
     } else {

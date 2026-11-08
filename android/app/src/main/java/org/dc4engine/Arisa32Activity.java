@@ -576,22 +576,54 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private File ensureDefaultFont() {
-        File fontsDir = new File(getFilesDir(), "fonts");
+        return ensureBundledFont("MSGOTHIC.TTC", "fonts");
+    }
+
+    private File ensureBundledFont(String name, String directory) {
+        File fontsDir = new File(getFilesDir(), directory);
         if (!fontsDir.isDirectory()) fontsDir.mkdirs();
-        File dest = new File(fontsDir, "MSGOTHIC.TTC");
+        File dest = new File(fontsDir, name);
         if (!dest.isFile() || dest.length() < 1000) {
-            try (InputStream in = getAssets().open("fonts/MSGOTHIC.TTC");
-                 FileOutputStream out = new FileOutputStream(dest)) {
-                byte[] buf = new byte[65536];
-                int n;
-                while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
-                out.getFD().sync();
-                Log.i(TAG, "Extracted bundled MSGOTHIC.TTC to " + dest.getAbsolutePath());
+            File temp = new File(fontsDir, UUID.randomUUID() + ".tmp");
+            try {
+                try (InputStream in = getAssets().open("fonts/" + name);
+                     FileOutputStream out = new FileOutputStream(temp)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+                    out.getFD().sync();
+                }
+                if (!temp.renameTo(dest)) throw new IOException("Cannot install bundled font.");
+                Log.i(TAG, "Extracted bundled " + name + " to " + dest.getAbsolutePath());
             } catch (IOException e) {
-                Log.w(TAG, "Cannot extract bundled MSGOTHIC.TTC: " + e.getMessage());
+                Log.w(TAG, "Cannot extract bundled " + name + ": " + e.getMessage());
+                return null;
+            } finally {
+                temp.delete();
             }
         }
         return dest.isFile() ? dest : null;
+    }
+
+    private boolean sameFontFile(File left, File right) {
+        if (left == null || right == null || left.length() != right.length()) return false;
+        if (left.equals(right)) return true;
+        try (FileInputStream a = new FileInputStream(left); FileInputStream b = new FileInputStream(right)) {
+            byte[] first = new byte[65536], second = new byte[first.length];
+            int count;
+            while ((count = a.read(first)) != -1) {
+                int read = 0;
+                while (read < count) {
+                    int n = b.read(second, read, count - read);
+                    if (n < 0) return false;
+                    read += n;
+                }
+                for (int i = 0; i < count; ++i) if (first[i] != second[i]) return false;
+            }
+            return b.read() == -1;
+        } catch (IOException error) {
+            return false;
+        }
     }
 
     private String effectiveFont(GameLibrary.Entry game) {
@@ -3204,15 +3236,25 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
     private void chooseFont(GameLibrary.Entry game) {
         File defaultFont = ensureDefaultFont();
+        File pretendard = ensureBundledFont("PretendardJP-Bold.ttf", "fonts/bundled");
         File root = new File(getFilesDir(), "fonts");
         File[] files = root.listFiles();
         ArrayList<File> customFonts = new ArrayList<>();
         ArrayList<String> labels = new ArrayList<>();
         labels.add(tr("MS Gothic (Game default)", "MS Gothic (Bawaan game / default)", "MS ゴシック（標準フォント）"));
         labels.add(tr("System default", "Bawaan sistem", "システム標準"));
+        boolean selectedPretendard = false;
+        if (pretendard != null) {
+            customFonts.add(pretendard);
+            labels.add("Pretendard JP Bold");
+        }
         if (files != null) {
             for (File file : files) {
                 if (file.isFile() && !file.getName().equalsIgnoreCase("MSGOTHIC.TTC")) {
+                    if (sameFontFile(file, pretendard)) {
+                        if (file.getAbsolutePath().equals(game.font)) selectedPretendard = true;
+                        continue;
+                    }
                     customFonts.add(file);
                     labels.add(file.getName());
                 }
@@ -3221,6 +3263,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         int checked = 0;
         if ("SYSTEM_DEFAULT".equals(game.font)) {
             checked = 1;
+        } else if (selectedPretendard) {
+            checked = 2;
         } else if (game.font == null || game.font.isEmpty() ||
                    (defaultFont != null && game.font.equalsIgnoreCase(defaultFont.getAbsolutePath()))) {
             checked = 0;
@@ -3900,24 +3944,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 JSONObject apkAsset = null;
                 JSONArray assets = release.optJSONArray("assets");
                 if (assets != null) {
+                    String[] assetNames = new String[assets.length()];
                     for (int i = 0; i < assets.length(); i++) {
-                        JSONObject asset = assets.getJSONObject(i);
-                        String assetName = asset.optString("name", "");
-                        if (assetName.endsWith(".apk") && !assetName.toLowerCase(Locale.US).contains("debug")) {
-                            apkAsset = asset;
-                            break;
-                        }
+                        assetNames[i] = assets.getJSONObject(i).optString("name", "");
                     }
-                    if (apkAsset == null) {
-                        for (int i = 0; i < assets.length(); i++) {
-                            JSONObject asset = assets.getJSONObject(i);
-                            String assetName = asset.optString("name", "");
-                            if (assetName.endsWith(".apk")) {
-                                apkAsset = asset;
-                                break;
-                            }
-                        }
-                    }
+                    int assetIndex = UpdateAssetSelection.chooseIndex(assetNames, Build.SUPPORTED_ABIS, Build.VERSION.SDK_INT);
+                    if (assetIndex >= 0) apkAsset = assets.getJSONObject(assetIndex);
                 }
                 final AppUpdate.Asset download = new AppUpdate.Asset(tagName,
                         apkAsset == null ? null : apkAsset.optString("browser_download_url", null),

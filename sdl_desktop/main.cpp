@@ -635,6 +635,8 @@ int run(const Options& o) {
     std::unique_ptr<dc4scene::SceneRunner> scene;
     Texture background(nullptr, SDL_DestroyTexture), sheet(nullptr, SDL_DestroyTexture);
     Texture frame_texture(nullptr, SDL_DestroyTexture);
+    Texture gallery_texture(nullptr, SDL_DestroyTexture);
+    int gallery_width=0, gallery_height=0;
     dc4ui::ScriptUi ui;
     dc4ui::LogScreen log_screen;
     dc4ui::SaveScreen save_screen;
@@ -708,7 +710,9 @@ int run(const Options& o) {
     // startup and the Log screen's scene-jump button. `history` (when given)
     // collects every settled line with its dialogue index.
     auto build_scene = [&](const std::string& scene_name, int line,
-                           bool animate_last, Backlog* history, const std::string& entry = {}, bool replay = false) -> std::unique_ptr<dc4scene::SceneRunner> {
+                           bool animate_last, Backlog* history, const std::string& entry = {}, bool replay = false,
+                           const std::vector<uint8_t>& presentation = {},
+                           bool retain_title_music = false) -> std::unique_ptr<dc4scene::SceneRunner> {
         auto rebuilt = std::make_unique<dc4scene::SceneRunner>(data);
         rebuilt->set_debug(o.debug || std::getenv("DC4_DEBUG"));
         rebuilt->set_font(&font);
@@ -721,6 +725,9 @@ int run(const Options& o) {
             return nullptr;
         }
         system_menu.initialize_scene(*rebuilt,replay);
+        if (!presentation.empty() && rebuilt->seed_dc2dm_presentation(presentation))
+            rebuilt->set_variable(99,12,system_menu.variable(99,12));
+        if (retain_title_music) rebuilt->seed_dc2dm_bgm(system_menu.title_music());
         if(line==0)rebuilt->set_auto_save_path(dc4::auto_save_target(profile_dir,rebuilt->save_format_version()).string());
         for (int i = 0; i <= line; ++i) {
             // Settle earlier dialogue indices; animate only the requested line.
@@ -728,6 +735,7 @@ int run(const Options& o) {
             while (rebuilt->waiting_for_time()) rebuilt->finish_script_wait();
             while (!rebuilt->advance_to_next_text()) {
                 if (rebuilt->waiting_for_time()) {
+                    if (!presentation.empty() && i == line && animate_last) break;
                     rebuilt->finish_script_wait();
                     continue;
                 }
@@ -1051,10 +1059,23 @@ int run(const Options& o) {
     };
     auto return_title = [&]() {
         if (system_menu.is_dc2dm() && scene && !scene->script_name().empty()) {
+            const bool opening = movie.active() || !scene->pending_movie().empty();
+            auto script = fs::path(scene->script_name()).stem().string();
+            std::transform(script.begin(),script.end(),script.begin(),[](unsigned char c){return char(std::tolower(c));});
+            if (!opening && script == "sceselect") {
+                open_system(dc4ui::SystemMenuPage::Title);
+                return;
+            }
             std::vector<uint8_t> outgoing;
             if (menu_open) system_menu.draw(-1,-1,false,font,&outgoing);
+            else if (movie.active()) movie.draw_rgba(&outgoing,dc4scene::kScreenW,dc4scene::kScreenH);
             else { scene->draw(-1); outgoing = scene->frame(); }
-            title_transition.start_dc2dm_title(std::move(outgoing),dc4ui::dc2dm_title_particle_sheet(data));
+            if (opening) {
+                title_transition.start(std::move(outgoing),system_menu.variable(99,12));
+                movie.close(); movie_from_scene = false;
+                scene->finish_movie();
+                audio.engine.stop_all();
+            } else title_transition.start_dc2dm_title(std::move(outgoing),dc4ui::dc2dm_title_particle_sheet(data));
             title_commit_due = false;
             auto_mode = skip_mode = mouse_down = false;
             system_menu.cancel_pointer();
@@ -1080,19 +1101,26 @@ int run(const Options& o) {
         prompt(load?dc4ui::ConfirmKind::QuickLoad:dc4ui::ConfirmKind::QuickSave,[&,load]{persist_state(load,-1);});
     };
     auto start_scene = [&](const dc4ui::SystemMenuAction& selected) {
-        audio.engine.stop_bgm();
+        auto script = fs::path(selected.asset).stem().string();
+        std::transform(script.begin(),script.end(),script.begin(),[](unsigned char c){return char(std::tolower(c));});
+        const bool selector = system_menu.is_dc2dm() && menu_open && script == "sceselect";
+        const bool minigame = system_menu.is_dc2dm() && menu_open && script == "minigame";
+        std::vector<uint8_t> presentation;
+        if (selector || minigame) system_menu.draw(-1,-1,false,font,&presentation);
+        if (!selector) audio.engine.stop_bgm();
         audio.engine.stop_group(dc4::AudioGroup::Se);
         audio.engine.stop_channel(6);
         audio.engine.stop_channel(7);
         Backlog history;
         auto started=build_scene(selected.asset,0,true,&history,selected.label,
-                                 selected.type==dc4ui::SystemMenuActionType::StartScene);
+                                 selected.type==dc4ui::SystemMenuActionType::StartScene,presentation,selector);
         if(!started){notify("Cannot start "+selected.asset);return;}
         scene=std::move(started);backlog=std::move(history);dialogue_index=0;
         menu_open=slots.open=backlog.open=false;auto_mode=skip_mode=false;
         line_done=false;line_start=line_finished=SDL_GetTicks();
         current_line_read=system_menu.scene_seen(scene->script_name(),"@"+std::to_string(scene->script_position()));
         apply_settings();sync_progress();flush_profile();update_title();
+        if (selector || minigame) animation_tick=SDL_GetTicks();
     };
     auto finish_movie = [&]() {
         const bool resume=movie_from_scene;
@@ -1277,14 +1305,38 @@ int run(const Options& o) {
         if (SDL_RenderClear(ren) < 0) return false;
         if(menu_open || movie.active()) {
             std::vector<uint8_t> pixels;
-            if(movie.active())movie.draw_rgba(&pixels,dc4scene::kScreenW,dc4scene::kScreenH);
-            else system_menu.draw(mx,my,mouse_down,font,&pixels);
-            if(pixels.size()!=size_t(dc4scene::kScreenW)*dc4scene::kScreenH*4)return false;
+            SDL_Texture* output_texture=frame_texture.get();
+            int output_width=dc4scene::kScreenW, output_height=dc4scene::kScreenH;
+            bool gallery_drawn=false;
+            if (!movie.active() && !global_confirm.active() && system_menu.is_dc2pc() &&
+                system_menu.gallery_preview_active()) {
+                int physical_width=0, physical_height=0;
+                if (SDL_GetRendererOutputSize(ren,&physical_width,&physical_height)==0 &&
+                    physical_width>0 && physical_height>0) {
+                    const int units=std::clamp(int(std::ceil(std::min(physical_width/16.0,physical_height/9.0))),1,240);
+                    const int width=units*16, height=units*9;
+                    if (!gallery_texture || gallery_width!=width || gallery_height!=height) {
+                        gallery_texture.reset(SDL_CreateTexture(ren,SDL_PIXELFORMAT_RGBA32,
+                            SDL_TEXTUREACCESS_STREAMING,width,height));
+                        gallery_width=width; gallery_height=height;
+                        if (gallery_texture) SDL_SetTextureBlendMode(gallery_texture.get(),SDL_BLENDMODE_NONE);
+                    }
+                    if (gallery_texture && system_menu.draw_gallery(width,height,&pixels)) {
+                        gallery_drawn=true;
+                        output_texture=gallery_texture.get(); output_width=width; output_height=height;
+                    }
+                }
+            }
+            if (!gallery_drawn) {
+                if(movie.active())movie.draw_rgba(&pixels,dc4scene::kScreenW,dc4scene::kScreenH);
+                else system_menu.draw(mx,my,mouse_down,font,&pixels);
+            }
+            if(pixels.size()!=size_t(output_width)*output_height*4)return false;
             if (global_confirm.active()) {
                 global_confirm.draw(mx, my, mouse_down, font, &pixels);
             }
-            if(SDL_UpdateTexture(frame_texture.get(),nullptr,pixels.data(),dc4scene::kScreenW*4)<0)return false;
-            if(SDL_RenderCopy(ren,frame_texture.get(),nullptr,nullptr)<0)return false;
+            if(SDL_UpdateTexture(output_texture,nullptr,pixels.data(),output_width*4)<0)return false;
+            if(SDL_RenderCopy(ren,output_texture,nullptr,nullptr)<0)return false;
         } else if (scene) {
             int reveal = o.shot.empty() ? -1 : o.reveal;
             if (o.shot.empty() && !line_done) {

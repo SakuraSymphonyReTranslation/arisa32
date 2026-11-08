@@ -35,6 +35,7 @@ public final class UpdateDialogChecks extends Instrumentation {
     private boolean graphicsOnly;
     private boolean navigationOnly;
     private boolean displayOnly;
+    private boolean fontOnly;
     private boolean screenOnly;
     private boolean galleryOnly;
     private boolean cursorOnly;
@@ -49,6 +50,7 @@ public final class UpdateDialogChecks extends Instrumentation {
         graphicsOnly = arguments != null && "true".equals(arguments.getString("graphicsOnly"));
         navigationOnly = arguments != null && "true".equals(arguments.getString("navigationOnly"));
         displayOnly = arguments != null && "true".equals(arguments.getString("displayOnly"));
+        fontOnly = arguments != null && "true".equals(arguments.getString("fontOnly"));
         screenOnly = arguments != null && "true".equals(arguments.getString("screenOnly"));
         galleryOnly = arguments != null && "true".equals(arguments.getString("galleryOnly"));
         cursorOnly = arguments != null && "true".equals(arguments.getString("cursorOnly"));
@@ -71,7 +73,7 @@ public final class UpdateDialogChecks extends Instrumentation {
             }
             getTargetContext().getSharedPreferences("launcher", 0).edit().putBoolean("autoCheckUpdate", false).commit();
             if (installerOnly) UpdateInstallChecks.prepare(this);
-            if (graphicsOnly || navigationOnly || screenOnly || galleryOnly || cursorOnly || gameDataOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
+            if (graphicsOnly || navigationOnly || screenOnly || galleryOnly || cursorOnly || gameDataOnly || fontOnly) getTargetContext().getSharedPreferences("launcher", 0).edit()
                     .remove(FrameFilter.PREFERENCE).putBoolean("retainSession", false)
                     .remove("pausedGame").remove("pausedLanguage").commit();
             IntentFilter storagePrompt = new IntentFilter(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
@@ -81,6 +83,12 @@ public final class UpdateDialogChecks extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (Arisa32Activity) startActivitySync(launch);
             waitForIdleSync();
+            if (fontOnly) {
+                int count = new FontSelectionChecks(this, activity).run();
+                result.putString("stream", "Font selection checks passed: " + count + "\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if (gameDataOnly) {
                 int count = new GameDataChecks(this, activity).run();
                 result.putString("stream", "Game data checks passed: " + count + "\n");

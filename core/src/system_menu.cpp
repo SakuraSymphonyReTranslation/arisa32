@@ -283,6 +283,59 @@ void gallery_bitmap(const dc4scene::Image& image, int width, int height, std::ve
         }
     }
 }
+struct DC2PCGalleryRows {
+    std::string source;
+    int width=0, source_width=0, source_height=0, offset_x=0;
+    std::vector<uint16_t> rgba;
+};
+void dc2pc_gallery_bitmap(const dc4scene::Image& image, int width, int height,
+                         int offset_x, int offset_y, std::vector<uint8_t>* frame,
+                         DC2PCGalleryRows* cached_rows=nullptr) {
+    frame->assign(size_t(width)*height*4, 0);
+    for (size_t i=3; i<frame->size(); i+=4) (*frame)[i]=255;
+    const int viewport_width=height*4/3, left=(width-viewport_width)/2;
+    DC2PCGalleryRows temporary;
+    auto& rows=cached_rows ? *cached_rows : temporary;
+    if (rows.source!=image.name || rows.width!=viewport_width || rows.source_width!=image.w ||
+        rows.source_height!=image.h || rows.offset_x!=offset_x) {
+        struct Column { int first=-1, second=0, weight=0; };
+        std::vector<Column> columns(viewport_width);
+        for (int x=0; x<viewport_width; ++x) {
+            const double sx=(x+0.5)*800/viewport_width-0.5-offset_x;
+            if (sx < -0.5 || sx >= image.w-0.5) continue;
+            const double cx=std::clamp(sx,0.0,double(image.w-1));
+            const int x0=int(cx);
+            columns[x]={x0,std::min(x0+1,image.w-1),int(std::lround((cx-x0)*256))};
+        }
+        rows.rgba.assign(size_t(viewport_width)*image.h*4,0);
+        for (int y=0; y<image.h; ++y) for (int x=0; x<viewport_width; ++x) {
+            const auto column=columns[x];
+            auto* out=&rows.rgba[(size_t(y)*viewport_width+x)*4];
+            out[3]=255*256;
+            if (column.first<0) continue;
+            const auto* a=&image.rgba[(size_t(y)*image.w+column.first)*4];
+            const auto* b=&image.rgba[(size_t(y)*image.w+column.second)*4];
+            for (int c=0; c<3; ++c)
+                out[c]=uint16_t((a[c]*a[3]*(256-column.weight)+b[c]*b[3]*column.weight+127)/255);
+        }
+        rows.source=image.name; rows.width=viewport_width;
+        rows.source_width=image.w; rows.source_height=image.h; rows.offset_x=offset_x;
+    }
+    // Keep horizontal samples in Q8: vertical pans change only the row indices,
+    // without rounding the authored offset to a physical display pixel.
+    for (int y=0; y<height; ++y) {
+        const double sy=(y+0.5)*600/height-0.5-offset_y;
+        if (sy < -0.5 || sy >= image.h-0.5) continue;
+        const double cy=std::clamp(sy,0.0,double(image.h-1));
+        const int y0=int(cy), y1=std::min(y0+1,image.h-1);
+        const int weight=int(std::lround((cy-y0)*256));
+        const auto* a=&rows.rgba[size_t(y0)*viewport_width*4];
+        const auto* b=&rows.rgba[size_t(y1)*viewport_width*4];
+        auto* out=&(*frame)[(size_t(y)*width+left)*4];
+        for (int c=0; c<viewport_width*4; ++c)
+            out[c]=uint8_t((a[c]*(256-weight)+b[c]*weight+32768)>>16);
+    }
+}
 }
 
 struct SystemMenu::Impl {
@@ -356,7 +409,12 @@ struct SystemMenu::Impl {
     bool held = false, gallery_view = false, movie_menu = false;
     std::vector<int> gallery_variants;
     size_t gallery_variant = 0;
-    struct GalleryEffect { int type = -1, frames = 0, ordinal = 0; std::string mask; };
+    struct GalleryEffect {
+        int type = -1, frames = 0, ordinal = 0;
+        std::string mask;
+        int x = 0, y = 0, target_x = 0, target_y = 0;
+        bool pan = false;
+    };
     std::map<int, GalleryEffect> gallery_effects;
     GalleryEffect gallery_effect;
     uint32_t gallery_elapsed = 0, gallery_duration = 0;
@@ -364,6 +422,13 @@ struct SystemMenu::Impl {
     mutable dc4scene::Image gallery_canvas, gallery_previous_canvas;
     std::string gallery_previous;
     std::vector<uint8_t> gallery_outgoing;
+    int gallery_x = 0, gallery_y = 0, gallery_previous_x = 0, gallery_previous_y = 0;
+    bool gallery_pan_pending = false, gallery_pan_active = false;
+    uint32_t gallery_pan_elapsed = 0;
+    std::set<std::string> dc2pc_gallery_images;
+    mutable std::vector<uint8_t> dc2pc_gallery_blend;
+    mutable DC2PCGalleryRows dc2pc_gallery_rows;
+    mutable int dc2pc_blend_step = -1, dc2pc_blend_speed = -1;
     std::mt19937 random{std::random_device{}()};
 
     Impl() { defaults(false); }
@@ -479,36 +544,70 @@ struct SystemMenu::Impl {
     }
     void gallery_route(const Script& source, int selected) {
         gallery_effects.clear();
-        if ((!dc4_profile && !dc2dm) || !source.labels.count("cg_next")) return;
+        if ((!dc4_profile && !dc2dm && !dc2pc) || !source.labels.count("cg_next")) return;
         std::vector<int> route;
         for (size_t i = 0; i < source.code.size(); ++i) {
             const auto& c = source.code[i];
             if (c.opcode() != Opcode::BACKGROUND || c.str.empty() || c.str.front() != '*') continue;
             int id = -1;
             try { id = std::stoi(c.str.substr(1)); } catch (...) { continue; }
-            if (id < 0 || size_t(id) >= cg_names.size() || get(97,id) <= 0 ||
+            if (id < 0 || size_t(id) >= cg_names.size() || (!dc2pc && get(97,id) <= 0) ||
                 std::find(route.begin(),route.end(),id) != route.end()) continue;
             GalleryEffect effect;
             for (size_t j = i+1; j < source.code.size() && source.code[j].opcode() != Opcode::LABEL; ++j) {
-                if (dc2dm && source.code[j].opcode() == Opcode::ASSIGN &&
-                    source.code[j].words[0] == 3 && source.code[j].words[1] == 4)
+                if ((dc2dm || dc2pc) && source.code[j].opcode() == Opcode::ASSIGN &&
+                    source.code[j].words[0] == 3 && source.code[j].words[1] == (dc2pc ? 2 : 4))
                     effect.ordinal = source.code[j].words[2];
                 if (source.code[j].opcode() != Opcode::JUMP) continue;
                 const auto label = source.labels.find(source.code[j].str);
                 if (label == source.labels.end()) break;
                 for (size_t k = label->second+1; k < source.code.size() && source.code[k].opcode() != Opcode::LABEL; ++k) {
                     const auto& draw = source.code[k];
+                    if (dc2pc && draw.raw_op == 0x62) {
+                        if (draw.words[2] == 1) {
+                            effect.x=sw(draw.words[0]); effect.y=sw(draw.words[1]);
+                        } else if (draw.words[2] == 0) {
+                            effect.target_x=sw(draw.words[0]); effect.target_y=sw(draw.words[1]);
+                            effect.pan=true;
+                        }
+                    }
                     if (draw.opcode() == Opcode::LOAD_SLOT && draw.p1 == 21) effect.mask = draw.str;
                     if (draw.opcode() == Opcode::TRANSITION && (draw.p1 == 0 || draw.p1 == 1 || draw.p1 == 21)) {
                         effect.type = draw.p1;
                         effect.frames = draw.p1 == 21 ? draw.p2*12 : (draw.p2+1)*20;
-                        break;
+                        if (!dc2pc) break;
                     }
                 }
                 break;
             }
             route.push_back(id);
             gallery_effects.emplace(id,std::move(effect));
+        }
+        if (dc2pc) {
+            std::map<int,int> ordinals, successors;
+            for (const auto& entry : gallery_effects) ordinals.emplace(entry.second.ordinal,entry.first);
+            const size_t begin=source.labels.at("cg_next")+1;
+            for (size_t i=begin; i+2<source.code.size() && source.code[i].opcode()!=Opcode::LABEL; ++i) {
+                const auto& compare=source.code[i];
+                const auto& jump=source.code[i+2];
+                if (compare.opcode()!=Opcode::COMPARE || compare.words[0]!=3 || compare.words[1]!=2 ||
+                    compare.words[3]!=0 || jump.opcode()!=Opcode::JUMP || jump.str.rfind("cg",0)!=0) continue;
+                const auto current=ordinals.find(compare.words[2]);
+                if (current==ordinals.end()) continue;
+                try {
+                    const int next=std::stoi(jump.str.substr(2));
+                    if (gallery_effects.count(next)) successors.emplace(current->second,next);
+                } catch (...) { continue; }
+            }
+            // cg_other has four authored cycles; thumbnail groups are not cycles.
+            route.clear();
+            std::set<int> visited;
+            for (int id=selected; gallery_effects.count(id) && visited.insert(id).second;) {
+                if (get(97,id)>0) route.push_back(id);
+                const auto next=successors.find(id);
+                if (next==successors.end()) break;
+                id=next->second;
+            }
         }
         const auto start = std::find(route.begin(),route.end(),selected);
         if (start == route.end()) { gallery_effects.clear(); return; }
@@ -520,7 +619,25 @@ struct SystemMenu::Impl {
         const std::string next = "*"+std::to_string(id);
         const auto* next_image = image(next);
         if (!next_image || !next_image->valid()) return;
-        gallery_previous = dc2dm && !entering ? background : std::string{};
+        gallery_previous = (dc2dm || dc2pc) && !entering ? background : std::string{};
+        if (dc2pc) {
+            const std::string current_name=key(cg_names[size_t(id)]);
+            std::string previous_name;
+            if (!gallery_previous.empty()) {
+                const int previous_id=gallery_variants[gallery_variant];
+                previous_name=key(cg_names[size_t(previous_id)]);
+            }
+            dc2pc_gallery_images.insert(current_name);
+            for (auto it=dc2pc_gallery_images.begin(); it!=dc2pc_gallery_images.end();) {
+                if (*it!=current_name && *it!=previous_name) {
+                    images.erase(*it); it=dc2pc_gallery_images.erase(it);
+                } else ++it;
+            }
+            gallery_previous_x=gallery_x; gallery_previous_y=gallery_y;
+            gallery_canvas={};
+            gallery_pan_active=gallery_pan_pending=false;
+            gallery_pan_elapsed=0;
+        }
         gallery_previous_canvas = {};
         gallery_variant = index;
         background = next;
@@ -532,8 +649,13 @@ struct SystemMenu::Impl {
         put(99,100,id);
         gallery_effect = effect->second;
         if (dc2dm) put(3,4,gallery_effect.ordinal);
+        if (dc2pc) {
+            put(3,2,gallery_effect.ordinal);
+            gallery_x=gallery_effect.x; gallery_y=gallery_effect.y;
+            gallery_pan_pending=gallery_effect.pan;
+        }
         if (!get(99,10) || gallery_effect.frames <= 0) return;
-        if (dc2dm) {
+        if (dc2dm || dc2pc) {
             gallery_duration = 640u >> std::clamp(get(99,12),0,3);
             if (entering) gallery_outgoing = std::move(gallery_menu_frame);
             return;
@@ -555,13 +677,29 @@ struct SystemMenu::Impl {
         const auto* mask = gallery_effect.type == 21 ? image(gallery_effect.mask) : nullptr;
         const int threshold = int(std::lround(255-510*t));
         const int fade = int(std::lround(255*(1-t)));
+        if (dc2pc) {
+            const int speed=std::clamp(get(99,12),0,3);
+            const int steps=std::min(int(gallery_elapsed/40)+1,16>>speed);
+            if (dc2pc_blend_step!=steps || dc2pc_blend_speed!=speed) {
+                const int weight=std::array<int,4>{3,6,8,10}[speed];
+                dc2pc_gallery_blend.resize(65536);
+                // The native fade blends back into its previous framebuffer every 40ms.
+                for (int old=0; old<256; ++old) for (int target=0; target<256; ++target) {
+                    int value=old;
+                    for (int n=0; n<steps; ++n) value=((16-weight)*value+weight*target)/16;
+                    dc2pc_gallery_blend[size_t(old)*256+target]=uint8_t(value);
+                }
+                dc2pc_blend_step=steps; dc2pc_blend_speed=speed;
+            }
+        }
         const dc4scene::Image* previous = nullptr;
-        if (dc2dm && !gallery_previous.empty()) {
+        if ((dc2dm || dc2pc) && !gallery_previous.empty()) {
             const auto* source = image(gallery_previous);
             if (source && source->valid()) {
                 auto& canvas = gallery_previous_canvas;
                 if (canvas.name != gallery_previous || canvas.w != width || canvas.h != height) {
-                    gallery_bitmap(*source,width,height,&canvas.rgba);
+                    if (dc2pc) dc2pc_gallery_bitmap(*source,width,height,gallery_previous_x,gallery_previous_y,&canvas.rgba);
+                    else gallery_bitmap(*source,width,height,&canvas.rgba);
                     canvas.name=gallery_previous; canvas.w=width; canvas.h=height;
                 }
                 previous = &canvas;
@@ -578,7 +716,8 @@ struct SystemMenu::Impl {
             for (int c = 0; c < 3; ++c) {
                 const int old = previous ? previous->rgba[pixel+c] :
                     (gallery_outgoing.size() == FrameBytes ? gallery_outgoing[(size_t(menu_y)*W+menu_x)*4+c] : 0);
-                (*frame)[pixel+c] = uint8_t((old*alpha+(*frame)[pixel+c]*(255-alpha))/255);
+                if (dc2pc) (*frame)[pixel+c]=dc2pc_gallery_blend[size_t(old)*256+(*frame)[pixel+c]];
+                else (*frame)[pixel+c] = uint8_t((old*alpha+(*frame)[pixel+c]*(255-alpha))/255);
             }
         }
     }
@@ -1503,6 +1642,9 @@ SystemMenu& SystemMenu::operator=(SystemMenu&&) noexcept = default;
 bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->data = data_dir; p_->scripts.clear(); p_->images.clear(); p_->last_error.clear(); p_->ready = false;
     p_->gallery_canvas = {};
+    p_->dc2pc_gallery_images.clear();
+    p_->dc2pc_gallery_rows={};
+    p_->gallery_pan_active=p_->gallery_pan_pending=false;
     p_->dc4_profile = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
     p_->confirm.load(data_dir);
     p_->dc2pc = false;
@@ -1567,16 +1709,18 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->ready = true; p_->progress_vars(); open(Page::Title); if(error)error->clear(); return true;
 }
 bool SystemMenu::loaded() const { return p_->ready; }
+bool SystemMenu::is_dc2pc() const { return p_->dc2pc; }
 SystemMenuPage SystemMenu::page() const { return p_->page; }
 bool SystemMenu::gallery_preview_active() const { return p_->ready && p_->gallery_view; }
 bool SystemMenu::draw_gallery(int width, int height, std::vector<uint8_t>* frame) const {
-    if (!frame || !gallery_preview_active() || (!p_->dc4_profile && !p_->dc2dm) || width<=0 || height<=0 ||
+    if (!frame || !gallery_preview_active() || (!p_->dc4_profile && !p_->dc2dm && !p_->dc2pc) || width<=0 || height<=0 ||
         width>3840 || height>2160 || int64_t(width)*9!=int64_t(height)*16) return false;
     const auto* source=p_->image(p_->background);
     if (!source || !source->valid()) return false;
     auto& canvas=p_->gallery_canvas;
     if (canvas.name!=p_->background || canvas.w!=width || canvas.h!=height) {
-        gallery_bitmap(*source,width,height,&canvas.rgba);
+        if (p_->dc2pc) dc2pc_gallery_bitmap(*source,width,height,p_->gallery_x,p_->gallery_y,&canvas.rgba,&p_->dc2pc_gallery_rows);
+        else gallery_bitmap(*source,width,height,&canvas.rgba);
         canvas.name=p_->background; canvas.w=width; canvas.h=height;
     }
     *frame=canvas.rgba;
@@ -1587,6 +1731,7 @@ void SystemMenu::resume_scenes() {
     cancel_pointer();
     p_->page = Page::Scenes; p_->gallery_view = p_->movie_menu = false;
     p_->gallery_canvas = {};
+    p_->dc2pc_gallery_rows={};
     p_->script_name = p_->replay_menu;
     if (p_->dc2pc) {p_->put(3,3,p_->replay_route);p_->put(206,80,p_->replay_page);}
     else {p_->put(3,5,p_->replay_route); p_->put(3,6,p_->replay_page);}
@@ -1606,6 +1751,7 @@ void SystemMenu::open(SystemMenuPage page) {
     }
     p_->page = page; p_->gallery_view = false; p_->movie_menu = false;
     p_->gallery_canvas = {};
+    p_->dc2pc_gallery_rows={};
     if (page == Page::Gallery || page == Page::Scenes) {
         if(p_->dc2pc){p_->put(3,3,0);p_->put(206,80,0);}
         p_->put(3,5,0); p_->put(3,6,0);
@@ -1695,9 +1841,18 @@ void SystemMenu::scroll(int delta) {
         if (p_->gallery_duration) {
             p_->gallery_duration=0; p_->gallery_outgoing.clear(); return;
         }
+        if (p_->dc2pc) {
+            if (p_->gallery_pan_active) return;
+            if (delta>0 && p_->gallery_pan_pending) {
+                p_->gallery_pan_pending=false;
+                p_->gallery_pan_active=true;
+                p_->gallery_pan_elapsed=0;
+                return;
+            }
+        }
         int n=int(p_->gallery_variants.size());
         const size_t next=size_t((int(p_->gallery_variant)+delta%n+n)%n);
-        if(next!=p_->gallery_variant)p_->show_gallery(next);
+        if(next!=p_->gallery_variant || p_->dc2pc)p_->show_gallery(next);
     } else if (p_->page==Page::Music && !p_->movie_menu) {
         if(p_->dc2pc) {
             p_->put(3,25,std::clamp(p_->get(3,25)+delta*2,0,std::max(0,int(p_->legacy_items.size())-int(p_->legacy_rows.size()))));
@@ -1722,8 +1877,10 @@ Action SystemMenu::back() {
     cancel_pointer();
     if(p_->gallery_view) {
         p_->gallery_view=false; p_->gallery_canvas={}; p_->gallery_previous_canvas={};
+        p_->dc2pc_gallery_rows={};
         p_->gallery_previous.clear(); p_->gallery_outgoing.clear(); p_->gallery_duration=0;
-        if (p_->dc2dm) p_->run(p_->script_name,"page_chk",true);
+        p_->gallery_pan_pending=p_->gallery_pan_active=false;
+        if (p_->dc2dm || p_->dc2pc) p_->run(p_->script_name,"page_chk",true);
         else p_->rebuild();
         return {};
     }
@@ -1890,22 +2047,26 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
             auto* source = p_->script(p_->script_name);
             if (first < 0 || !source) return {};
             int end = int(p_->cg_names.size());
+            int last=first-1;
             for (size_t i = 1; i < source->code.size(); ++i) {
                 const auto& c = source->code[i];
+                if (c.opcode()==Opcode::BACKGROUND && c.str.size()>1 && c.str.front()=='*') {
+                    try { last=std::max(last,std::stoi(c.str.substr(1))); } catch (...) {}
+                }
                 if (source->code[i - 1].opcode() != Opcode::CONTROL || c.opcode() != Opcode::JUMP ||
                     c.str.size() < 3 || c.str.rfind("cg", 0) != 0 || !std::isdigit(static_cast<unsigned char>(c.str[2])))
                     continue;
                 int next = std::stoi(c.str.substr(2));
                 if (next > first) end = std::min(end, next);
             }
+            end=std::min(end,last+1);
             p_->gallery_variants.clear();
             for (int i = first; i < end; ++i)
                 if (p_->get(97, i) > 0) p_->gallery_variants.push_back(i);
             if (p_->gallery_variants.empty()) return {};
             p_->gallery_variant = 0;
-            p_->background = "*" + std::to_string(p_->gallery_variants.front());
-            p_->gallery_view = true;
-            p_->image(p_->background);
+            p_->gallery_route(*source,p_->gallery_variants.front());
+            p_->show_gallery(p_->gallery_variant,true);
             cancel_pointer();
             return {};
         }
@@ -2184,6 +2345,19 @@ void SystemMenu::update(uint32_t elapsed_ms) {
             p_->gallery_outgoing.clear();
         }
     }
+    if (p_->dc2pc && p_->gallery_view && p_->gallery_pan_active) {
+        const uint64_t elapsed=uint64_t(p_->gallery_pan_elapsed)+elapsed_ms;
+        const int step=2<<std::clamp(p_->get(99,12),0,3);
+        const int distance=int(std::min<uint64_t>(elapsed/17*step,65536));
+        p_->gallery_pan_elapsed=uint32_t(elapsed%17);
+        const int dx=p_->gallery_effect.target_x-p_->gallery_x;
+        const int dy=p_->gallery_effect.target_y-p_->gallery_y;
+        p_->gallery_x+=std::clamp(dx,-distance,distance);
+        p_->gallery_y+=std::clamp(dy,-distance,distance);
+        if (distance) p_->gallery_canvas.name.clear();
+        if (p_->gallery_x==p_->gallery_effect.target_x && p_->gallery_y==p_->gallery_effect.target_y)
+            p_->gallery_pan_active=false;
+    }
     if (p_->visual_effects_enabled && p_->get(99,10) != 0) {
         p_->sakura.update(elapsed_ms, p_->sakura_random);
         p_->fairy_lights.update(elapsed_ms, p_->sakura_random);
@@ -2196,7 +2370,7 @@ void SystemMenu::set_visual_effects_enabled(bool enabled) { p_->visual_effects_e
 
 void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
     if(!frame)return;
-    if (p_->dc2dm && draw_gallery(W,H,frame)) return;
+    if ((p_->dc2dm || p_->dc2pc) && draw_gallery(W,H,frame)) return;
     frame->assign(FrameBytes,0);for(size_t i=3;i<frame->size();i+=4)(*frame)[i]=255;
     if(auto* back=p_->image(p_->background)) {
         Rect src{0,0,back->w,back->h};
@@ -2342,7 +2516,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     if(!p_->ready) font.rasterize_line(dc4::translate_ui(u"Menu data could not be loaded"),50,80,frame,W,H,28);
     p_->confirm.draw(mx,my,down,font,frame);
-    if((p_->dc4_profile || p_->dc2dm) && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
+    if((p_->dc4_profile || p_->dc2dm || p_->dc2pc) && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
 }
 
 SystemConfig SystemMenu::config() const {

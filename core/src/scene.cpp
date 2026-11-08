@@ -212,6 +212,7 @@ void blit(std::vector<uint8_t>* dst, int dst_w, int dst_h, int dx, int dy,
 // ---------------------------------------------------------------------------
 
 bool FontRenderer::load(const std::string& path, int font_index, float pixel_size, bool native) {
+    pretendard_jp_bold_ = false;
     if (!read_file(path, &font_data_)) return false;
     int offset = stbtt_GetFontOffsetForIndex(font_data_.data(), font_index);
     if (offset < 0) return false;
@@ -222,6 +223,13 @@ bool FontRenderer::load(const std::string& path, int font_index, float pixel_siz
     }
     delete static_cast<stbtt_fontinfo*>(font_);
     font_ = f;
+    // Imported fonts can be renamed, so identify this face from its name table.
+    int face_name_length = 0;
+    const char* face_name = stbtt_GetFontNameString(f, &face_name_length,
+        STBTT_PLATFORM_ID_MICROSOFT, STBTT_MS_EID_UNICODE_BMP, STBTT_MS_LANG_ENGLISH, 6);
+    constexpr char pretendard_name[] = "PretendardJP-Bold";
+    pretendard_jp_bold_ = face_name && stbtt_CompareUTF8toUTF16_bigendian(
+        pretendard_name, sizeof(pretendard_name) - 1, face_name, face_name_length);
     glyphs_.clear();
 #ifdef _WIN32
     for (auto& item : native_fonts_) DeleteObject(static_cast<HFONT>(item.second));
@@ -534,6 +542,8 @@ bool SceneRunner::load_grp_crx(const std::string& rel, Image* out,
 }
 
 bool SceneRunner::load_script(const std::string& mes_path, const std::string& entry_label) {
+    const bool internal_dc2dm_transfer = preserving_dialogue_history_ &&
+        mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72;
     std::string err;
     std::string resolved = resolve_asset(mes_path);
     if (!mes_.load_file(resolved, &err)) {
@@ -551,7 +561,10 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
 
     finish_dc2pc_transition();
     finish_dc2dm_transition();
+    const bool keep_dc2dm_black = internal_dc2dm_transfer && dc2dm_transition_.black &&
+        mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72;
     dc2dm_transition_ = {};
+    dc2dm_transition_.black = keep_dc2dm_black;
     dc2dm_transition_mask_ = {};
     if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id != dc4::MesProfileId::DC2PC) {
         dc2pc_present_pending_ = dc2pc_black_ = false;
@@ -592,15 +605,31 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     }
     effect_pck_.clear();
     input_skip_label_.clear();
-    buttons_.erase(
-        std::remove_if(buttons_.begin(), buttons_.end(),
-                       [&](const UiButton& b) { return b.y < ui_bar_top_; }),
-        buttons_.end());
+    if (mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72)
+        clear_dc2dm_scene_controls();
+    else
+        buttons_.erase(
+            std::remove_if(buttons_.begin(), buttons_.end(),
+                           [&](const UiButton& b) { return b.y < ui_bar_top_; }),
+            buttons_.end());
     pending_button_ = UiButton();
     pending_has_button_ = false;
     // Layer/sprite state deliberately persists: the engine keeps its graphics
     // across Mes_RunScriptByName jumps (the prologue chains a1 -> a2 -> ...).
     return true;
+}
+
+bool SceneRunner::seed_dc2dm_presentation(const std::vector<uint8_t>& rgba) {
+    if (mes_.dialect != dc4::MesDialect::ClassicDM || mes_.version != 0x9D72 ||
+        rgba.size() != frame_.size() || dc2dm_transition_.active) return false;
+    dc2dm_transition_.initial_source = rgba;
+    return true;
+}
+
+bool SceneRunner::seed_dc2dm_bgm(const std::string& asset) {
+    if (mes_.dialect != dc4::MesDialect::ClassicDM || mes_.version != 0x9D72 ||
+        dc2dm_transition_.initial_source.empty() || dc2dm_transition_.active) return false;
+    return scene_audio_.adopt_playing_bgm(asset);
 }
 
 bool SceneRunner::jump_to_label(const std::string& label) {
@@ -891,6 +920,7 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
     using K = dc4::CmdKind;
     if (c.kind == K::Str && c.opcode() == dc4::Opcode::MOVIE) {
         scene_audio_.stop_for_movie();
+        if (c.dc2dm && mes_.version == 0x9D72) clear_dc2dm_scene_controls();
         pending_movie_ = c.str;
         pending_movie_is_effect_ = false;
         return true;
@@ -2308,10 +2338,31 @@ void SceneRunner::draw_dc2pc_transition() {
         for (size_t c = 0; c < 3; ++c) frame_[i+c] = uint8_t(int(frame_[i+c]) * level / 16);
 }
 
+void SceneRunner::draw_dc2dm_scene_controls() {
+    if (sidebar_visible_ || (message_visible_ && !current_line_.empty())) return;
+    for (size_t i = dc2dm_toolbar_count_; i < buttons_.size(); ++i) {
+        const auto& button = buttons_[i];
+        const bool hover = !replay_action_disabled(button.action) &&
+            pointer_x_ >= button.x && pointer_x_ < button.x + button.w &&
+            pointer_y_ >= button.y && pointer_y_ < button.y + button.h;
+        const int state = hover ? (pointer_down_ ? 2 : 1) : 0;
+        const auto& chip = button.state[state].valid ? button.state[state] : button.state[0];
+        if (chip.valid) blit_chip(chip, 255);
+    }
+}
+
+void SceneRunner::clear_dc2dm_scene_controls() {
+    buttons_.resize(std::min(buttons_.size(), dc2dm_toolbar_count_));
+    pending_button_ = UiButton{};
+    pending_has_button_ = false;
+    scene_dirty_ = true;
+}
+
 void SceneRunner::snapshot_dc2dm_transition() {
     compose_scene();
+    draw_dc2dm_scene_controls();
     auto& effect = dc2dm_transition_;
-    effect.source = scene_frame_;
+    effect.source = effect.initial_source.empty() ? frame_ : effect.initial_source;
     if (effect.black)
         for (size_t i = 0; i < effect.source.size(); i += 4)
             effect.source[i] = effect.source[i + 1] = effect.source[i + 2] = 0;
@@ -2328,7 +2379,9 @@ bool SceneRunner::start_dc2dm_transition(int mode, int speed) {
     auto& effect = dc2dm_transition_;
     if (!effect.pending || effect.source.size() != frame_.size()) snapshot_dc2dm_transition();
     compose_scene();
-    effect.target = scene_frame_;
+    draw_dc2dm_scene_controls();
+    effect.target = frame_;
+    effect.initial_source.clear();
     if (mode == 1)
         for (size_t i = 0; i < effect.source.size(); i += 4)
             effect.source[i] = effect.source[i + 1] = effect.source[i + 2] = 0;
@@ -2576,7 +2629,8 @@ Image crop_image(const Image& src, int rx, int ry, int rw, int rh) {
 
 void blend_chat_text(const FontRenderer& font, const std::u16string& text,
                      int x, int y, std::vector<uint8_t>* frame, int size = 16,
-                     bool fixed_grid = true, int first_baseline = 30, int line_pitch = 28) {
+                     bool fixed_grid = true, int first_baseline = 30, int line_pitch = 28,
+                     bool padded_proportional = false) {
     if (text.empty()) return;
     Image img;
     img.w = 240;
@@ -2587,8 +2641,27 @@ void blend_chat_text(const FontRenderer& font, const std::u16string& text,
         const size_t end = text.find(u'\n', start);
         auto line = text.substr(start, end == std::u16string::npos ? end : end - start);
         line.erase(std::remove(line.begin(), line.end(), u'\r'), line.end());
-        font.rasterize_line(line, 2, baseline, &img.rgba, img.w, img.h,
-                            float(size), 0xFFFFFF, false, 0x000000, fixed_grid);
+        if (padded_proportional) {
+            // A5 padding keeps its native cells; Pretendard letters use their own advances.
+            int pen = 2;
+            for (size_t at = 0; at < line.size();) {
+                if (line[at] == u' ') {
+                    pen += size / 2;
+                    ++at;
+                    continue;
+                }
+                const size_t end = line.find(u' ', at);
+                const auto word = line.substr(at, end == std::u16string::npos ? end : end - at);
+                font.rasterize_line(word, pen, baseline, &img.rgba, img.w, img.h,
+                                    float(size));
+                pen += font.text_width(word, float(size));
+                if (end == std::u16string::npos) break;
+                at = end;
+            }
+        } else {
+            font.rasterize_line(line, 2, baseline, &img.rgba, img.w, img.h,
+                                float(size), 0xFFFFFF, false, 0x000000, fixed_grid);
+        }
         if (end == std::u16string::npos) break;
         start = end + 1;
     }
@@ -2697,7 +2770,10 @@ void SceneRunner::draw_comu() {
                             layout.fixed_grid, layout.baseline(), layout.line_pitch());
         } else {
             const auto text = sjis_to_utf16(comu_line_break(item.text, utf8));
-            blend_chat_text(*textbox_font_, text, 540, y + 14, &frame_);
+            const bool padded_proportional = textbox_font_->is_pretendard_jp_bold() &&
+                                             comu_padded_latin_text(item.text);
+            blend_chat_text(*textbox_font_, text, 540, y + 14, &frame_, 16, true, 30, 28,
+                            padded_proportional);
         }
     }
 }
@@ -2963,6 +3039,8 @@ void SceneRunner::draw(int reveal_chars) {
     if (credits_active_) { draw_credits(); return; }
     compose_scene();
     const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2dm = mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72;
+    if (dc2dm) draw_dc2dm_scene_controls();
     const bool dc2pc_held = dc2pc && (dc2pc_present_pending_ || dc2pc_black_ || dc2pc_transition_active_) &&
         dc2pc_displayed_frame_.size() == frame_.size();
     if (dc2pc_held) {
@@ -2970,8 +3048,7 @@ void SceneRunner::draw(int reveal_chars) {
         if (!sidebar_visible_) return;
     }
     if (transition_active_) draw_transition(frame_.data());
-    if (mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72)
-        draw_dc2dm_transition();
+    if (dc2dm) draw_dc2dm_transition();
     draw_screen_effect();
     // Effect animation overlay (AdvData\GRP\EFF\ef*.PCK)
     if (effect_pck_.active && effect_pck_.current_img.valid()) {
@@ -3038,7 +3115,7 @@ void SceneRunner::draw(int reveal_chars) {
             }
         }
     }
-    if (!sidebar_visible_ && (!message_visible_ || (dc2dm_ui_ && current_line_.empty()))) {
+    if (!dc2dm && !sidebar_visible_ && (!message_visible_ || (dc2dm_ui_ && current_line_.empty()))) {
         for (const UiButton& b : buttons_) {
             if (b.y < ui_bar_top_) {
                 bool hover = !replay_action_disabled(b.action) && pointer_x_ >= b.x && pointer_x_ < b.x + b.w && pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
@@ -3427,18 +3504,21 @@ void SceneRunner::draw_message_window(int reveal_chars) {
             int size = layout_.name_font;
             const int name_height = layout_.name_font;
             const int name_baseline = layout_.name_baseline;
-            const int name_x = dc2dm_ui_ ? layout_.name_x +
-                (5 * size - int(displayed_speaker().size()) * size / 2) / 2 : layout_.name_x;
+            const bool dm_proportional = dc2dm_ui_ && textbox_font_->is_pretendard_jp_bold();
+            const bool fixed_grid = dc2dm_ui_ && !dm_proportional;
+            const int tracking = fixed_grid ? -1 : 0;
             if (dc2pc_ui_) while (size > 6 && textbox_font_->text_width(text, float(size)) > 184) --size;
-            const int width = textbox_font_->text_width(text, float(size), false, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
+            const int width = textbox_font_->text_width(text, float(size), false, fixed_grid, tracking);
+            const int name_x = dc2dm_ui_ ? layout_.name_x +
+                (5 * size - (dm_proportional ? width : int(displayed_speaker().size()) * size / 2)) / 2 : layout_.name_x;
             Image name;
             name.w = dc2pc_ui_ ? 192 : std::max(400, width + 4);
             name.h = name_height + 10;
             name.rgba.assign(size_t(name.w) * name.h * 4, 0);
             textbox_font_->rasterize_line(text, dc2pc_ui_ ? std::max(2, (name.w - width) / 2) : 0,
                                   name_height + 2, &name.rgba, name.w,
-                                  name.h, float(size), 0xFFFFFF, false, 0, dc2dm_ui_,
-                                  dc2dm_ui_ ? -1 : 0, dm_latin ? size * 15.0f / 19.0f : 0);
+                                  name.h, float(size), 0xFFFFFF, false, 0, fixed_grid,
+                                  tracking, dm_latin && !dm_proportional ? size * 15.0f / 19.0f : 0);
             const float scale = dc2pc_ui_ ? 1.2f : dc2dm_ui_ ? 1.25f : 1.0f;
             blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((name_x - (dc2pc_ui_ ? name.w / 2 : 0)) * scale)),
                  int(std::lround((name_baseline - name_height - 2) * scale)), name, scale,
@@ -3568,6 +3648,9 @@ size_t SceneRunner::visible_text_length() const {
 
 void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     const bool dm_latin = dc2dm_ui_ && dc2dm_latin_text(sjis_to_utf16(sjis));
+    const bool dm_proportional = dc2dm_ui_ && textbox_font_->is_pretendard_jp_bold();
+    const bool fixed_grid = dc2dm_ui_ && !dm_proportional;
+    const int tracking = fixed_grid ? -1 : 0;
     const auto parsed = display_text(sjis, layout_.font_size, dm_latin);
     const int line_spacing = dm_latin ? 24 : layout_.line_spacing;
     const int text_baseline = layout_.text_baseline;
@@ -3575,7 +3658,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     std::vector<Line> lines;
     auto advance_at = [&](size_t i) {
         const auto& style = parsed.styles[i];
-        return textbox_font_->glyph_advance(parsed.text[i], float(style.size), style.wide, dc2dm_ui_, dc2dm_ui_ ? -1 : 0);
+        return textbox_font_->glyph_advance(parsed.text[i], float(style.size), style.wide, fixed_grid, tracking);
     };
 
     auto is_cjk = [](char16_t ch) {
@@ -3642,16 +3725,45 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
         }
     }
     if (lines.empty()) lines.push_back({0, 0, 0});
+    std::vector<int> line_offsets(lines.size());
+    int text_top = 34;
+    int text_height = line_spacing * int(lines.size()) + 20;
+    int previous_bottom = 0;
+    for (size_t n = 0; n < lines.size(); ++n) {
+        line_offsets[n] = int(n) * line_spacing;
+        if (!dm_proportional) continue;
+        const auto& line = lines[n];
+        int top = 0, bottom = 0;
+        for (size_t at = line.start; at < line.end;) {
+            const auto style = parsed.styles[at];
+            size_t end = at + 1;
+            while (end < line.end && parsed.styles[end] == style) ++end;
+            const auto bounds = textbox_font_->text_vertical_bounds(parsed.text.substr(at, end - at), float(style.size));
+            top = std::min(top, bounds.first);
+            bottom = std::max(bottom, bounds.second);
+            at = end;
+        }
+        for (const auto& ruby : parsed.ruby) {
+            if (ruby.start < line.start || ruby.start + ruby.count > line.end) continue;
+            const auto bounds = textbox_font_->text_vertical_bounds(ruby.reading, 12);
+            top = std::min(top, bounds.first - parsed.styles[ruby.start].size);
+        }
+        // Large script styles and ruby need room for their ink and one-pixel outline.
+        if (n > 0) line_offsets[n] = line_offsets[n - 1] + std::max(line_spacing, previous_bottom - top + 2);
+        text_top = std::max(text_top, 1 - top - line_offsets[n]);
+        text_height = std::max(text_height, text_top + line_offsets[n] + bottom + 2);
+        previous_bottom = bottom;
+    }
     Image text_img;
     text_img.w = layout_.text_w + 8;
-    text_img.h = line_spacing * int(lines.size()) + 20;
+    text_img.h = text_height;
     text_img.rgba.assign(size_t(text_img.w) * text_img.h * 4, 0);
     int remaining = reveal < 0 ? 1000000 : reveal;
     int last_x = 0, last_y = 0;
     for (size_t line_index = 0; line_index < lines.size(); ++line_index) {
         const auto& line = lines[line_index];
         const size_t shown_end = line.start + std::min(line.end - line.start, size_t(std::max(0, remaining)));
-        const int baseline = 34 + int(line_index) * line_spacing;
+        const int baseline = text_top + line_offsets[line_index];
         int x = 0;
         for (size_t at = line.start; at < shown_end;) {
             const auto style = parsed.styles[at];
@@ -3659,7 +3771,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             while (end < shown_end && parsed.styles[end] == style) ++end;
             textbox_font_->rasterize_line(parsed.text.substr(at, end - at), 2 + x, baseline,
                 &text_img.rgba, text_img.w, text_img.h, float(style.size), style.rgb, style.wide,
-                0, dc2dm_ui_, dc2dm_ui_ ? -1 : 0, dm_latin ? style.size * 15.0f / 19.0f : 0);
+                0, fixed_grid, tracking, dm_latin && !dm_proportional ? style.size * 15.0f / 19.0f : 0);
             for (; at < end; ++at) x += advance_at(at);
         }
         for (const auto& ruby : parsed.ruby) {
@@ -3672,15 +3784,19 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             textbox_font_->rasterize_line(ruby.reading, 2 + rx + (rw - reading_width) / 2,
                 baseline - style.size, &text_img.rgba, text_img.w, text_img.h, 12, style.rgb);
         }
-        if (shown_end > line.start) { last_x = x; last_y = int(line_index) * line_spacing; }
+        if (shown_end > line.start) { last_x = x; last_y = line_offsets[line_index]; }
         remaining -= int(shown_end - line.start);
     }
-    const int y = text_baseline - 34;
+    const int y = text_baseline - text_top;
     const float scale = dc2pc_ui_ ? 1.2f : dc2dm_ui_ ? 1.25f : 1.0f;
+    const int available_height = layout_.bg_y + layout_.bg_h - 8 - y;
+    const float fit = dm_proportional && text_img.h > available_height && available_height > 0 ?
+        float(available_height) / text_img.h : 1.0f;
     blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.text_x - 2) * scale)),
-         int(std::lround(y * scale)), text_img, scale, 255);
+         int(std::lround(y * scale)), text_img, scale * fit, 255);
     if (wait_marker_ && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
-        UiChip gear{layout_.text_x + last_x + 2, text_baseline + last_y - (dc2dm_ui_ ? 14 : 23),
+        UiChip gear{layout_.text_x - 2 + int(std::lround((last_x + 4) * fit)),
+            y + int(std::lround((text_top + last_y) * fit)) - (dc2dm_ui_ ? 14 : 23),
             layout_.gear_x + (dc2dm_ui_ ? (wait_frame_ % 6) * 24 : (wait_frame_ % 4) * 33), layout_.gear_y,
             layout_.gear_w, layout_.gear_h, dc2dm_ui_ ? 21 : 37, true};
         blit_chip(gear, 255);
@@ -3760,16 +3876,23 @@ void SceneRunner::draw_dc2pc_choices() {
         const double scale = dc2dm_ui_ ? 1.25 : 1.2;
         const int width = std::max(1, int(std::lround(b.w / scale)) - (text_x - (dc2dm_ui_ ? 256 : 136)) - 8);
         int size = dc2dm_ui_ ? 22 : 28;
-        const int tracking = dc2dm_ui_ ? -1 : 0;
-        while (size > 10 && (dc2dm_ui_ ? font_->text_width(text, float(size), false, true, tracking) : text_width(text, size)) > width) --size;
+        const bool dm_proportional = dc2dm_ui_ && font_->is_pretendard_jp_bold();
+        const bool fixed_grid = dc2dm_ui_ && !dm_proportional;
+        const int tracking = fixed_grid ? -1 : 0;
+        while (size > 10 && (dc2dm_ui_ ? font_->text_width(text, float(size), false, fixed_grid, tracking) : text_width(text, size)) > width) --size;
         Image label;
         label.w = width; label.h = 40;
         label.rgba.assign(size_t(label.w) * label.h * 4, 0);
-        // The translation DLL shrinks glyphs while retaining the native 22-pixel grid.
-        const int baseline = dm_latin ? std::min(size, 15) : dc2dm_ui_ ? size : 28;
+        // Retain the translation DLL's grid and glyph shrink for the original font.
+        int baseline = dm_latin ? std::min(size, 15) : dc2dm_ui_ ? size : 28;
+        if (dm_proportional) {
+            const auto bounds = font_->text_vertical_bounds(text, float(size));
+            baseline = int(std::lround((b.y + b.h / 2.0) / scale)) - text_y -
+                (bounds.first + bounds.second) / 2;
+        }
         font_->rasterize_line(text, 0, baseline, &label.rgba, label.w, label.h,
-                             float(size), 0xFFFFFF, false, 0x000000, dc2dm_ui_, tracking,
-                             dm_latin ? size * 15.0f / 19.0f : 0);
+                             float(size), 0xFFFFFF, false, 0x000000, fixed_grid, tracking,
+                             dm_latin && !dm_proportional ? size * 15.0f / 19.0f : 0);
         blit(&frame_, kScreenW, kScreenH, (dc2dm_ui_ ? 0 : 160) + int(std::lround(text_x * scale)),
              int(std::lround(text_y * scale)), label, float(scale), 255);
     }

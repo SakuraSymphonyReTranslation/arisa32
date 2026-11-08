@@ -150,6 +150,27 @@ bool SceneAudio::load_names(std::string* error) {
     se_names_.swap(names.se);
     return true;
 }
+bool SceneAudio::adopt_playing_bgm(const std::string& asset) {
+    if (!audio_ || !safe_resource_name(asset)) return false;
+    if (bgm_names_.empty() && !load_names()) return false;
+    const std::string name = lower(audio_name(asset));
+    const auto found = std::find_if(bgm_names_.begin(), bgm_names_.end(), [&](const auto& entry) {
+        return lower(audio_name(entry)) == name;
+    });
+    if (found == bgm_names_.end()) return false;
+    const auto mixer = audio_->capture_snapshot();
+    if (!mixer.channels[0].playing) return false;
+    state_.bgm_id = int32_t(found - bgm_names_.begin());
+    state_.bgm_mode = 1;
+    state_.bgm_alternate = false;
+    state_.bgm_playing = true;
+    state_.bgm_position_frames = mixer.channels[0].position_frames;
+    state_.groups = mixer.groups;
+    state_.bgm_volume = std::clamp(int(std::lround((mixer.groups[0].volume_target_db + 50) * 2)), 0, 100);
+    state_.saved_bgm_volume = -1;
+    pending_bgm_fade_ = false;
+    return true;
+}
 void SceneAudio::reset_state() {
     if (audio_) audio_->stop_all();
     state_ = SceneAudioSnapshot{};

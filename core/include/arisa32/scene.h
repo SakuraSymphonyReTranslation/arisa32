@@ -51,6 +51,7 @@ public:
     FontRenderer(const FontRenderer&) = delete;
     FontRenderer& operator=(const FontRenderer&) = delete;
     bool load(const std::string& path, int font_index, float pixel_size, bool native = true);
+    bool is_pretendard_jp_bold() const { return pretendard_jp_bold_; }
     // Renders white glyphs starting at x0 with the given baseline.
     // pixel_size overrides the font's own size (the engine uses 22px dialogue
     // and 18px names from one face). A dark outline is drawn under the glyphs.
@@ -80,6 +81,7 @@ private:
     void* font_ = nullptr;   // ::stbtt_fontinfo*
     float scale_ = 0;
     float pixel_size_ = 0;
+    bool pretendard_jp_bold_ = false;
 };
 
 struct Image {
@@ -260,6 +262,10 @@ public:
     }
 
     bool load_script(const std::string& mes_path, const std::string& entry_label = {});
+    // Seed the first authored DC2DM transition after load_script, before advance.
+    bool seed_dc2dm_presentation(const std::vector<uint8_t>& rgba);
+    // After seeding presentation, adopt the title asset the host kept playing on channel 0.
+    bool seed_dc2dm_bgm(const std::string& asset);
     bool jump_to_label(const std::string& label);
     bool has_label(const std::string& label) const { return vm_.has_label(label); }
     const std::string& script_name() const { return script_name_; }
@@ -443,6 +449,8 @@ private:
     void finish_dc2pc_transition();
     void draw_dc2pc_transition();
     bool start_dc2dm_transition(int mode, int speed);
+    void draw_dc2dm_scene_controls();
+    void clear_dc2dm_scene_controls();
     void snapshot_dc2dm_transition();
     void finish_dc2dm_transition();
     void draw_dc2dm_transition();
@@ -613,7 +621,7 @@ private:
     int dc2pc_transition_mode_ = 0, dc2pc_transition_speed_ = 0;
     double dc2pc_transition_elapsed_ms_ = 0, dc2pc_transition_duration_ms_ = 0;
     struct Dc2dmTransition {
-        std::vector<uint8_t> source, target;
+        std::vector<uint8_t> source, target, initial_source;
         bool active = false, pending = false, black = false;
         int mode = 0, step = 1, limit = 510, tick_ms = 34;
         double elapsed_ms = 0, duration_ms = 0;

@@ -51,6 +51,8 @@ public:
 
     // NAMES.DAT metadata, also useful to a future sound gallery.
     bool load_names(std::string* error = nullptr);
+    // The host must identify the asset already playing on channel 0; playback is untouched.
+    bool adopt_playing_bgm(const std::string& asset);
     const std::vector<std::string>& bgm_names() const { return bgm_names_; }
     const std::vector<std::string>& se_names() const { return se_names_; }
     const std::string& last_error() const { return last_error_; }

@@ -17,8 +17,8 @@ bash android/build_apk.sh          # -> android/Arisa32-debug.apk
 Build FFmpeg first as described under movie playback below. Requires Android SDK
 platform android-36, CMake 3.22.1, NDK 27.3.13750724 and JDK 17+. Configure the
 SDK in `android/local.properties` or `ANDROID_HOME`, and the JDK with `JAVA_HOME`.
-The helper invokes the Gradle wrapper, packages both ABIs and all FFmpeg shared
-libraries, and copies the debug APK to the historical output paths. It also
+By default, the helper invokes the Gradle wrapper, packages both ABIs and all FFmpeg
+shared libraries, and copies the debug APK to the historical output paths. It also
 accepts Gradle options. Android Studio builds the same `android/` project.
 
 On Windows, Gradle can also be invoked directly:
@@ -28,9 +28,37 @@ cd android
 .\gradlew.bat assembleRelease --console=plain  # -> app/build/outputs/apk/release/app-release.apk
 ```
 
-The APK targets API 36 (Android 16), supports Android 5.0/API 21 onward, and contains
-`arm64-v8a` and `armeabi-v7a` libraries. C++ exceptions must remain enabled for
+Without an ABI property, debug and release builds produce a universal APK for
+Android 5.0/API 21 onward, containing `arm64-v8a` and `armeabi-v7a` libraries.
+To build a release for one ABI, run either command from the `android` directory:
+
+```bash
+./gradlew assembleRelease -ParisaAbi=arm64-v8a
+./gradlew assembleRelease -ParisaAbi=armeabi-v7a
+```
+
+In PowerShell, use `.\gradlew.bat` instead of `./gradlew`. Both commands write
+`app/build/outputs/apk/release/app-release.apk`; copy the output before building
+another variant. These builds require Android 6.0/API 23 onward and load
+uncompressed native libraries directly from the APK without an extracted copy.
+Universal builds retain legacy library packaging for Android 5 compatibility.
+All variants target API 36 (Android 16). C++ exceptions must remain enabled for
 checked scene snapshots.
+
+The [v0.7.1 release](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)
+provides four APKs:
+
+- `Arisa32-v0.7.1.apk`: universal release, Android 5.0+.
+- `Arisa32-v0.7.1-arm64-v8a.apk`: ARM64 release, Android 6.0+.
+- `Arisa32-v0.7.1-armeabi-v7a.apk`: ARMv7 release, Android 6.0+.
+- `Arisa32-v0.7.1-debug.apk`: universal debug build, Android 5.0+.
+
+Choose the matching ABI package to reduce installed storage, or universal if
+unsure which your device supports or using Android 5. `SHA256SUMS.txt` contains
+checksums for all four APKs. Starting with 0.7.1, the in-app updater selects the
+matching ABI automatically on Android 6.0+ and universal on Android 5. Older
+updaters still download universal. Install updates without uninstalling the app
+to retain existing data.
 
 ## Add and choose games
 
