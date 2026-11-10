@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.2 - 2026-11-11
+
+### Bahasa Indonesia
+
+- Menambahkan dukungan awal DC2TY: opening, Title sesuai progres, pemilih empat cerita, menu asli, galeri CG, dan impor progres serta konfigurasi awal dari `system.dat`.
+- Menambahkan decoder voice DC2TY untuk dialog dan pengumuman menu, dengan volume serta mute per karakter.
+- Memperbaiki judul dan kontrol Music Mode, tanggal serta bingkai Scene Replay, teks dan keadaan tekan pilihan, serta konfirmasi reset Config DC2TY.
+- Memperbaiki posisi sprite close-up, mask/dissolve/efek pecahan layar, dan gambar pergantian tanggal DC2TY dengan keempat variasi artwork asli.
+- Menambahkan baca/tulis `dc2tyxx.dat` dengan companion `.dat.arisa`, judul skenario, tanggal, ikon, quicksave `00`, salinan save manual terakhir `01`, dan 48 slot manual sesuai penomoran PC. Save `.dc4sav` lama tetap dapat dimuat; backup ZIP menyertakan companion.
+- Memverifikasi penerimaan struktur save ekspor oleh reader dan loader executable PC asli. Pemulihan adegan penuh di PC belum diverifikasi; companion memulihkan posisi BGM/SE berulang, tetapi voice dialog diputar ulang dari awal.
+- Memperjelas MS Gothic dan memperbaiki ukuran serta lebar proporsional Pretendard JP Bold pada preview CONFIG dan backlog DC2DM.
+- Memperbaiki pemilihan baris backlog DC2DM melalui ketukan cepat, gerakan jari, scroll, dan pergantian mode cursor.
+
+### English
+
+- Adds initial DC2TY support: opening, progress-dependent Title, four-story selection, original menus, CG gallery, and progress and initial-settings import from `system.dat`.
+- Adds DC2TY voice decoding for dialogue and menu announcements, with per-character volume and mute.
+- Fixes DC2TY Music Mode titles and controls, Scene Replay dates and borders, choice text and pressed states, and the Config reset confirmation.
+- Fixes close-up sprite positioning, masks/dissolves/screen-breakup effects, and DC2TY date-change cards with all four original artwork variants.
+- Adds `dc2tyxx.dat` reading and writing with `.dat.arisa` companions, scenario titles, dates, icons, quicksave `00`, latest manual-save copy `01`, and 48 manual slots following PC numbering. Existing `.dc4sav` saves remain loadable; ZIP backups include companions.
+- Verifies that the original PC executable's reader and loader accept the exported save structure. Full scene restoration on PC remains unverified; companions restore BGM and looping sound-effect positions, while dialogue voice replays from the beginning.
+- Improves MS Gothic clarity and Pretendard JP Bold sizes and proportional widths in the DC2DM CONFIG preview and backlog.
+- Fixes DC2DM backlog row selection for quick taps, finger movement, scrolling, and cursor-mode changes.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.2/id.md) | [English](docs/releases/v0.7.2/en.md).
+
 ## 0.7.1 - 2026-11-08
 
 ### Bahasa Indonesia

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -44,6 +45,15 @@ void crx(const fs::path& path, int w, int h, bool grid, bool corners = false) {
 Color pixel(const std::vector<uint8_t>& frame, int x, int y, int w = 1280) {
     const size_t at = (size_t(y) * w + x) * 4;
     return {frame.at(at),frame.at(at+1),frame.at(at+2)};
+}
+void font_capture(const std::string& name, const std::vector<uint8_t>& frame) {
+    const char* output=std::getenv("DC2DM_LOG_CAPTURES");
+    if (!output || !*output) return;
+    fs::create_directories(output);
+    std::ofstream out(fs::path(output)/(name+".ppm"),std::ios::binary);
+    out<<"P6\n1280 720\n255\n";
+    for (size_t at=0;at<frame.size();at+=4) out.write(reinterpret_cast<const char*>(frame.data()+at),3);
+    if (!out) throw std::runtime_error("Cannot write backlog font capture");
 }
 struct Script {
     std::vector<uint8_t> bytes{1,0,0,0,3,0,0,0,0,0,0xB6,0xAA,0};
@@ -288,6 +298,74 @@ void dc2dm(const fs::path& root, const char* font_path) {
     log.draw(std::vector<dc4ui::LogRow>(8,row),4,false,-1,-1,font,&frame);
     CHECK(count_color(41,{230,231,232})>20);
     CHECK(count_color(440,{200,160,220})>20);
+    CHECK(log.load(root.string()));
+    const std::u16string line=u"ijltMWgjpqy"+std::u16string(39,u'M');
+    CHECK(line.size()==50);
+    row.text=line+line+line+line;
+    CHECK(dc4ui::LogScreen::text_lines(row.text,true,true)==std::vector<std::u16string>(4,line));
+    history.assign(4,row);
+    auto artwork=frame;
+    log.draw(history,0,false,-1,-1,no_font,&artwork);
+    log.draw(history,0,false,-1,-1,font,&frame);
+    int line_ink[4][4]{};
+    bool contained=true;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        if (pixel(frame,x,y)==pixel(artwork,x,y)) continue;
+        bool in_text=false;
+        for (int slot=0;slot<4;++slot) for (int line_index=0;line_index<4;++line_index) {
+            const int top=(41+slot*133+line_index*24)*5/4;
+            if (x>=453 && x<1090 && y>=top && y<top+30) {
+                in_text=true; ++line_ink[slot][line_index];
+            }
+        }
+        contained&=in_text;
+    }
+    CHECK(contained);
+    for (const auto& slot : line_ink) for (int count : slot) CHECK(count>100);
+    CHECK(count_color(41,{200,160,220})>20);
+    CHECK(count_color(440,{230,231,232})>20);
+    font_capture("dc2dm-ms-gothic-four-rows",frame);
+    log.draw(history,0,false,500,50,font,&frame);
+    CHECK(count_color(41,{230,231,232})>20);
+    CHECK(count_color(440,{200,160,220})>20);
+    font_capture("dc2dm-ms-gothic-selected-first",frame);
+    const auto legacy_control = [&](const std::u16string& value, bool latin_text,
+                                    const dc4scene::FontRenderer& control_font) {
+        auto control=row; control.text=value;
+        auto background=frame;
+        log.draw({control},0,false,500,50,no_font,&background);
+        std::vector<uint8_t> native(1024u*576u*4u,0), expected=background;
+        for (int y=0;y<576;++y) for (int x=0;x<1024;++x) {
+            const size_t source=(size_t((y*5+3)/4)*1280+(x*5+3)/4)*4;
+            std::copy_n(background.data()+source,4,native.data()+(size_t(y)*1024+x)*4);
+        }
+        int top=41;
+        for (const auto& text_line : dc4ui::LogScreen::text_lines(value,latin_text,true)) {
+            control_font.rasterize_line(text_line,364,top+(latin_text?18:22),&native,1024,576,
+                                       22,0xE6E7E8,false,0,true,-1,latin_text?17:22);
+            top+=latin_text?24:32;
+        }
+        for (int y=0;y<720;++y) for (int x=0;x<1280;++x)
+            std::copy_n(native.data()+(size_t(y*4/5)*1024+x*4/5)*4,4,expected.data()+(size_t(y)*1280+x)*4);
+        log.draw({control},0,false,500,50,control_font,&frame);
+        CHECK(frame==expected);
+    };
+    legacy_control(u"テスト。あいうえお",false,font);
+    dc4scene::FontRenderer ui_font;
+    CHECK(ui_font.load(font_path,1,22,false)); CHECK(!ui_font.is_ms_gothic());
+    legacy_control(u"Unchanged other font gjpqy",true,ui_font);
+    log.set_latin_mode(true);
+    log.draw({},0,false,-1,-1,no_font,&artwork);
+    log.draw({},0,false,-1,-1,font,&frame);
+    bool empty_visible=false, empty_contained=true;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        if (pixel(frame,x,y)==pixel(artwork,x,y)) continue;
+        empty_visible=true;
+        empty_contained&=x>=453 && x<800 && y>=50 && y<80;
+    }
+    CHECK(empty_visible && empty_contained);
+    font_capture("dc2dm-ms-gothic-empty",frame);
+    log.set_latin_mode(false);
     row.name=u"Unknown"; row.text.clear(); row.voice.clear();
     auto blank=frame;
     log.draw({row},0,false,-1,-1,no_font,&blank);
@@ -300,18 +378,233 @@ void dc2dm(const fs::path& root, const char* font_path) {
     }
     CHECK(left>=322 && left<=329 && right<391);
     CHECK(top>=54 && bottom<=74 && bottom-top<=18);
+    font_capture("dc2dm-ms-gothic-fallback-name",frame);
+    row.name=std::u16string(24,u'W'); row.voice="voice";
+    log.draw({row},0,false,-1,-1,no_font,&blank);
+    log.draw({row},0,false,-1,-1,font,&frame);
+    bool name_visible=false, voice_intact=true;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        const bool changed=pixel(frame,x,y)!=pixel(blank,x,y);
+        if (x>=260 && x<290 && y>=47 && y<77) voice_intact&=!changed;
+        else name_visible|=changed;
+    }
+    CHECK(name_visible && voice_intact);
+    font_capture("dc2dm-ms-gothic-voiced-long-name",frame);
     CHECK(!log.load((root/"missing").string()) && !log.loaded());
+}
+void modern_selection_unchanged(const fs::path& root, const char* font_path) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load(font_path,0,22,false));
+    dc4ui::LogScreen log;
+    CHECK(log.load(root.string()));
+    dc4ui::LogRow row; row.text=u"MMMM";
+    const std::vector<dc4ui::LogRow> rows(4,row);
+    std::vector<uint8_t> frame(1280u*720u*4u,0);
+    log.draw(rows,0,false,-1,-1,font,&frame);
+    const auto original=frame;
+    log.select_at(500,215,0,rows.size());
+    log.select_top(0,rows.size());
+    log.draw(rows,0,false,-1,-1,font,&frame);
+    CHECK(frame==original);
+}
+void dc2dm_selection(const fs::path& root, const char* font_path) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load(font_path,0,22,false));
+    dc4ui::LogScreen log;
+    CHECK(log.load(root.string()));
+    dc4ui::LogRow row;
+    row.name=u"Otome"; row.script="mar"; row.text=u"MMMM";
+    std::vector<uint8_t> frame(1280u*720u*4u,0);
+    const auto check_selection = [&](int count, int selected) {
+        for (int slot=0;slot<count;++slot) {
+            int selected_ink=0, regular_ink=0;
+            const int top=(41+slot*133)*5/4;
+            for (int y=top;y<top+40;++y) for (int x=455;x<513;++x) {
+                selected_ink+=pixel(frame,x,y)==(Color{230,231,232});
+                regular_ink+=pixel(frame,x,y)==(Color{200,160,220});
+            }
+            CHECK(slot==selected ? selected_ink>20 && regular_ink==0
+                                 : regular_ink>20 && selected_ink==0);
+        }
+    };
+    const int row_y[]{50,215,380,550};
+    for (int count=1;count<=4;++count) {
+        const std::vector<dc4ui::LogRow> rows(size_t(count),row);
+        for (int selected=0;selected<count;++selected) {
+            log.select_at(500,row_y[selected],0,rows.size());
+            log.draw(rows,0,false,-1,-1,font,&frame);
+            check_selection(count,selected);
+        }
+        log.select_top(0,rows.size());
+        log.draw(rows,0,false,-1,-1,font,&frame);
+        check_selection(count,0);
+        const auto first_selected=frame;
+        log.select_at(500,710,0,rows.size());
+        log.draw(rows,0,false,-1,-1,font,&frame);
+        CHECK(frame==first_selected);
+        if (count<4) {
+            log.select_at(500,row_y[count],0,rows.size());
+            log.draw(rows,0,false,-1,-1,font,&frame);
+            CHECK(frame==first_selected);
+        }
+    }
+    std::vector<dc4ui::LogRow> rows(8,row);
+    log.select_at(500,550,4,rows.size());
+    log.draw(rows,4,false,-1,-1,font,&frame);
+    check_selection(4,3);
+    log.select_top(4,rows.size());
+    log.draw(rows,4,false,-1,-1,font,&frame);
+    check_selection(4,0);
+    log.select_at(500,215,4,rows.size());
+    log.draw(rows,4,false,-1,-1,font,&frame);
+    check_selection(4,1);
+    const auto second_selected=frame;
+    for (const auto point : {std::array<int,2>{-1,-1}, {500,190}, {1200,50}}) {
+        log.select_at(point[0],point[1],4,rows.size());
+        log.draw(rows,4,false,-1,-1,font,&frame);
+        CHECK(frame==second_selected);
+    }
+    log.select_top(0,0);
+    log.select_at(500,50,0,0);
+    log.draw({},0,false,-1,-1,font,&frame);
+    rows.assign(2,row);
+    log.select_top(0,rows.size());
+    log.draw(rows,0,false,-1,-1,font,&frame);
+    check_selection(2,0);
+}
+
+void dc2dm_pretendard(const fs::path& root, const char* gothic_path, const char* pretendard_path) {
+    dc4scene::FontRenderer font, gothic;
+    CHECK(font.load(pretendard_path,0,22,false) && font.is_pretendard_jp_bold());
+    CHECK(gothic.load(gothic_path,0,22,false) && gothic.is_ms_gothic());
+    const auto wrap = [&](const std::u16string& text, bool latin = true) {
+        return dc4ui::LogScreen::text_lines(text,latin,true,&font);
+    };
+    CHECK(font.glyph_advance(u'W',22)==18 && font.glyph_advance(u'i',22)==5);
+    CHECK(wrap(std::u16string(60,u'W'))==(std::vector<std::u16string>{
+        std::u16string(28,u'W'),std::u16string(28,u'W'),std::u16string(4,u'W')}));
+    CHECK(wrap(std::u16string(150,u'i'))==(std::vector<std::u16string>{
+        std::u16string(101,u'i'),std::u16string(49,u'i')}));
+    const std::u16string words=u"Wide WWW words and narrow iii letters retain each word while wrapping. ";
+    const std::u16string prose=words+words+words;
+    std::u16string joined;
+    for (const auto& line : wrap(prose)) { CHECK(font.text_width(line,22)<=506); joined+=line; }
+    CHECK(joined==prose);
+    CHECK(dc4ui::LogScreen::text_lines(prose,true,true,&gothic)==
+          dc4ui::LogScreen::text_lines(prose,true,true));
+    CHECK(dc4ui::LogScreen::text_lines(prose,true,false,&font)==
+          dc4ui::LogScreen::text_lines(prose,true,false));
+
+    dc4ui::LogScreen log;
+    CHECK(log.load(root.string()));
+    const dc4scene::FontRenderer no_font;
+    dc4ui::LogRow row; row.name=u"Otome"; row.script="mar";
+    std::u16string line=u"ijltMWgjpqy";
+    while (font.text_width(line+u"W",22)<=506) line+=u'W';
+    row.text=line+u"\n"+line+u"\n"+line+u"\n"+line;
+    CHECK(wrap(row.text).size()==4);
+    std::vector<dc4ui::LogRow> history(4,row);
+    std::vector<uint8_t> frame(1280u*720u*4u,0),artwork=frame;
+    log.select_top(0,history.size());
+    log.draw(history,0,false,-1,-1,no_font,&artwork);
+    log.draw(history,0,false,-1,-1,font,&frame);
+    int ink[4][4]{},bright_top[4][4],bright_bottom[4][4];
+    for (int slot=0;slot<4;++slot) for (int n=0;n<4;++n) {
+        bright_top[slot][n]=720; bright_bottom[slot][n]=-1;
+    }
+    bool contained=true;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        if (pixel(frame,x,y)==pixel(artwork,x,y)) continue;
+        bool in_text=false;
+        for (int slot=0;slot<4;++slot) for (int n=0;n<4;++n) {
+            const int top=(41+slot*133+n*24)*5/4;
+            if (x<453 || x>=1094 || y<top || y>=top+30) continue;
+            in_text=true; ++ink[slot][n];
+            if (pixel(frame,x,y)==(slot==0 ? Color{230,231,232} : Color{200,160,220})) {
+                bright_top[slot][n]=std::min(bright_top[slot][n],y);
+                bright_bottom[slot][n]=std::max(bright_bottom[slot][n],y);
+            }
+        }
+        contained&=in_text;
+    }
+    CHECK(contained);
+    for (int slot=0;slot<4;++slot) for (int n=0;n<4;++n) {
+        CHECK(ink[slot][n]>500);
+        CHECK(bright_bottom[slot][n]-bright_top[slot][n]+1>=20);
+    }
+    font_capture("dc2dm-pretendard-four-rows",frame);
+
+    const auto changed_bounds = [&] {
+        std::array<int,4> bounds{1280,720,-1,-1};
+        for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+            if (pixel(frame,x,y)==pixel(artwork,x,y)) continue;
+            bounds[0]=std::min(bounds[0],x); bounds[1]=std::min(bounds[1],y);
+            bounds[2]=std::max(bounds[2],x); bounds[3]=std::max(bounds[3],y);
+        }
+        return bounds;
+    };
+    row.text.clear();
+    int narrow_width=0;
+    for (const auto& name : {u"iiiiiii",u"WWWWWWW",u"Unknown",u"Yoshiyuki Jr."}) {
+        row.name=name;
+        log.draw({row},0,false,-1,-1,no_font,&artwork);
+        log.draw({row},0,false,-1,-1,font,&frame);
+        const auto bounds=changed_bounds();
+        CHECK(bounds[0]>=250 && bounds[2]<455 && bounds[1]>=50 && bounds[3]<80);
+        CHECK(std::abs(bounds[0]+bounds[2]-720)<=10);
+        if (row.name==u"iiiiiii") narrow_width=bounds[2]-bounds[0]+1;
+        if (row.name==u"WWWWWWW") CHECK(bounds[2]-bounds[0]+1>3*narrow_width);
+    }
+    font_capture("dc2dm-pretendard-fallback-name",frame);
+    row.name=std::u16string(24,u'W'); row.voice="voice";
+    log.draw({row},0,false,-1,-1,no_font,&artwork);
+    log.draw({row},0,false,-1,-1,font,&frame);
+    const auto long_name=changed_bounds();
+    CHECK(long_name[0]>=250 && long_name[2]<455 && long_name[1]>=50 && long_name[3]<80);
+    CHECK(long_name[2]-long_name[0]>150);
+    bool voice_intact=true;
+    for (int y=47;y<77;++y) for (int x=260;x<290;++x)
+        voice_intact&=pixel(frame,x,y)==pixel(artwork,x,y);
+    CHECK(voice_intact);
+    font_capture("dc2dm-pretendard-voiced-long-name",frame);
+
+    row.name=u"Otome"; row.voice.clear();
+    const std::vector<std::u16string> japanese{
+        std::u16string(23,u'あ'),std::u16string(23,u'い'),std::u16string(23,u'う')};
+    row.text=japanese[0]+u"\n"+japanese[1]+u"\n"+japanese[2];
+    CHECK(wrap(row.text,false)==japanese);
+    CHECK(wrap(std::u16string(24,u'あ'),false).size()==2);
+    log.draw({row},0,false,-1,-1,no_font,&artwork);
+    log.draw({row},0,false,-1,-1,font,&frame);
+    const auto jp=changed_bounds();
+    CHECK(jp[0]>=453 && jp[2]<1094 && jp[1]>=49 && jp[3]<181);
+    for (int n=0;n<3;++n) {
+        int count=0;
+        for (int y=(41+n*32)*5/4;y<(73+n*32)*5/4;++y)
+            for (int x=453;x<1094;++x) count+=pixel(frame,x,y)!=pixel(artwork,x,y);
+        CHECK(count>500);
+    }
+    font_capture("dc2dm-pretendard-japanese",frame);
+    log.set_latin_mode(true);
+    log.draw({},0,false,-1,-1,no_font,&artwork);
+    log.draw({},0,false,-1,-1,font,&frame);
+    const auto empty=changed_bounds();
+    CHECK(empty[0]>=453 && empty[2]>600 && empty[2]<1094 && empty[1]>=50 && empty[3]<82);
+    font_capture("dc2dm-pretendard-empty",frame);
 }
 }
 int main(int argc, char** argv) {
-    if (argc<2) { std::cerr<<"Pass MSGOTHIC.TTC for backlog text checks.\n"; return 1; }
+    if (argc<3) { std::cerr<<"Pass MSGOTHIC.TTC and PretendardJP-Bold.ttf for backlog text checks.\n"; return 1; }
     const auto parent=fs::canonical(fs::temp_directory_path());
     const auto root=parent/("dc4-log-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
         if (!fs::create_directory(root)) throw std::runtime_error("Cannot create isolated log fixture");
         crx(root/"GRP/SYSTEM/BKLOGBACK.CRX",1280,720,false);
         crx(root/"GRP/SYSTEM/BKLOGCHIP.CRX",1224,854,true);
-        text_layout(); row_art(root); capture(root); voice_associations(root); dc2dm(root,argv[1]);
+        text_layout(); row_art(root); capture(root); voice_associations(root);
+        modern_selection_unchanged(root,argv[1]); dc2dm(root,argv[1]);
+        dc2dm_selection(root,argv[1]);
+        dc2dm_pretendard(root,argv[1],argv[2]);
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; ++failures; }
     std::error_code ec;
     if (fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)

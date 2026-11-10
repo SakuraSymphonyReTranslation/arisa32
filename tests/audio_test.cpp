@@ -319,11 +319,104 @@ static void dc2dm_retained_title_bgm() {
     std::filesystem::remove_all(directory);
 }
 
+static void dc2ty_character_voice_controls() {
+    using namespace dc4;
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("arisa32-ty-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    check(std::filesystem::create_directory(directory), "create TY voice fixture directory");
+    std::vector<uint8_t> bytes(36);
+    bytes[0] = 'X'; bytes[1] = 'P'; bytes[2] = 'C'; bytes[3] = 'M';
+    put32(bytes, 4, 8);
+    bytes[12] = 1; bytes[14] = 1;
+    put32(bytes, 16, 44100); put32(bytes, 20, 44100);
+    bytes[24] = 1; bytes[26] = 8;
+    for (int i = 0; i < 8; ++i) bytes[28 + i] = uint8_t(129 + i);
+    const auto write_voice = [&](const std::string& name) {
+        const auto path = directory / (name + ".pcm");
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        check(bool(file), "write TY voice fixture");
+    };
+    const auto command = [](const std::string& name, bool ty = true) {
+        MesCommand raw;
+        raw.dc2ty = ty; raw.kind = CmdKind::Str; raw.op = ty ? 0x36 : 0x4D; raw.str = name;
+        return mes_engine_command(raw);
+    };
+    const char* actors[] = {"otm","yme","kko","anz","akn","mhr","myk","yki",
+                            "mik","myu","skr","sgn","wtr","kmk","mki","hrm"};
+    AudioEngine audio;
+    SceneAudio scene(directory.string());
+    scene.set_engine(&audio, nullptr);
+    for (size_t id = 0; id < 16; ++id) {
+        const std::string name = std::string("VOICE/ty_myu01_d1_myu/ty_myu01_d1_myu_") + actors[id] + "01";
+        const std::string actor = "TY actor " + std::to_string(id) + " (" + actors[id] + ")";
+        write_voice(name);
+        scene.set_character_volume(id, 100, true);
+        check(scene.dispatch(command(name)), (actor + " dispatch").c_str());
+        check(scene.voice_playing(), (actor + " starts playback: " + scene.last_error()).c_str());
+        const int first_sample = render(audio, 1)[0];
+        check(first_sample == 0, (actor + " mute sample=" + std::to_string(first_sample)).c_str());
+        scene.set_character_volume(id, 100);
+        check(render(audio, 1)[0] == 512, "unmuting the active TY actor updates its current voice");
+        scene.set_character_volume(id, 0);
+        check(scene.replay_voice() && render(audio, 1)[0] == 0,
+              "zero TY character volume remains silent on replay");
+        scene.set_character_volume(id, 100);
+    }
+    const std::string upper = "VOICE/ty_myu01_d1_myu/ty_myu01_d1_myu_OTM02";
+    const std::string unknown = "VOICE/ty_myu01_d1_myu/ty_myu01_d1_myu_xyz01";
+    const std::string system = "VOICE/SYS/sys_otm_02";
+    const std::string ordinary = "VOICE/asystem/line_hrm01";
+    const std::string modern = "VOICE/modern/line_asu01";
+    for (const auto& name : {upper, unknown, system, ordinary, modern}) write_voice(name);
+    scene.set_character_volume(0, 100, true);
+    check(scene.dispatch(command(upper)) && render(audio, 1)[0] == 0, "TY actor matching ignores case");
+    scene.set_character_volume(15, 100, true);
+    check(scene.dispatch(command(unknown)) && render(audio, 1)[0] == 0,
+          "unknown TY actor uses native slot15 and preserves its mute");
+    const auto muted_snapshot = scene.capture_snapshot();
+    AudioEngine restored_audio;
+    SceneAudio restored(directory.string());
+    restored.set_engine(&restored_audio, nullptr);
+    restored.set_profile(MesProfileId::DC2TY);
+    restored.set_character_volume(15, 0);
+    check(restored.restore_snapshot(muted_snapshot) && restored.replay_voice() &&
+          render(restored_audio, 1)[0] == 0, "restored TY dialogue replay preserves actor zero volume");
+    check(restored.restore_snapshot(muted_snapshot, true) && render(restored_audio, 1)[0] == 0,
+          "explicit TY snapshot replay applies actor controls");
+    check(scene.dispatch(command(system)) && render(audio, 1)[0] == 256,
+          "TY sys path bypasses muted dialogue actors");
+    for (size_t id = 0; id < 16; ++id) scene.set_character_volume(id, 100, true);
+    check(render(audio, 1)[0] == 512, "reapplying settings leaves a scripted TY system voice audible");
+    check(scene.dispatch(command(ordinary)) && render(audio, 1)[0] == 0,
+          "sys must begin a path component to bypass TY character mute");
+    for (int channel = 9; channel < 12; ++channel)
+        check(audio.play_pcm(channel, {1000}, 44100, 1, {true}), "seed all dialogue voice channels");
+    scene.set_character_volume(15, 100, true);
+    check(render(audio, 1)[0] == 0, "actor mute covers all four voice channels");
+    scene.prepare_system_voice();
+    check(render(audio, 1)[0] == 3768, "system voice preparation resets all four channel gains");
+    audio.stop_group(AudioGroup::Voice);
+    check(audio.play_pcm(8, {1000}, 44100, 1, {true}), "start direct host system voice");
+    for (size_t id = 0; id < 16; ++id) scene.set_character_volume(id, 100, true);
+    check(render(audio, 1)[0] == 1000, "host system voice is not remuted by the last dialogue actor");
+    check(scene.replay_voice() && render(audio, 1)[0] == 0,
+          "dialogue replay reclaims actor controls after a host system voice");
+    scene.set_character_volume(0, 60);
+    check(scene.dispatch(command(modern, false)) && render(audio, 1)[0] > 0,
+          "switching out of TY retains the DC4 ASU alias");
+    scene.set_character_volume(0, 100, true);
+    check(render(audio, 1)[0] == 0, "DC4 alias still responds to its own actor control");
+    std::filesystem::remove_all(directory);
+}
+
 int main(int argc, char** argv) {
     using namespace dc4;
     dc2dm_voice_prefetch();
     deferred_channel_adoption();
     dc2dm_retained_title_bgm();
+    dc2ty_character_voice_controls();
     AudioEngine audio;
     check(audio.play_pcm(0, {100, 200, 300, 400, 500}, 44100, 1, {true, 1, 4}), "loop PCM load");
     auto output = render(audio, 8);

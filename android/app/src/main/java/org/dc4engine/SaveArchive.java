@@ -21,7 +21,7 @@ final class SaveArchive {
     static boolean isSaveFile(String name) {
         if (name == null || name.isEmpty() || name.contains("..") || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('\0') >= 0) return false;
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.matches("(?:dc2pc|dc4|dc4phdl)[0-9]{2,3}\\.dat\\.(?:arisa|icon)")) return true;
+        if (lower.matches("(?:dc2pc|dc2ty|dc2dm|dc4|dc4phdl)[0-9]{2,3}\\.dat\\.(?:arisa|icon)")) return true;
         if (lower.endsWith(".dc4sav") || lower.endsWith(".dc4sav.png") || lower.endsWith(".dc4sav.txt")) return true;
         if (lower.equals("system-profile.dat") || lower.equals("read-lines.txt") || lower.equals("system.dat")) return true;
         if (lower.endsWith(".dat") || lower.endsWith(".png") || lower.endsWith(".txt")) {

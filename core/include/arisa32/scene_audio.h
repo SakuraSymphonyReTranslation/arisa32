@@ -44,7 +44,10 @@ public:
     void reset_state();
     // MES 0x52 stops BGM/SE/voice, leaving native system SE channels 6/7.
     void stop_for_movie();
+    void set_profile(MesProfileId profile) { dc2ty_ = profile == MesProfileId::DC2TY; }
     void set_character_volume(size_t id, int percent, bool muted = false);
+    // Host menu voices share channels 8..11 but bypass dialogue actor controls.
+    void prepare_system_voice();
     SceneAudioSnapshot capture_snapshot() const;
     bool restore_snapshot(const SceneAudioSnapshot& snapshot, bool replay_voice = false,
                            std::string* error = nullptr);
@@ -69,6 +72,7 @@ private:
     SceneAudioSnapshot state_;
     bool pending_bgm_fade_ = false;
     bool legacy_names_ = false;
+    bool dc2ty_ = false;
     std::array<int, 51> character_volume_ = [] { std::array<int, 51> values{}; values.fill(100); return values; }();
     size_t voice_character_ = 15;
     void apply_character_volume(const std::string& name);

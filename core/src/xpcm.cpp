@@ -16,15 +16,16 @@ static uint16_t rd_u16(const uint8_t* p) {
 }
 
 bool parse_xpcm(const uint8_t* data, size_t size, XpcmInfo* out) {
-    if (size < 16 || std::memcmp(data, "XPCM", 4) != 0) return false;
+    if (!data || !out || size < 16 || std::memcmp(data, "XPCM", 4) != 0) return false;
     std::memset(out, 0, sizeof(*out));
     const uint32_t f4 = rd_u32(data + 4);
     const uint32_t f8 = rd_u32(data + 8);
 
-    if (size >= 28 && f8 == 0) {
-        // Voice variant: "XPCM" | data_size | 0 | WAVEFORMATEX(16)
+    const bool circus_vq = (f8 & 0xFFFF00FFu) == 3;
+    if (f8 == 0 || circus_vq) {
+        if (size < (circus_vq ? 32u : 28u)) return false;
         XpcmInfo i{};
-        i.data_size = f4;
+        i.data_size = circus_vq ? rd_u32(data + 28) : f4;
         i.has_wavefmt = true;
         i.format_tag = rd_u16(data + 12);
         i.channels = rd_u16(data + 14);
@@ -32,9 +33,11 @@ bool parse_xpcm(const uint8_t* data, size_t size, XpcmInfo* out) {
         i.avg_bytes_sec = rd_u32(data + 20);
         i.block_align = rd_u16(data + 24);
         i.bits = rd_u16(data + 26);
-        i.header_size = 28;
+        i.header_size = circus_vq ? 32 : 28;
         i.decoded_pcm_size = f4;
-        i.codec = i.format_tag == 1 ? XpcmCodec::Pcm
+        i.compression_flags = uint8_t(f8 >> 8);
+        i.codec = circus_vq ? XpcmCodec::CircusVq
+                  : i.format_tag == 1 ? XpcmCodec::Pcm
                   : i.format_tag == 2 ? XpcmCodec::Adpcm
                   : XpcmCodec::Unknown;
         *out = i;
@@ -55,9 +58,10 @@ bool parse_xpcm(const uint8_t* data, size_t size, XpcmInfo* out) {
 }
 
 bool xpcm_payload(const uint8_t* data, size_t size, std::vector<uint8_t>* out) {
+    if (!out) return false;
     XpcmInfo i;
     if (!parse_xpcm(data, size, &i)) return false;
-    if (size < i.header_size + i.data_size) return false;
+    if (i.header_size > size || i.data_size > size - i.header_size) return false;
     out->assign(data + i.header_size, data + i.header_size + i.data_size);
     return true;
 }

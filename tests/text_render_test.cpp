@@ -195,6 +195,54 @@ void dc2dm_rendering(const std::filesystem::path& root, const char* font_path) {
     CHECK(lit(15, 15));
     CHECK(!lit(30, 565));
 }
+void scaled_font_rendering(const std::filesystem::path& root, const char* font_path) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load(font_path,0,22,false)); CHECK(font.is_ms_gothic());
+    const auto renamed=root/"imported-font.ttf";
+    std::filesystem::copy_file(font_path,renamed);
+    CHECK(font.load(renamed.string(),0,22,false)); CHECK(font.is_ms_gothic());
+    CHECK(font.load(font_path,1,22,false)); CHECK(!font.is_ms_gothic());
+    CHECK(font.load(font_path,2,22,false)); CHECK(!font.is_ms_gothic());
+    CHECK(font.load(font_path,0,22,false)); CHECK(font.is_ms_gothic());
+    CHECK(!font.load((root/"missing-font.ttf").string(),0,22,false)); CHECK(!font.is_ms_gothic());
+    CHECK(font.load(font_path,0,22,false));
+    for (uint8_t alpha : {uint8_t(0),uint8_t(255)}) {
+        std::vector<uint8_t> default_scale(160u*64u*4u,0);
+        for (size_t at=0;at<default_scale.size();at+=4) {
+            default_scale[at]=30; default_scale[at+1]=60; default_scale[at+2]=90; default_scale[at+3]=alpha;
+        }
+        auto explicit_scale=default_scale;
+        font.rasterize_line(u"Wij_gpqy",4,32,&default_scale,160,64,22,0xC8A0DC,false,0,true,-1,17);
+        font.rasterize_line(u"Wij_gpqy",4,32,&explicit_scale,160,64,22,0xC8A0DC,false,0,true,-1,17,1.0f);
+        CHECK(default_scale==explicit_scale);
+    }
+    std::vector<uint8_t> repeated(560u*64u*4u,0), last=repeated;
+    font.rasterize_line(std::u16string(40,u'M'),10,32,&repeated,560,64,22,0xFFFFFF,false,0,true,-1,17,1.25f);
+    font.rasterize_line(u"M",400,32,&last,560,64,22,0xFFFFFF,false,0,true,-1,17,1.25f);
+    bool aligned=true, last_visible=false, one_pixel_outline=true;
+    for (int y=0;y<64;++y) for (int x=0;x<560;++x) {
+        const size_t at=(size_t(y)*560+x)*4;
+        if (x>=500) {
+            if (!std::equal(repeated.begin()+at,repeated.begin()+at+4,last.begin()+at)) aligned=false;
+            last_visible|=last[at+3]!=0;
+        }
+        if (!repeated[at+3] || repeated[at] || repeated[at+1] || repeated[at+2]) continue;
+        bool adjacent_ink=false;
+        for (const auto delta : {std::pair<int,int>{-1,0},{1,0},{0,-1},{0,1}}) {
+            const int nx=x+delta.first, ny=y+delta.second;
+            if (nx>=0 && nx<560 && ny>=0 && ny<64) adjacent_ink|=repeated[(size_t(ny)*560+nx)*4]>0;
+        }
+        one_pixel_outline&=adjacent_ink;
+    }
+    CHECK(aligned && last_visible && one_pixel_outline);
+    constexpr size_t image_bytes=64u*32u*4u;
+    std::vector<uint8_t> clipped(image_bytes+32,0);
+    std::fill(clipped.begin()+image_bytes,clipped.end(),123);
+    font.rasterize_line(u"MMMMMMMM",-3,9,&clipped,64,32,22,0xFFFFFF,false,0,true,-1,17,1.25f);
+    font.rasterize_line(u"gjpqy",35,30,&clipped,64,32,22,0xFFFFFF,false,0,true,-1,17,1.25f);
+    CHECK(std::any_of(clipped.begin(),clipped.begin()+image_bytes,[](uint8_t value){return value!=0;}));
+    CHECK(std::all_of(clipped.begin()+image_bytes,clipped.end(),[](uint8_t value){return value==123;}));
+}
 }
 int main(int argc, char** argv) {
     const auto root = std::filesystem::temp_directory_path() / ("arisa32-text-" +
@@ -223,6 +271,23 @@ int main(int argc, char** argv) {
     CHECK(font.text_width(u"iiii", 20) < font.text_width(u"WWWW", 20));
     CHECK(font.text_width(u"iW", 20, true) ==
           font.glyph_advance(u'i', 20, true) + font.glyph_advance(u'W', 20, true));
+    std::vector<uint8_t> plain_label(256u*64u*4u,0), outlined_label=plain_label;
+    font.rasterize_line(u"Reset Config?",4,40,&plain_label,256,64,28,
+                        0xFFFFFF,false,0,false,0,0,1,false);
+    font.rasterize_line(u"Reset Config?",4,40,&outlined_label,256,64,28);
+    int plain_pixels=0, outlined_pixels=0;
+    bool white_only=true, dark_edge=false;
+    for(size_t at=0;at<plain_label.size();at+=4) {
+        if(plain_label[at+3]) {
+            ++plain_pixels;
+            white_only &= plain_label[at]==255 && plain_label[at+1]==255 && plain_label[at+2]==255;
+        }
+        if(outlined_label[at+3]) {
+            ++outlined_pixels;
+            dark_edge |= outlined_label[at]<255;
+        }
+    }
+    CHECK(plain_pixels>0 && outlined_pixels>plain_pixels && white_only && dark_edge);
 #ifdef _WIN32
     CHECK(render(root, fullwidth, font) == render(root, "Seolah.", font));
 #endif
@@ -257,6 +322,7 @@ int main(int argc, char** argv) {
     CHECK(render(root, "iiiWWW", font, 3) == render(root, "iii", font));
     dc4_textbox_rendering(root, argv[1]);
     dc2dm_rendering(root / "dc2dm", argv[1]);
+    scaled_font_rendering(root, argv[1]);
     std::filesystem::remove_all(root);
     dc4::configure_resources("", "");
     std::cout << (failures ? "Text rendering FAILED\n" : "Text rendering passed\n");

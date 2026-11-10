@@ -27,8 +27,8 @@ enum class SaveActionType {
 
 struct SaveAction {
     SaveActionType type = SaveActionType::None;
-    // Slot: zero-based 0..99. Page: zero-based. Mode: 0=Save, 1=Load.
-    // Hosts retain existing save IDs by using index + 1 for storage.
+    // Slot: zero-based logical host slot. Page: zero-based. Mode: 0=Save, 1=Load.
+    // Hosts map logical slots to each game's native file IDs.
     int index = -1;
 };
 
@@ -49,6 +49,7 @@ public:
         return dc2dm_ && (occupied_[97] || occupied_[98] || occupied_[99]) ? 11 : kPageCount;
     }
     bool dc2pc() const { return dc2pc_; }
+    bool dc2ty() const { return dc2ty_; }
     bool dc2dm() const { return dc2dm_; }
     int selected_icon() const { return selected_icon_; }
     bool choosing_icon() const { return choosing_icon_; }
@@ -101,6 +102,7 @@ private:
                    const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     void draw_dc2dm(const std::vector<SaveSlot>& slots, int x, int y, bool down,
                    const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
+    int dc2pc_slot_index(int visible) const;
     int dc2dm_slot_index(int visible) const;
     int icon_hit(int x, int y) const;
     SaveAction finish_confirmation(bool yes);
@@ -108,7 +110,7 @@ private:
     SaveMode mode_ = SaveMode::Save;
     int page_ = 0;
     bool loaded_ = false;
-    bool dc2pc_ = false, dc2dm_ = false, choosing_icon_ = false;
+    bool dc2pc_ = false, dc2ty_ = false, dc2dm_ = false, choosing_icon_ = false;
     int selected_icon_ = -1, pressed_icon_ = -1;
     SaveSlot quick_slot_, latest_slot_, auto_slot_;
     bool latest_ = false, automatic_ = false, quick_ = false;

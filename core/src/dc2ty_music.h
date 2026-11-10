@@ -1,0 +1,58 @@
+#pragma once
+#include <array>
+
+namespace dc4ui {
+
+// Selected-track titles from DC2TY.exe VA 0x4FEB98 (260-byte CP932 records), indexed by bank 3[5].
+inline constexpr std::array<const char16_t*, 48> Dc2TyMusicTitles{{
+    u"世話好きお姫様",
+    u"step step！",
+    u"可愛い小悪魔さん",
+    u"近くて遠くて",
+    u"淡き想い～恋心",
+    u"いつものあいつ",
+    u"乙女の秘密会議",
+    u"嗚呼我等の熱き青春っ！",
+    u"strenuous lady",
+    u"sakura",
+    u"朝の吐息",
+    u"陽のあたる教室",
+    u"So Fine",
+    u"夕焼けの教室",
+    u"暖かな時間",
+    u"星空をみつめて",
+    u"Dream of Cherry tree",
+    u"たった一つの大切な…",
+    u"sweet bell",
+    u"pain",
+    u"too alone",
+    u"消え行く運命",
+    u"怪しい足音",
+    u"Happy Carnival",
+    u"変わらない日々",
+    u"冷たい涙",
+    u"また、会える…よね？",
+    u"よ～い、どんっ☆",
+    u"Loneliness",
+    u"お茶目なお姉さん",
+    u"Let's Go!",
+    u"かわいい後輩ちゃん",
+    u"ちいさな心の大きな想い",
+    u"しと、しと",
+    u"雨音",
+    u"あたたかな手",
+    u"そっとやさしく",
+    u"kokoro",
+    u"ゆれる胸の中",
+    u"Good Friend",
+    u"大切なものを",
+    u"レンブラントの光",
+    u"雨上がりに咲いた虹",
+    u"陽はまた昇る",
+    u"今を生きて",
+    u"未来へのお守り",
+    u"Cloudy",
+    u"青春☆グラフィティ",
+}};
+
+}

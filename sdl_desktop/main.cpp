@@ -13,6 +13,7 @@
 #include "arisa32/confirm_dialog.h"
 #include "arisa32/dc2pc_menu_transition.h"
 #include "arisa32/dc2dm_title_particles.h"
+#include "../core/src/dc2ty_scenario_titles.h"
 #include "ui_script.h"
 
 #include <SDL.h>
@@ -285,7 +286,7 @@ fs::path save_directory(const std::string& data = "") {
                 }
             }
             std::error_code ec;
-            const fs::path preferred = data_path / "SaveData";
+            const fs::path preferred = data_path / (main_script.version == 0x5F69 ? "Savegame" : "SaveData");
             if (fs::create_directories(preferred, ec) || fs::is_directory(preferred, ec)) return preferred;
         }
         const std::vector<fs::path> candidates = {
@@ -428,7 +429,10 @@ bool write_save_preview(dc4scene::SceneRunner& scene, const fs::path& save) {
             clear(); return false;
         }
         auto excerpt = scene.visible_text();
-        if (!scene.speaker().empty()) excerpt = dc4scene::sjis_to_utf16(scene.speaker()) + u": " + excerpt;
+        if (scene.save_format_version() == 0x5F69) {
+            const auto title = dc4scene::detail::dc2ty_scenario_title(scene.script_name());
+            excerpt = dc4scene::sjis_to_utf16(std::string(title.empty() ? std::string_view(scene.script_name()) : title));
+        } else if (!scene.speaker().empty()) excerpt = dc4scene::sjis_to_utf16(scene.speaker()) + u": " + excerpt;
         for (char16_t& ch : excerpt) if (ch == u'\n' || ch == u'\r') ch = u' ';
         if (excerpt.size() > 256) excerpt.resize(256);
         std::ofstream text(temporary, std::ios::binary | std::ios::trunc);
@@ -469,7 +473,44 @@ struct SaveSlots {
     fs::path latest_path;
     std::vector<dc4ui::SaveSlot> entries{dc4ui::SaveScreen::kSlotCount};
 
-    static dc4ui::SaveSlot read(const fs::path& path) {
+    static void read_ty_metadata(const fs::path& path, dc4ui::SaveSlot* entry) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        const auto size = file.tellg();
+        if (size < 28 || size > 4 * 1024 * 1024) return;
+        file.seekg(0);
+        std::vector<uint8_t> bytes(size_t(std::min<std::streamoff>(size, 0x2944)), 0);
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()))) return;
+        auto word = [&](size_t at) {
+            return uint32_t(bytes[at]) | uint32_t(bytes[at + 1]) << 8 |
+                uint32_t(bytes[at + 2]) << 16 | uint32_t(bytes[at + 3]) << 24;
+        };
+        const bool native = size == 0x2944 && word(0) == 1;
+        const bool snapshot = std::memcmp(bytes.data(), "DC4SAVE\0", 8) == 0;
+        if (!native && !snapshot) return;
+        const size_t offset = native ? 4 : 28, capacity = native ? 128 : word(24);
+        if (capacity == 0 || capacity > 255 || offset + capacity > bytes.size()) return;
+        size_t end = offset;
+        while (end < offset + capacity && bytes[end]) ++end;
+        if (native && end == offset + capacity) return;
+        const std::string script(reinterpret_cast<const char*>(bytes.data() + offset), end - offset);
+        const auto title = dc4scene::detail::dc2ty_scenario_title(script);
+        if (!title.empty()) entry->excerpt = dc4scene::sjis_to_utf16(std::string(title));
+        if (!native) return;
+        if (bytes[0x1388] < 16) entry->character_icon = bytes[0x1388];
+        std::tm date{};
+        date.tm_year = 100 + bytes[0x138D]; date.tm_mon = int(bytes[0x1389]) - 1;
+        date.tm_mday = bytes[0x138A]; date.tm_hour = bytes[0x138B]; date.tm_min = bytes[0x138C];
+        date.tm_isdst = -1;
+        const auto expected = date;
+        if (std::mktime(&date) == std::time_t(-1) || date.tm_year != expected.tm_year ||
+            date.tm_mon != expected.tm_mon || date.tm_mday != expected.tm_mday ||
+            date.tm_hour != expected.tm_hour || date.tm_min != expected.tm_min) return;
+        char formatted[64]{};
+        std::strftime(formatted, sizeof(formatted), "%Y %m/%d %H:%M:%S", &date);
+        entry->timestamp.assign(formatted, formatted + std::strlen(formatted));
+    }
+
+    static dc4ui::SaveSlot read(const fs::path& path, uint32_t version = 0) {
         dc4ui::SaveSlot entry;
         std::error_code ec;
         entry.occupied = fs::is_regular_file(path, ec);
@@ -486,10 +527,11 @@ struct SaveSlots {
                 entry.timestamp.assign(formatted, formatted + std::strlen(formatted));
             }
         }
+        if (version == 0x5F69) read_ty_metadata(path, &entry);
         std::ifstream icon_file(path.string()+".icon");
         std::string icon_marker; std::getline(icon_file,icon_marker);
         int icon=-1;
-        if(icon_marker=="DC4ICON1 "+save_fingerprint(path) && icon_file>>icon && icon>=0 && icon<16)
+        if(entry.character_icon<0 && icon_marker=="DC4ICON1 "+save_fingerprint(path) && icon_file>>icon && icon>=0 && icon<16)
             entry.character_icon=icon;
         const fs::path preview_text = path.string() + ".preview.txt";
         const auto text_size = fs::file_size(preview_text, ec);
@@ -499,7 +541,7 @@ struct SaveSlots {
         const auto fingerprint = save_fingerprint(path);
         if (fingerprint.empty() || marker != "DC4PREVIEW1 " + fingerprint) return entry;
         std::string excerpt((std::istreambuf_iterator<char>(preview)), {});
-        entry.excerpt = from_utf8(excerpt);
+        if (entry.excerpt.empty()) entry.excerpt = from_utf8(excerpt);
         const fs::path preview_image = path.string() + ".preview.bmp";
         if (fs::file_size(preview_image, ec) > 100000 || ec) return entry;
         std::ifstream bmp_header(preview_image, std::ios::binary);
@@ -535,7 +577,7 @@ struct SaveSlots {
         };
         for (int i = 0; i < dc4ui::SaveScreen::kSlotCount; ++i) {
             const auto path=dc4::resolve_save(directory,version,i+1);
-            entries[size_t(i)]=read(path);
+            entries[size_t(i)]=read(path,version);
             screen->set_slot_occupied(i,entries[size_t(i)].occupied);
             if(entries[size_t(i)].occupied)consider_latest(path,i);
         }
@@ -545,7 +587,7 @@ struct SaveSlots {
         latest_path=dc4::latest_save(directory,version);
         const auto automatic=dc4::auto_save(directory,version);
         screen->set_shortcuts(!latest_path.empty(), fs::is_regular_file(automatic,ec), quick);
-        screen->set_special_slots(read(quicksave),latest_path.empty()?dc4ui::SaveSlot{}:read(latest_path),read(automatic));
+        screen->set_special_slots(read(quicksave,version),latest_path.empty()?dc4ui::SaveSlot{}:read(latest_path,version),read(automatic,version));
     }
 };
 
@@ -644,6 +686,7 @@ int run(const Options& o) {
     dc4ui::ConfirmDialog global_confirm;
     dc4::MoviePlayer movie;
     bool movie_from_scene = false;
+    bool startup_movie = false, startup_title_voice_pending = false;
     bool music_running = false;
     bool menu_open = false, slots_from_menu = false;
     bool current_line_read = false;
@@ -652,11 +695,26 @@ int run(const Options& o) {
         fprintf(stderr, "A Japanese font is required. Install MS Gothic or pass --font FILE.\n"); return 1;
     }
     if (!system_menu.load(data, &err)) { fprintf(stderr, "System menus: %s\n", err.c_str()); return 1; }
+    auto active_save_version = [&]() -> uint32_t {
+        if (system_menu.is_dc2ty()) return 0x5F69;
+        return scene ? scene->save_format_version() : 0;
+    };
     const fs::path profile_dir = save_directory(data);
     const bool profile_allowed = engine_save_directory_allowed(profile_dir,data);
     if (profile_allowed && fs::is_regular_file(profile_dir / "profile.dc4profile"))
         if (!system_menu.load_profile((profile_dir / "profile.dc4profile").string(), &err))
             fprintf(stderr,"Profile: %s\n",err.c_str());
+    if (system_menu.is_dc2ty()) {
+        for (const auto& root : {profile_dir, fs::path(data), fs::path(data).parent_path()}) {
+            for (const char* relative : {"system.dat", "savegame/system.dat", "savedata/system.dat",
+                    "advdata/savegame/system.dat", "dacapo2_ty/dacapo2_ty/system.dat"}) {
+                const auto path = dc4::resolve_asset((root / relative).string());
+                if (!fs::is_regular_file(path)) continue;
+                if (system_menu.load_system_dat(path, &err)) profile_dirty = true;
+                else fprintf(stderr, "PC progress: %s (%s)\n", path.c_str(), err.c_str());
+            }
+        }
+    }
     auto flush_profile = [&]() {
         if (!profile_dirty || !o.shot.empty() || !profile_allowed) return;
         try {
@@ -688,6 +746,10 @@ int run(const Options& o) {
             scene->set_effects_enabled(cfg.effects!=0);
             scene->set_effect_speed(cfg.effect_speed);
             scene->set_text_speed(cfg.text_speed);
+            if (system_menu.is_dc2ty()) {
+                scene->set_variable(99,12,system_menu.variable(99,12));
+                scene->set_variable(99,20,system_menu.variable(99,20));
+            }
             for(size_t i=0;i<cfg.character_volume.size();++i)
                 scene->set_character_volume(i,cfg.character_volume[i],cfg.character_muted[i]);
         }
@@ -783,7 +845,20 @@ int run(const Options& o) {
         system_menu.open(page);
         if(o.config_page)system_menu.set_config_page(o.config_page-1);
         if(o.panel=="movies")system_menu.activate("selmovie");
-        if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
+        const auto opening = page == dc4ui::SystemMenuPage::Title && o.shot.empty()
+            ? system_menu.startup_movie() : std::string{};
+        if (!opening.empty()) {
+            startup_movie = true;
+            menu_open = false;
+            if (!movie.open(data, opening, audio_ready ? &audio.engine : nullptr, &err)) {
+                fprintf(stderr, "Startup movie: %s\n", err.c_str());
+                startup_movie = false;
+                menu_open = true;
+                system_menu.open_title_intro();
+                startup_title_voice_pending = true;
+                title_music();
+            }
+        } else if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
     }
     if (!log_screen.load(data)) fprintf(stderr, "Log screen artwork unavailable\n");
     backlog.visible_rows = log_screen.visible_rows();
@@ -798,8 +873,9 @@ int run(const Options& o) {
     if (!frame_texture) { fprintf(stderr, "Frame texture: %s\n", SDL_GetError()); return 1; }
     SDL_SetTextureBlendMode(frame_texture.get(), SDL_BLENDMODE_NONE);
     if(profile_allowed) {
-        slots.refresh(profile_dir,&save_screen,scene->save_format_version());
-        system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0)),fs::is_regular_file(dc4::auto_save(profile_dir,scene->save_format_version())));
+        const auto save_version = active_save_version();
+        slots.refresh(profile_dir,&save_screen,save_version);
+        system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(profile_dir,save_version,0)),fs::is_regular_file(dc4::auto_save(profile_dir,save_version)));
     }
     apply_settings();
     if (audio_ready && !o.bgm.empty()) {
@@ -875,7 +951,13 @@ int run(const Options& o) {
         else if(scene->scene_ended() && scene->last_error().empty()) {
             auto_mode=skip_mode=false;menu_open=true;system_menu.set_in_game(false);
             if(scene->variable(9,7))system_menu.resume_scenes();
-            else system_menu.open(dc4ui::SystemMenuPage::Title);
+            else {
+                system_menu.open(dc4ui::SystemMenuPage::Title);
+                if (system_menu.is_dc2ty()) {
+                    system_menu.open_title_intro();
+                    startup_title_voice_pending = true;
+                }
+            }
             scene->finish_replay();
             audio.engine.stop_all();title_music();update_title();
         } else if(!scene->last_error().empty())notify(scene->last_error());
@@ -945,7 +1027,13 @@ int run(const Options& o) {
         if (!audio_ready || !voices.loaded()) return;
         const auto cfg = system_menu.config();
         if (!cfg.voice_enabled || !cfg.master_enabled) return;
-        play_voice(audio.engine, voices, system_menu.system_voice(event_id));
+        const auto asset = system_menu.system_voice(event_id);
+        if (asset.empty()) return;
+        if (system_menu.is_dc2ty()) {
+            if (scene) scene->prepare_system_voice();
+            audio.engine.set_channel_user_volume(8,100);
+        }
+        play_voice(audio.engine, voices, asset);
     };
     auto persist_state = [&](bool load, int slot, int character_icon=-1) {
         if (!scene || slot < -2 || slot >= dc4ui::SaveScreen::kSlotCount || (slot == -2 && !load)) return;
@@ -961,7 +1049,7 @@ int run(const Options& o) {
             if (!engine_save_directory_allowed(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
-            const fs::path path = load ? (slot == -2 ? slots.latest_path : dc4::resolve_save(directory,scene->save_format_version(),slot+1)) : dc4::save_target(directory,scene->save_format_version(),slot+1);
+            const fs::path path = load ? (slot == -2 ? slots.latest_path : dc4::resolve_save(directory,active_save_version(),slot+1)) : dc4::save_target(directory,active_save_version(),slot+1);
             // Empty Load rows are inert, including when a file disappears
             // after the screen was opened. Quick-load failures still report.
             if (slot >= 0) {
@@ -981,7 +1069,14 @@ int run(const Options& o) {
                 current_line_read=system_menu.scene_seen(scene->script_name(),"@"+std::to_string(scene->script_position()));
             } else {
                 fs::create_directories(directory);
-                if (!scene->save_state(path.string())) { notify(operation + " failed: " + scene->last_error()); return; }
+                const auto version = scene->save_format_version();
+                const bool native_icon = (version == 0x9969 || version == 0x5F69) && character_icon >= 0 && character_icon < 16;
+                const int previous_icon = scene->variable(9,20);
+                if (native_icon) scene->set_variable(9,20,character_icon);
+                if (!scene->save_state(path.string())) {
+                    if (native_icon) scene->set_variable(9,20,previous_icon);
+                    notify(operation + " failed: " + scene->last_error()); return;
+                }
                 std::ofstream icon_file(path.string()+".icon",std::ios::trunc);
                 icon_file << "DC4ICON1 " << save_fingerprint(path) << '\n' << character_icon;
                 preview_ok = write_save_preview(*scene, path) && bool(icon_file);
@@ -993,7 +1088,7 @@ int run(const Options& o) {
             backlog.open = false;
             slots.refresh(directory,&save_screen,scene->save_format_version());
             system_menu.set_save_available(!slots.latest_path.empty(),fs::is_regular_file(dc4::resolve_save(directory,scene->save_format_version(),0)),fs::is_regular_file(dc4::auto_save(directory,scene->save_format_version())));
-            if (system_menu.is_dc2dm()) play_sys_voice(load ? 23 : 22);
+            if (system_menu.is_dc2dm() || system_menu.is_dc2ty()) play_sys_voice(load ? 23 : 22);
             notify(operation + (load ? " restored" : " written") + (preview_ok ? "" : " (preview unavailable)"));
         } catch (const std::exception& e) {
             notify(operation + " failed: " + e.what());
@@ -1016,7 +1111,7 @@ int run(const Options& o) {
             if (!engine_save_directory_allowed(directory, data)) {
                 notify("Set DC4_SAVE_DIR to a separate directory for emulator saves"); return;
             }
-            slots.refresh(directory, &save_screen,scene->save_format_version());
+            slots.refresh(directory, &save_screen,active_save_version());
         }
         catch (const std::exception& e) { notify(e.what()); return; }
         slots_from_menu=menu_open;menu_open=false;slots.open = true;
@@ -1052,13 +1147,35 @@ int run(const Options& o) {
         system_menu.set_in_game(page==dc4ui::SystemMenuPage::Config && from_scene);
         if (page==dc4ui::SystemMenuPage::Title && scene) scene->finish_replay();
         system_menu.open(page);menu_open=true;
+        if (page==dc4ui::SystemMenuPage::Title && system_menu.is_dc2ty()) {
+            system_menu.open_title_intro();
+            startup_title_voice_pending = true;
+            animation_tick = SDL_GetTicks();
+        }
         if(page==dc4ui::SystemMenuPage::Title || page==dc4ui::SystemMenuPage::Extras)title_music();
         else if(page==dc4ui::SystemMenuPage::Music)audio.engine.stop_bgm();
         play_sys_voice(system_menu.page_voice_event(before));
         status.clear();update_title();
     };
     auto return_title = [&]() {
-        if (system_menu.is_dc2dm() && scene && !scene->script_name().empty()) {
+        if (system_menu.is_dc2ty() && scene && !scene->script_name().empty()) {
+            std::vector<uint8_t> outgoing;
+            if (menu_open) system_menu.draw(-1,-1,false,font,&outgoing);
+            else if (movie.active()) movie.draw_rgba(&outgoing,dc4scene::kScreenW,dc4scene::kScreenH);
+            else { scene->draw(-1); outgoing = scene->frame(); }
+            if (!scene->start_dc2ty_title_exit(outgoing)) {
+                open_system(dc4ui::SystemMenuPage::Title);
+                return;
+            }
+            title_transition.start_custom_outgoing(std::move(outgoing),system_menu.variable(99,12),1000,
+                [&](uint32_t elapsed) { return scene->update_dc2ty_title_exit(elapsed); },
+                [&](std::vector<uint8_t>* pixels) { scene->draw_dc2ty_title_exit(pixels); });
+            title_commit_due = false;
+            auto_mode = skip_mode = mouse_down = false;
+            system_menu.cancel_pointer();
+            scene->set_pointer(-1,-1,false);
+            animation_tick = SDL_GetTicks();
+        } else if (system_menu.is_dc2dm() && scene && !scene->script_name().empty()) {
             const bool opening = movie.active() || !scene->pending_movie().empty();
             auto script = fs::path(scene->script_name()).stem().string();
             std::transform(script.begin(),script.end(),script.begin(),[](unsigned char c){return char(std::tolower(c));});
@@ -1097,7 +1214,7 @@ int run(const Options& o) {
     };
     auto prompt_quick = [&](bool load) {
         if (scene && !scene->save_load_allowed()) return;
-        if(load&&!fs::is_regular_file(dc4::resolve_save(profile_dir,scene->save_format_version(),0))){notify("No quick save");return;}
+        if(load&&!fs::is_regular_file(dc4::resolve_save(profile_dir,active_save_version(),0))){notify("No quick save");return;}
         prompt(load?dc4ui::ConfirmKind::QuickLoad:dc4ui::ConfirmKind::QuickSave,[&,load]{persist_state(load,-1);});
     };
     auto start_scene = [&](const dc4ui::SystemMenuAction& selected) {
@@ -1125,7 +1242,16 @@ int run(const Options& o) {
     auto finish_movie = [&]() {
         const bool resume=movie_from_scene;
         movie.close();movie_from_scene=false;
-        if(resume && scene){scene->finish_movie();advance_script();}
+        if (startup_movie) {
+            startup_movie = false;
+            menu_open = true;
+            system_menu.set_in_game(false);
+            system_menu.open_title_intro();
+            startup_title_voice_pending = true;
+            title_music();
+            animation_tick = SDL_GetTicks();
+            update_title();
+        } else if(resume && scene){scene->finish_movie();advance_script();}
         else if(!o.movie.empty() && !o.title) run_loop = false;
     };
     auto menu_action = [&](const dc4ui::SystemMenuAction& selected) {
@@ -1139,7 +1265,7 @@ int run(const Options& o) {
             if (system_menu.scene_ui_script() != "start.mes" || selected.type != T::StartScene || (system_menu.is_dc2dm() && selected.voice_event))
                 play_sys_voice(selected.voice_event ? selected.voice_event : 7);
             start_scene(selected);break;
-        case T::Load:play_sys_voice(13);open_slots(true);break;
+        case T::Load:play_sys_voice(selected.voice_event ? selected.voice_event : 13);open_slots(true);break;
         case T::Save:play_sys_voice(12);open_slots(false);break;
         case T::LatestLoad:
             play_sys_voice(8);
@@ -1158,7 +1284,7 @@ int run(const Options& o) {
             break;
         case T::Quit:quit();break; // Already confirmed by SystemMenu.
         case T::Title:
-            if (system_menu.is_dc2dm()) { return_title(); break; }
+            if (system_menu.is_dc2dm() || system_menu.is_dc2ty()) { return_title(); break; }
             audio.engine.stop_all();
             if(scene) scene->finish_replay();
             system_menu.set_in_game(false);
@@ -1177,7 +1303,15 @@ int run(const Options& o) {
         }
         case T::StopMusic:audio.engine.stop_bgm();music_running=false;break;
         case T::SeekMusic:audio.engine.seek_channel_fraction(0,double(selected.index)/100);break;
-        case T::PlayVoice:if(audio_ready)play_voice(audio.engine,voices,selected.asset);break;
+        case T::PlayVoice:
+            if (audio_ready) {
+                if (system_menu.is_dc2ty()) {
+                    if (scene) scene->prepare_system_voice();
+                    audio.engine.set_channel_user_volume(8,100);
+                }
+                play_voice(audio.engine,voices,selected.asset);
+            }
+            break;
         case T::PlayMovie:
             movie_from_scene=false;
             if(!movie.open(data,selected.asset,audio_ready?&audio.engine:nullptr,&err))notify("Movie: "+err);
@@ -1259,7 +1393,7 @@ int run(const Options& o) {
         update_title();
     };
     auto draw = [&]() {
-        const Uint32 tick = SDL_GetTicks();
+        Uint32 tick = SDL_GetTicks();
         if (title_transition.active()) {
             const Uint32 elapsed = tick - animation_tick;
             animation_tick = tick;
@@ -1268,11 +1402,15 @@ int run(const Options& o) {
                 if (title_commit_due) {
                     title_commit_due = false;
                     audio.engine.stop_all();
+                    if (system_menu.is_dc2ty()) { movie.close(); movie_from_scene = false; scene->finish_movie(); }
                     open_system(dc4ui::SystemMenuPage::Title);
-                    std::vector<uint8_t> incoming;
-                    system_menu.draw(-1,-1,false,font,&incoming);
-                    title_transition.reveal(std::move(incoming));
-                    animation_tick = SDL_GetTicks();
+                    if (system_menu.is_dc2ty()) title_transition.finish();
+                    else {
+                        std::vector<uint8_t> incoming;
+                        system_menu.draw(-1,-1,false,font,&incoming);
+                        title_transition.reveal(std::move(incoming));
+                    }
+                    tick = animation_tick = SDL_GetTicks();
                 } else title_commit_due = title_transition.update(elapsed);
             }
             std::vector<uint8_t> pixels;
@@ -1295,11 +1433,18 @@ int run(const Options& o) {
         }
         if(movie.active() && o.shot.empty()){
             movie.update(tick-animation_tick);
-            if(movie.finished())finish_movie();
+            if(movie.finished()) {
+                finish_movie();
+                animation_tick=tick;
+            }
         }
         if (menu_open && o.shot.empty() && !movie.active() && !global_confirm.active() &&
             (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_INPUT_FOCUS))
             system_menu.update(tick-animation_tick);
+        if (startup_title_voice_pending && system_menu.title_voice_ready()) {
+            startup_title_voice_pending = false;
+            play_sys_voice(1);
+        }
         animation_tick=tick;
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
         if (SDL_RenderClear(ren) < 0) return false;
@@ -1308,7 +1453,7 @@ int run(const Options& o) {
             SDL_Texture* output_texture=frame_texture.get();
             int output_width=dc4scene::kScreenW, output_height=dc4scene::kScreenH;
             bool gallery_drawn=false;
-            if (!movie.active() && !global_confirm.active() && system_menu.is_dc2pc() &&
+            if (!movie.active() && !global_confirm.active() && (system_menu.is_dc2pc() || system_menu.is_dc2ty()) &&
                 system_menu.gallery_preview_active()) {
                 int physical_width=0, physical_height=0;
                 if (SDL_GetRendererOutputSize(ren,&physical_width,&physical_height)==0 &&
@@ -1656,13 +1801,15 @@ int run(const Options& o) {
                 if(event.key.repeat)continue;
                 const auto before=system_menu.page();
                 if(key==SDLK_ESCAPE) {
-                    if (system_menu.page() == dc4ui::SystemMenuPage::Title) prompt_quit();
+                    if (system_menu.page() == dc4ui::SystemMenuPage::Title &&
+                        !system_menu.story_picker_active() && !system_menu.title_intro_active()) prompt_quit();
                     else menu_action(system_menu.back());
                 }
-                else if(key==SDLK_LEFT || key==SDLK_PAGEUP)system_menu.scroll(-1);
-                else if(key==SDLK_RIGHT || key==SDLK_PAGEDOWN)system_menu.scroll(1);
+                else if(key==SDLK_LEFT || key==SDLK_PAGEUP || (key==SDLK_UP && system_menu.story_picker_active()))system_menu.scroll(-1);
+                else if(key==SDLK_RIGHT || key==SDLK_PAGEDOWN || (key==SDLK_DOWN && system_menu.story_picker_active()))system_menu.scroll(1);
                 else if(key==SDLK_SPACE || key==SDLK_RETURN) {
-                    if(system_menu.page()==dc4ui::SystemMenuPage::Title)menu_action(system_menu.activate("prologue"));
+                    if(system_menu.story_picker_active())menu_action(system_menu.activate("#ty:story:accept"));
+                    else if(system_menu.page()==dc4ui::SystemMenuPage::Title)menu_action(system_menu.activate(system_menu.is_dc2ty()?"start":"prologue"));
                     else {system_menu.pointer_down(mx,my);menu_action(system_menu.pointer_up(mx,my));}
                 } else if(key>=SDLK_1&&key<=SDLK_7 && system_menu.page()==dc4ui::SystemMenuPage::Config)system_menu.set_config_page(int(key-SDLK_1));
                 else if(key==SDLK_F1)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,"dc4engine controls",kHelp,window.get());
@@ -1735,7 +1882,7 @@ int run(const Options& o) {
         }
         if(menu_open && system_menu.page()==dc4ui::SystemMenuPage::Music && !movie.active()) {
             system_menu.set_music_position(int(audio.engine.channel_fraction(0)*100));
-            if(music_running&&!audio.engine.channel_playing(0)){music_running=false;menu_action(system_menu.activate("next"));}
+            if(music_running&&!audio.engine.channel_playing(0)){music_running=false;menu_action(system_menu.music_finished());}
         }
         if (scene && !title_transition.active() && !quit_after_voice && !global_confirm.active() && !menu_open && !movie.active() && !backlog.open && !slots.open && !scene->sidebar_visible() && !scene->reviewing_dialogue() && scene->message_visible() && !scene->waiting_for_choice() && !scene->waiting_for_time() && !scene->scene_ended()) {
             const Uint32 now = SDL_GetTicks();

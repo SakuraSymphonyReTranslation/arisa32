@@ -69,6 +69,7 @@ void decode_all(dc4::MesDialect dialect, uint32_t version) {
         CHECK(c.op == op);
         CHECK(c.kind == kind);
         CHECK(c.dc2pc == (dialect == dc4::MesDialect::ClassicDC2 && version == 0x9969));
+        CHECK(c.dc2ty == (dialect == dc4::MesDialect::ClassicDC2 && version == 0x5F69));
         CHECK(c.dc2dm == (dialect == dc4::MesDialect::ClassicDM));
         CHECK(c.pos == header);
         CHECK(stream.pos() == file.code.size());
@@ -82,6 +83,35 @@ void decode_all(dc4::MesDialect dialect, uint32_t version) {
             CHECK(short_stream.pos() == header);
         }
     }
+}
+
+void dc2ty_header_and_services() {
+    const std::vector<uint8_t> bytes{2,0,0,0,2,0,0,0,5,0,0,0,
+        0x69,0x5F,0x05,0,0,0x01,0,0,0x01,0,0,0};
+    dc4::MesFile file;
+    CHECK(file.load(bytes.data(), bytes.size()));
+    CHECK(file.version == 0x5F69 && file.dialect == dc4::MesDialect::ClassicDC2);
+    CHECK(file.code_base == 12 && file.labels.size() == 2);
+    CHECK(dc4::mes_opcode_profile(file.dialect, file.version).id == dc4::MesProfileId::DC2TY);
+    CHECK(dc4::mes_uses_classic_dc2(file.dialect, file.version));
+    CHECK(!dc4::mes_uses_classic_dc2(file.dialect, 0x5E69));
+    dc4::MesCommand raw;
+    raw.dc2ty = true;
+    raw.kind = dc4::CmdKind::Str;
+    for (const auto pair : {std::pair{0x30, dc4::Opcode::BACKGROUND},
+                            std::pair{0x38, dc4::Opcode::MOVIE},
+                            std::pair{0x3D, dc4::Opcode::VOICE}}) {
+        raw.op = uint8_t(pair.first);
+        const auto translated = dc4::mes_engine_command(raw);
+        CHECK(translated.opcode() == pair.second);
+        CHECK(translated.dc2ty && !translated.dc2pc && !translated.dc2dm);
+        CHECK(translated.raw_op == raw.op);
+    }
+    raw.kind = dc4::CmdKind::Words4;
+    raw.op = 0x5F;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::COMPARE);
+    raw.op = 0x82;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::UNKNOWN);
 }
 
 void dc2dm_menu_and_story() {
@@ -206,7 +236,9 @@ int main() {
     decode_all(dc4::MesDialect::Modern, 0xAAB6);
     decode_all(dc4::MesDialect::ClassicDC2, 0x9869);
     decode_all(dc4::MesDialect::ClassicDC2, 0x9969);
+    decode_all(dc4::MesDialect::ClassicDC2, 0x5F69);
     decode_all(dc4::MesDialect::ClassicDM, 0x9D72);
+    dc2ty_header_and_services();
     dc2dm_menu_and_story();
     dc4::MesCommand raw;
     raw.dc2pc = true;
@@ -249,6 +281,6 @@ int main() {
     CHECK(dc4::mes_engine_command(raw).op == 0xFF);
     raw.dc2pc = false;
     CHECK(dc4::mes_engine_command(raw).op == 0x82);
-    std::cout << "Decoded all 256 opcodes in four profiles, including every truncated prefix.\n";
+    std::cout << "Decoded all 256 opcodes in five profiles, including every truncated prefix.\n";
     return failures ? 1 : 0;
 }

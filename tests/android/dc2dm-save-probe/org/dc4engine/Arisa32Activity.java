@@ -45,6 +45,11 @@ public final class Arisa32Activity {
     private native String dc4SlotsTouch(int action,int x,int y);
     private native String dc4OpenMenu(String name);
     private native String dc4MenuTouch(int action,int x,int y);
+    private native void dc4LogOpen();
+    private native void dc4LogSetCursorEnabled(boolean enabled);
+    private native void dc4LogClear();
+    private native boolean dc4LogFrame(Bitmap target);
+    private native String dc4LogTouch(int action,int x,int y);
     private native String dc4SetPaused(boolean paused,String checkpoint);
     private native boolean dc4SaveLoadAllowed();
     private native String dc4RequestConfirm(String action);
@@ -98,6 +103,227 @@ public final class Arisa32Activity {
     private String dialogue() {
         return dc4CurrentLine().replace('\u3000',' ').replace('\uFF1F','?')
             .replace('\r',' ').replace('\n',' ').replaceAll(" +"," ");
+    }
+    private static int[] pixels(Bitmap bitmap,Rect bounds) {
+        int[] result=new int[bounds.width()*bounds.height()];
+        bitmap.getPixels(result,0,bounds.width(),bounds.left,bounds.top,bounds.width(),bounds.height());
+        return result;
+    }
+    private static int changedPixels(int[] previous,int[] current) {
+        check(previous.length==current.length,"matching capture dimensions");
+        int changed=0;
+        for(int i=0;i<previous.length;++i)if(previous[i]!=current[i])++changed;
+        return changed;
+    }
+    private static int darkPixels(int[] pixels) {
+        int count=0;
+        for(int color:pixels)if(Color.red(color)<115 && Color.green(color)<115 && Color.blue(color)<115)++count;
+        return count;
+    }
+    private void menuUntil(Bitmap bitmap,long deadline) throws Exception {
+        do {
+            check(dc4MenuFrame(bitmap),"CONFIG preview frame");
+            if(System.nanoTime()>=deadline)return;
+            Thread.sleep(20);
+        } while(true);
+    }
+    private void backlogRows(File input,Bitmap bitmap,int count) throws Exception {
+        load(new File(input,"DC2DM04.dat"),bitmap);settle(bitmap);dc4LogClear();
+        for(int row=1;row<count;++row)nextLine(bitmap,dc4CurrentLine());
+    }
+    private void textRender(File input,File captures,Bitmap bitmap) throws Exception {
+        Rect preview=new Rect(450,525,1135,600);
+        check(dc4OpenMenu("config").isEmpty(),"open CONFIG text preview");
+        long started=System.nanoTime();
+        check(dc4MenuFrame(bitmap),"CONFIG text preview begins");
+        int[] beginning=pixels(bitmap,preview);
+        png(bitmap,new File(captures,"config-text-beginning.png"));
+        menuUntil(bitmap,started+1_000_000_000L);
+        int[] middle=pixels(bitmap,preview);
+        png(bitmap,new File(captures,"config-text-mid.png"));
+        menuUntil(bitmap,started+2_500_000_000L);
+        int[] full=pixels(bitmap,preview);
+        png(bitmap,new File(captures,"config-text-full.png"));
+        int revealed=changedPixels(beginning,full);
+        check(changedPixels(beginning,middle)>100 && changedPixels(middle,full)>100,
+              "CONFIG reveal changes text at beginning, middle and full");
+        check(revealed>800 && darkPixels(full)>300,"CONFIG preview contains rendered text pixels");
+        menuUntil(bitmap,started+2_800_000_000L);
+        check(changedPixels(full,pixels(bitmap,preview))==0,"complete CONFIG text holds steady");
+        boolean restarted=false;
+        long deadline=System.nanoTime()+15_000_000_000L;
+        do {
+            check(dc4MenuFrame(bitmap),"CONFIG repeat frame");
+            int[] current=pixels(bitmap,preview);
+            if(changedPixels(beginning,current)<revealed/3 && changedPixels(full,current)>revealed/2) {
+                png(bitmap,new File(captures,"config-text-restart.png"));
+                restarted=true;break;
+            }
+            Thread.sleep(20);
+        } while(System.nanoTime()<deadline);
+        check(restarted,"CONFIG preview automatically repeats after the full-text hold");
+
+        backlogRows(input,bitmap,7);
+        dc4LogSetCursorEnabled(true);
+        dc4LogOpen();
+        check(dc4LogFrame(bitmap),"backlog normal frame");
+        Rect body=new Rect(455,40,1110,670),firstRow=new Rect(455,45,1110,175);
+        int[] normal=pixels(bitmap,body),normalRow=pixels(bitmap,firstRow);
+        check(darkPixels(normal)>500,"backlog contains rendered dialogue text");
+        png(bitmap,new File(captures,"backlog-normal.png"));
+        check(dc4LogTouch(2,500,80).isEmpty(),"hover first backlog row");
+        check(dc4LogFrame(bitmap),"backlog selected frame");
+        check(changedPixels(normalRow,pixels(bitmap,firstRow))>100,"selected backlog row changes its text color");
+        png(bitmap,new File(captures,"backlog-selected.png"));
+        dc4LogTouch(0,1200,120);
+        check(dc4LogTouch(1,1200,120).isEmpty(),"scroll backlog to older dialogue");
+        check(dc4LogFrame(bitmap),"backlog scrolled frame");
+        check(changedPixels(normal,pixels(bitmap,body))>1000,"backlog scroll displays different dialogue");
+        png(bitmap,new File(captures,"backlog-scrolled.png"));
+        System.out.println("PASS CONFIG beginning/mid/full/hold/restart and seven copied-save backlog rows: normal/selected/scrolled");
+    }
+    private static boolean darkInk(int color) {
+        return Color.red(color)<100 && Color.green(color)<100 && Color.blue(color)<100;
+    }
+    private int[] backlogSelection(Bitmap bitmap,int visible,int selected,String phase) {
+        check(dc4LogFrame(bitmap),phase+": frame");
+        int[] frame=pixels(bitmap,new Rect(0,0,1280,720));
+        for(int slot=0;slot<visible;++slot) {
+            int white=0,lavender=0;
+            for(int y=(31+slot*133)*5/4;y<(143+slot*133)*5/4;++y)for(int x=455;x<1100;++x) {
+                int at=y*1280+x,rgb=frame[at]&0xFFFFFF;
+                if(rgb!=0xFFFFFF && rgb!=0xC8A0DC)continue;
+                if(!darkInk(frame[at-1]) && !darkInk(frame[at+1]) &&
+                   !darkInk(frame[at-1280]) && !darkInk(frame[at+1280]))continue;
+                if(rgb==0xFFFFFF)++white;else ++lavender;
+            }
+            check(slot==selected ? white>5 && lavender==0 : lavender>5,
+                  phase+": row "+slot+" white="+white+" lavender="+lavender+" selected="+selected);
+        }
+        return frame;
+    }
+    private void backlogTap(Bitmap bitmap,int slot,boolean renderDuringPress) {
+        int y=80+slot*166;
+        check(dc4LogTouch(0,500,y).isEmpty(),"backlog row press");
+        if(renderDuringPress)check(dc4LogFrame(bitmap),"backlog frame while pressed");
+        String action=dc4LogTouch(1,500,y);
+        check(action.isEmpty() || action.equals("voice"),"backlog row release: "+action);
+    }
+    private void backlogArrow(int x,int y) {
+        check(dc4LogTouch(0,x,y).isEmpty(),"backlog scroll arrow press");
+        check(dc4LogTouch(1,x,y).isEmpty(),"backlog scroll arrow release");
+    }
+    private void backlogDrag(Bitmap bitmap,int x,int fromY,int toY) {
+        check(dc4LogTouch(0,x,fromY).isEmpty(),"backlog drag press");
+        check(dc4LogTouch(2,x,toY).isEmpty(),"backlog drag move");
+        check(dc4LogFrame(bitmap),"backlog frame during drag");
+        check(dc4LogTouch(1,x,toY).isEmpty(),"backlog drag release");
+    }
+    private void backlogInput(File input,File captures,Bitmap bitmap) throws Exception {
+        backlogRows(input,bitmap,1);
+        for(int count=1;count<=4;++count) {
+            dc4LogOpen();
+            backlogSelection(bitmap,count,0,"default direct mode with "+count+" rows");
+            for(int slot=0;slot<count;++slot) {
+                dc4LogOpen();backlogTap(bitmap,slot,false);
+                int[] fast=backlogSelection(bitmap,count,slot,"tap without an intermediate frame");
+                dc4LogOpen();backlogTap(bitmap,slot,true);
+                int[] held=backlogSelection(bitmap,count,slot,"tap with an intermediate frame");
+                check(changedPixels(fast,held)==0,"row "+slot+" tap result is independent of render timing");
+            }
+            check("close".equals(dc4BackOrSidemenu(false,true)),"close backlog");
+            dc4LogOpen();backlogSelection(bitmap,count,0,"reopen resets direct selection");
+            if(count==1 || count==4)png(bitmap,new File(captures,"backlog-input-"+count+"-rows.png"));
+            if(count<4)nextLine(bitmap,dc4CurrentLine());
+        }
+        for(int count=4;count<7;++count)nextLine(bitmap,dc4CurrentLine());
+        dc4LogOpen();
+        backlogSelection(bitmap,4,0,"seven-row history opens at newest page");
+        backlogTap(bitmap,3,false);
+        int[] newest=backlogSelection(bitmap,4,3,"lower selection before scrolling");
+        backlogArrow(1200,120);
+        int[] older=backlogSelection(bitmap,4,3,"direct small up arrow preserves selection");
+        check(changedPixels(newest,older)>1000,"small up arrow changes the visible dialogue");
+        backlogArrow(1200,565);
+        check(changedPixels(newest,backlogSelection(bitmap,4,3,"direct small down arrow preserves selection"))==0,
+              "small down arrow restores the newest page");
+        backlogArrow(160,180);
+        int[] oldest=backlogSelection(bitmap,4,3,"direct large up arrow preserves selection");
+        check(changedPixels(newest,oldest)>1000,"large up arrow changes the visible dialogue");
+        backlogArrow(160,660);
+        check(changedPixels(newest,backlogSelection(bitmap,4,3,"direct large down arrow preserves selection"))==0,
+              "large down arrow restores the newest page");
+        backlogDrag(bitmap,1120,240,420);
+        check(changedPixels(older,backlogSelection(bitmap,4,3,"direct swipe to older dialogue preserves selection"))==0,
+              "one-row swipe matches one small-arrow step");
+        backlogDrag(bitmap,1120,420,240);
+        check(changedPixels(newest,backlogSelection(bitmap,4,3,"direct swipe to newer dialogue preserves selection"))==0,
+              "reverse swipe restores the newest page");
+        backlogDrag(bitmap,1200,300,143);
+        check(changedPixels(oldest,backlogSelection(bitmap,4,3,"direct thumb at top preserves selection"))==0,
+              "thumb top shows the oldest page");
+        backlogDrag(bitmap,1200,300,550);
+        check(changedPixels(newest,backlogSelection(bitmap,4,3,"direct thumb at bottom preserves selection"))==0,
+              "thumb bottom shows the newest page");
+        png(bitmap,new File(captures,"backlog-input-direct-scrolled.png"));
+
+        dc4LogSetCursorEnabled(true);
+        for(int slot:new int[]{3,1,0,2}) {
+            check(dc4LogTouch(2,500,80+slot*166).isEmpty(),"cursor hover");
+            backlogSelection(bitmap,4,slot,"cursor freely selects row "+slot);
+        }
+        check(dc4LogTouch(2,-1,-1).isEmpty(),"cursor leaves row");
+        int[] cursorNewest=backlogSelection(bitmap,4,2,"cursor selection survives leaving row");
+        dc4LogOpen();backlogSelection(bitmap,4,2,"cursor reopen preserves selection");
+        backlogArrow(1200,120);
+        check(changedPixels(cursorNewest,backlogSelection(bitmap,4,2,"cursor small arrow preserves selection"))>1000,
+              "cursor scroll changes dialogue");
+        backlogArrow(1200,565);
+        check(changedPixels(cursorNewest,backlogSelection(bitmap,4,2,"cursor reverse arrow preserves selection"))==0,
+              "cursor reverse arrow restores the page");
+        backlogArrow(160,180);backlogSelection(bitmap,4,2,"cursor page up preserves selection");
+        backlogArrow(160,660);backlogSelection(bitmap,4,2,"cursor page down preserves selection");
+        backlogDrag(bitmap,1120,240,420);backlogSelection(bitmap,4,2,"cursor swipe up preserves selection");
+        backlogDrag(bitmap,1120,420,240);
+        check(changedPixels(cursorNewest,backlogSelection(bitmap,4,2,"cursor swipe back preserves selection"))==0,
+              "cursor reverse swipe restores the page");
+        backlogDrag(bitmap,1200,300,143);backlogSelection(bitmap,4,2,"cursor thumb up preserves selection");
+        backlogDrag(bitmap,1200,300,550);backlogSelection(bitmap,4,2,"cursor thumb down preserves selection");
+        png(bitmap,new File(captures,"backlog-input-cursor-scrolled.png"));
+        dc4LogSetCursorEnabled(false);
+        backlogSelection(bitmap,4,2,"switching cursor off preserves selection");
+        check(dc4LogTouch(0,500,80+3*166).isEmpty(),"finger press with cursor off");
+        check(dc4LogTouch(2,500,80+166).isEmpty(),"finger moves to another row with cursor off");
+        backlogSelection(bitmap,4,1,"direct selection follows the finger while moving");
+        check(dc4LogTouch(1,500,80+166).isEmpty(),"finger release after moving");
+        backlogSelection(bitmap,4,1,"direct selection remains after the finger lifts");
+        check(dc4LogTouch(0,500,80).isEmpty(),"drag starts on first row");
+        check(dc4LogTouch(2,500,80+166).isEmpty(),"drag moves to second row");
+        check(dc4LogTouch(1,500,80+2*166).isEmpty(),"drag ends on third row without replaying voice");
+        backlogSelection(bitmap,4,2,"release endpoint selects the third row without an intermediate frame");
+        dc4LogSetCursorEnabled(true);
+        backlogSelection(bitmap,4,2,"switching cursor on preserves selection");
+
+        for(boolean cursor:new boolean[]{false,true}) {
+            dc4LogSetCursorEnabled(cursor);
+            if(cursor)dc4LogTouch(2,500,80+3*166);else backlogTap(bitmap,3,false);
+            backlogSelection(bitmap,4,3,"lower row before Read from here");
+            String line=dc4CurrentLine();
+            check(dc4LogTouch(0,60,100).isEmpty(),"Read from here press");
+            dc4LogTouch(1,60,100);
+            check(dc4ConfirmActive(),"Read from here requests confirmation");
+            check(dc4CancelConfirmation(),"cancel Read from here");
+            check(line.equals(dc4CurrentLine()),"cancel leaves the current dialogue unchanged");
+            backlogSelection(bitmap,4,0,"Read from here keeps top selected after cancel, cursor="+cursor);
+        }
+        png(bitmap,new File(captures,"backlog-input-read-from-here.png"));
+        dc4LogSetCursorEnabled(false);backlogTap(bitmap,3,false);
+        backlogSelection(bitmap,4,3,"lower row before clearing history");
+        dc4LogClear();
+        backlogSelection(bitmap,1,0,"clear keeps the current row selected");
+        dc4LogOpen();backlogSelection(bitmap,1,0,"reopen after clear");
+        png(bitmap,new File(captures,"backlog-input-cleared.png"));
+        System.out.println("PASS backlog input: 1-4 rows, frame-independent taps, reopen, arrows/swipes/thumb, cursor modes, Read-from-here cancel and clear");
     }
     private static double whiteDistance(Bitmap bitmap,int x) {
         double sum=0;int count=0;
@@ -991,7 +1217,7 @@ public final class Arisa32Activity {
             if(!restart)Files.delete(new File(saves,"system.dat").toPath());
             System.out.println("PASS title and Start flow "+mode);return;
         }
-        File saves=new File(root,mode.equals("minigame-entry")?mode:"roundtrip");
+        File saves=new File(root,mode.equals("minigame-entry") || mode.equals("text-render") || mode.equals("backlog-input")?mode:"roundtrip");
         if(mode.equals("menus") || mode.startsWith("minigames-") || mode.equals("minigame-entry")) {
             saves.mkdirs();
             Files.copy(new File(input,"system.dat").toPath(),new File(saves,"system.dat").toPath(),
@@ -999,6 +1225,16 @@ public final class Arisa32Activity {
         }
         init(saves,data,font);
         try {
+            if(mode.equals("text-render")) {
+                try {textRender(input,captures,bitmap);}
+                catch(Throwable failure) {png(bitmap,new File(captures,mode+"-failed.png"));throw failure;}
+                return;
+            }
+            if(mode.equals("backlog-input")) {
+                try {backlogInput(input,captures,bitmap);}
+                catch(Throwable failure) {png(bitmap,new File(captures,mode+"-failed.png"));throw failure;}
+                return;
+            }
             if(mode.equals("choices")) {
                 choices(input,saves,captures,bitmap);return;
             }

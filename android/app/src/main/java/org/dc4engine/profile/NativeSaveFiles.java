@@ -10,7 +10,7 @@ final class NativeSaveFiles {
     private NativeSaveFiles() {}
     private static int physical(String prefix, int first, int logical) {
         if (prefix.equalsIgnoreCase("DC2DM") && logical == 0) return 1;
-        if (!prefix.equalsIgnoreCase("DC2PC")) return logical+first-1;
+        if (!prefix.equalsIgnoreCase("DC2PC") && !prefix.equalsIgnoreCase("DC2TY")) return logical+first-1;
         if (logical==0) return 0;
         return logical<=3 ? logical+1 : 8+((logical-4)/5)*8+(logical-4)%5;
     }
@@ -29,7 +29,7 @@ final class NativeSaveFiles {
             if (physical == 1) return 0;
             return physical >= 4 && physical <= 103 ? physical-3 : -1;
         }
-        if (prefix.equalsIgnoreCase("DC2PC")) {
+        if (prefix.equalsIgnoreCase("DC2PC") || prefix.equalsIgnoreCase("DC2TY")) {
             if (physical==0) return 0;
             if (physical>=2 && physical<=4) return physical-1;
             if (physical<8 || physical%8>4) return -1;

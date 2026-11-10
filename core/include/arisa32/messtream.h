@@ -10,6 +10,7 @@ namespace dc4 {
 
 struct MesCommand {
     bool dc2pc = false; // Exact MES 0x9969 profile; retain the raw opcode.
+    bool dc2ty = false;
     bool dc2dm = false;
     CmdKind kind = CmdKind::Nop;
     uint32_t pos = 0;      // offset of the opcode byte within `code`
@@ -20,6 +21,7 @@ struct MesCommand {
     std::string str;                    // Str / ParamStr / Text (decoded)
     size_t size = 0;                    // total bytes consumed incl. opcode
     Opcode opcode() const { return static_cast<Opcode>(op); }
+    bool classic_dc2() const { return dc2pc || dc2ty; }
 };
 
 // Adapt recovered game operations to the engine's service vocabulary.

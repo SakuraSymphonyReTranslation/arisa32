@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)**. D.C. II Dearest Marriage is now fully playable. This release fixes DC2DM menu transitions and text layout, the DC2PC CG gallery, and COMU letter spacing in D.C.4 and Plus Harmony when using Pretendard JP Bold. The font is now bundled with the Android app. Read the [release notes](docs/releases/v0.7.1/en.md) for details and limitations. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.7.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.2)**. This release adds beta support for D.C. II To You, including menus, voices, date-change artwork, and PC-format saves with scenario titles. It also fixes DC2DM backlog touch selection and text readability. Read the [release notes](docs/releases/v0.7.2/en.md) for details and cross-save limitations. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -143,10 +143,10 @@ The build produces a universal APK containing ARM64 and ARMv7. In PowerShell, us
 
 Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| v0.7.1 APK | Minimum Android | Use |
+| v0.7.2 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Release build for normal use |
-| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
+| `Arisa32-v0.7.2.apk` | 5.0 / API 21 | Release build for normal use |
+| `Arisa32-v0.7.2-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
 
 Both APKs are universal, each containing ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both APKs.
 
@@ -182,9 +182,12 @@ The save format depends on the game:
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Native PC `.dat` files, with `.dat.arisa` companions for additional Arisa32 state |
 | D.C. II Dearest Marriage | Native PC `.dat` + `.dat.arisa` files; existing portable saves remain loadable |
+| D.C. II To You | Native PC `.dat` + `.dat.arisa` files with the compatibility limits below; existing portable saves remain loadable |
 | Profiles without native PC save support | Portable `.dc4sav` files, with preview and metadata files |
 
-Arisa32 can read and write the PC save format for the four titles above. The `.dat.arisa` companion stores additional state, including audio playback positions. PC games ignore this companion. Arisa32 can still load `.dat` files without it, but music may restart and some additional state will be unavailable.
+Arisa32 can read and write the PC save format for the five titles above. The `.dat.arisa` companion stores additional state, including BGM and looping sound-effect playback positions. The position within a dialogue voice is not saved; voice replay starts from the beginning. PC games ignore this companion. Arisa32 can still load `.dat` files without it, but music may restart and some additional state will be unavailable.
+
+For DC2TY, quicksave uses `dc2ty00.dat`, the latest manual-save copy uses `dc2ty01.dat`, and the 48 manual slots follow PC numbering: `02` through `04` on the first page, `08` through `12` on the second, then groups with an eight-number page stride. Save/Load rows show scenario titles and character icons. Tests confirm that the original readers and loader accept the save structure in isolated emulation; full scene restoration in the PC application has not been verified. Import rejects conditional overlays, background-plane chips, and nonzero background/pan offsets. See [DC2TY save limits and validation](docs/dc2ty-save-compatibility.md).
 
 For DC2DM, quicksave uses `DC2DM01.dat`, autosave uses `DC2DM02.dat`, and the 100 regular slots use `DC2DM04.dat` through `DC2DM103.dat`. Arisa32 also reads the PC latest-save copy `DC2DM03.dat`, but does not refresh that separate copy; latest-save selection also considers regular slots. Save/Load rows show scenario titles, including titles from translated executables. Menu and gallery progress is imported from `system.dat`, then stored by Arisa32 in `system-profile.dat`. Exporting global progress back to `system.dat` is not available, and loading exported slots in the PC executable has not been directly verified. See the [DC2DM validation](docs/dc2dm-save-progress-validation.md).
 

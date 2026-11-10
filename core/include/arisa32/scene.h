@@ -52,15 +52,20 @@ public:
     FontRenderer& operator=(const FontRenderer&) = delete;
     bool load(const std::string& path, int font_index, float pixel_size, bool native = true);
     bool is_pretendard_jp_bold() const { return pretendard_jp_bold_; }
+    bool is_ms_gothic() const { return ms_gothic_; }
     // Renders white glyphs starting at x0 with the given baseline.
     // pixel_size overrides the font's own size (the engine uses 22px dialogue
     // and 18px names from one face). A dark outline is drawn under the glyphs.
+    // output_scale maps logical coordinates and advances to output pixels;
+    // glyphs are rasterized at that resolution, with a one-pixel black outline.
+    // outlined=false keeps native labels that have no shadow or border plain.
     void rasterize_line(const std::u16string& text, int x0, int baseline,
                         std::vector<uint8_t>* rgba, int buf_w, int buf_h,
                         float pixel_size = 0, uint32_t rgb = 0xFFFFFF,
                         bool wide = false, uint32_t outline_rgb = 0,
                         bool fixed_grid = false, int tracking = 0,
-                        float raster_size = 0) const;
+                        float raster_size = 0, float output_scale = 1,
+                        bool outlined = true) const;
     int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false,
                       bool fixed_grid = false, int tracking = 0) const;
     int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false,
@@ -82,6 +87,7 @@ private:
     float scale_ = 0;
     float pixel_size_ = 0;
     bool pretendard_jp_bold_ = false;
+    bool ms_gothic_ = false;
 };
 
 struct Image {
@@ -264,6 +270,9 @@ public:
     bool load_script(const std::string& mes_path, const std::string& entry_label = {});
     // Seed the first authored DC2DM transition after load_script, before advance.
     bool seed_dc2dm_presentation(const std::vector<uint8_t>& rgba);
+    bool start_dc2ty_title_exit(const std::vector<uint8_t>& outgoing);
+    bool update_dc2ty_title_exit(uint32_t elapsed_ms);
+    void draw_dc2ty_title_exit(std::vector<uint8_t>* outgoing);
     // After seeding presentation, adopt the title asset the host kept playing on channel 0.
     bool seed_dc2dm_bgm(const std::string& asset);
     bool jump_to_label(const std::string& label);
@@ -289,6 +298,7 @@ public:
     void set_effect_speed(int native_0_to_11);
     void set_text_speed(int native_0_to_11);
     void set_character_volume(size_t id, int percent, bool muted = false) { scene_audio_.set_character_volume(id, percent, muted); }
+    void prepare_system_voice() { scene_audio_.prepare_system_voice(); }
     void set_latin_mode(bool latin);
     bool latin_mode() const { return latin_mode_; }
     void set_use_system_menu(bool use) { use_system_menu_ = use; }
@@ -446,8 +456,12 @@ private:
     void draw_transition(uint8_t* dst);
     void compose_scene();
     void start_dc2pc_transition(int mode);
+    void update_dc2pc_transition(uint32_t elapsed_ms);
     void finish_dc2pc_transition();
     void draw_dc2pc_transition();
+    bool start_dc2ty_transition(int mode, int parameter);
+    void tick_dc2ty_transition();
+    void draw_dc2ty_circles();
     bool start_dc2dm_transition(int mode, int speed);
     void draw_dc2dm_scene_controls();
     void clear_dc2dm_scene_controls();
@@ -464,7 +478,7 @@ private:
     double screen_effect_remaining_ms() const;
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
-    bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
+    bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error, bool ty = false);
     bool restore_dc2dm_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
     void reset_restore_transients();
     bool dispatch_timing_command(const dc4::MesCommand& c);
@@ -617,9 +631,21 @@ private:
     // separately: raw30 must not replace the source of an outgoing fade.
     std::vector<uint8_t> dc2pc_displayed_frame_, dc2pc_transition_target_;
     bool dc2pc_present_pending_ = false, dc2pc_black_ = false;
+    bool dc2ty_draw_pending_ = false;
     bool dc2pc_transition_active_ = false;
     int dc2pc_transition_mode_ = 0, dc2pc_transition_speed_ = 0;
     double dc2pc_transition_elapsed_ms_ = 0, dc2pc_transition_duration_ms_ = 0;
+    struct Dc2tyCircleTile {
+        int origin_x = 0, origin_y = 0, x = 0, y = 0;
+        int vx = 0, vy = 0, life = 0, age = 0, time = 0;
+        bool advance();
+    };
+    struct Dc2tyTransition {
+        int step = 1, progress = 0, tick_ms = 40;
+        std::vector<int16_t> mask;
+        std::vector<Dc2tyCircleTile> tiles;
+        Image source, atlas, canvas;
+    } dc2ty_transition_;
     struct Dc2dmTransition {
         std::vector<uint8_t> source, target, initial_source;
         bool active = false, pending = false, black = false;

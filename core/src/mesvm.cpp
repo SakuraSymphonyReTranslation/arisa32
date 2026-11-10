@@ -122,7 +122,7 @@ bool MesVm::bind(const MesFile& mes) {
             continue;
         if (command.kind == CmdKind::Str || command.kind == CmdKind::ParamStr) {
             const Opcode opcode = command.opcode();
-            const bool named_label = command.dc2pc ? opcode == Opcode::LEGACY_LABEL_OR_VOICE
+            const bool named_label = command.classic_dc2() ? opcode == Opcode::LEGACY_LABEL_OR_VOICE
                                                    : opcode == Opcode::LABEL ||
                                                          opcode == Opcode::LEGACY_LABEL_OR_VOICE ||
                                                          opcode == Opcode::LEGACY_LABEL_DM;
@@ -203,7 +203,7 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     }
     for (const auto& variable : snapshot.variables) {
         if (!snapshot_variable_valid(variable.first.first, variable.first.second, variable.second,
-                                     mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969))
+                                     mes_uses_classic_dc2(mes_->dialect, mes_->version)))
             return reject("MES VM snapshot contains an invalid variable bank, index, or value");
     }
 
@@ -359,7 +359,7 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
     const bool dc2dm = mes_ && mes_->dialect == MesDialect::ClassicDM;
     if (dc2dm && bank == 10) return index <= 20 ? read_variable(100,index) : 0;
     if (dc2dm && bank == 100 && index >= 100) return 0;
-    const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
+    const bool dc2pc = mes_ && mes_uses_classic_dc2(mes_->dialect, mes_->version);
     if (dc2pc && bank >= 200 && bank < 210) {
         if (index >= 97) return 0;
         uint32_t bits = 0;
@@ -399,7 +399,7 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
     const bool dc2dm = mes_ && mes_->dialect == MesDialect::ClassicDM;
     if (dc2dm && bank == 10) { if (index <= 20) write_variable(100,index,value); return; }
     if (dc2dm && bank == 100 && index >= 100) return;
-    const bool dc2pc = mes_ && mes_->dialect == MesDialect::ClassicDC2 && mes_->version == 0x9969;
+    const bool dc2pc = mes_ && mes_uses_classic_dc2(mes_->dialect, mes_->version);
     if (dc2pc && bank >= 200 && bank < 210) {
         if (index >= 97) return;
         const uint32_t bits=uint32_t(value);
@@ -416,7 +416,8 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
         return;
     }
     if (dc2pc) {
-        if (bank == 99 && !system_read_only(index)) variables_[{bank,index}] = value;
+        const bool ty_breakup_setting = mes_->version == 0x5F69 && index == 20;
+        if (bank == 99 && (!system_read_only(index) || ty_breakup_setting)) variables_[{bank,index}] = value;
         return;
     }
     if (bank == 93) {
@@ -644,8 +645,8 @@ bool MesVm::next(MesCommand* out) {
                 if (!consume_companion(&caption, "choice text")) return false;
                 if (caption.kind != CmdKind::Text && caption.kind != CmdKind::Str && caption.kind != CmdKind::ParamStr)
                     return fail("expected choice text", caption.pos);
-                if (raw.dc2pc && caption.op != 0x4D)
-                    return fail("expected DC2PC choice caption", caption.pos);
+                if (raw.classic_dc2() && caption.op != 0x4D)
+                    return fail("expected classic DC2 choice caption", caption.pos);
                 choices_.push_back({command.str, caption.str});
                 continue;
             }

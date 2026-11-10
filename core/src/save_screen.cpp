@@ -193,7 +193,8 @@ bool SaveScreen::load(const std::string& data_dir, std::string* error) {
     dc4scene::Image save_back, load_back, chip, system_goto;
     dc4::MesFile start;
     dc2pc_ = start.load_file(data_dir+"/MES/start.mes") &&
-        dc4::mes_opcode_profile(start.dialect,start.version).id==dc4::MesProfileId::DC2PC;
+        dc4::mes_uses_classic_dc2(start.dialect,start.version);
+    dc2ty_ = dc2pc_ && start.version == 0x5F69;
     dc4::MesFile main;
     dc2dm_ = main.load_file(data_dir + "/MES/main.mes") &&
         main.dialect == dc4::MesDialect::ClassicDM && main.version == 0x009D72;
@@ -205,6 +206,9 @@ bool SaveScreen::load(const std::string& data_dir, std::string* error) {
            !read_crx(data_dir,"saveandload_chip00.CRX",576,288,&chip,error) ||
            !read_crx(data_dir,"charactericom.CRX",896,480,&system_goto,error) ||
            !read_crx(data_dir,"common_load_chip00.CRX",456,272,&common_chip_,error))return false;
+        if(dc2ty_ &&
+           (!read_crx(data_dir,"save_BG01.CRX",800,600,&save_back_later_,error) ||
+            !read_crx(data_dir,"load_BG01.CRX",800,600,&load_back_later_,error)))return false;
         save_back_=std::move(save_back);load_back_=std::move(load_back);
         chip_=std::move(chip);system_goto_=std::move(system_goto);loaded_=true;return true;
     }
@@ -282,6 +286,12 @@ int SaveScreen::slot_index(int page, int visible_index) {
     return page * kSlotsPerPage + visible_index;
 }
 
+int SaveScreen::dc2pc_slot_index(int visible) const {
+    if (visible < 0 || visible >= 5 || ((!dc2ty_ || page_ == 0) && visible < 2)) return -1;
+    // TY reserves Quick/New only on page one: three manual rows, then nine pages of five.
+    return page_ * (dc2ty_ ? 5 : 3) + visible - 2;
+}
+
 int SaveScreen::dc2dm_slot_index(int visible) const {
     // The original first page reserves Quick/Auto/New before manual saves.
     // An extra page preserves existing host saves beyond the native 97 slots.
@@ -291,7 +301,8 @@ int SaveScreen::dc2dm_slot_index(int visible) const {
 
 SaveAction SaveScreen::visible_slot_action(int visible) const {
     if (visible < 0 || visible >= kSlotsPerPage) return {};
-    if ((dc2dm_ && page_ == 0 && visible < 3) || (dc2pc_ && visible < 2)) {
+    if ((dc2dm_ && page_ == 0 && visible < 3) ||
+        (dc2pc_ && (!dc2ty_ || page_ == 0) && visible < 2)) {
         if (visible == 0) {
             if (mode_ == SaveMode::Save) return {SaveActionType::QuickSave};
             return quick_ ? SaveAction{SaveActionType::QuickLoad} : SaveAction{};
@@ -303,7 +314,7 @@ SaveAction SaveScreen::visible_slot_action(int visible) const {
     }
     if (dc2pc_ && visible >= 5) return {};
     const int index = dc2dm_ ? dc2dm_slot_index(visible)
-        : dc2pc_ ? page_ * 3 + visible - 2 : slot_index(page_, visible);
+        : dc2pc_ ? dc2pc_slot_index(visible) : slot_index(page_, visible);
     if (index < 0 || (mode_ == SaveMode::Load && !occupied_[size_t(index)])) return {};
     return {SaveActionType::Slot, index};
 }
@@ -322,7 +333,7 @@ int SaveScreen::slot_hit(int x, int y) const {
     }
     if(dc2pc_) {
         const int nx=int(std::floor((x-160)/1.2)),ny=int(std::floor(y/1.2));
-        for(int row=0;row<3;++row)if(contains(nx,ny,444,267+row*85,732,339+row*85))return page_*3+row;
+        for(int row=0;row<5;++row)if(contains(nx,ny,444,97+row*85,732,169+row*85))return dc2pc_slot_index(row);
         return -1;
     }
     for (int visible = 0; visible < kSlotsPerPage; ++visible) {
@@ -367,8 +378,10 @@ SaveAction SaveScreen::hit_test(int x, int y) const {
         if(contains(nx,ny,171,437,243,477))return {SaveActionType::Page,(page_+9)%10};
         if(contains(nx,ny,280,437,352,477))return {SaveActionType::Page,(page_+1)%10};
         if(contains(nx,ny,233,531,345,563))return {SaveActionType::Back};
-        if(contains(nx,ny,444,97,732,169) && (mode_==SaveMode::Save || quick_))return {mode_==SaveMode::Save?SaveActionType::QuickSave:SaveActionType::QuickLoad};
-        if(contains(nx,ny,444,182,732,254) && mode_==SaveMode::Load && latest_)return {SaveActionType::LatestLoad};
+        if(!dc2ty_ || page_==0) {
+            if(contains(nx,ny,444,97,732,169) && (mode_==SaveMode::Save || quick_))return {mode_==SaveMode::Save?SaveActionType::QuickSave:SaveActionType::QuickLoad};
+            if(contains(nx,ny,444,182,732,254) && mode_==SaveMode::Load && latest_)return {SaveActionType::LatestLoad};
+        }
         return {};
     }
     if (contains(x, y, 772, 28, 798, 56))
@@ -775,17 +788,20 @@ void SaveScreen::draw_dc2pc(const std::vector<SaveSlot>& slots,int mx,int my,boo
                 blend(image.rgba.data()+(size_t(iy)*image.w+ix)*4,frame->data()+(size_t(dy+py)*kWidth+dx+px)*4);
         }
     };
-    native_blit(mode_==SaveMode::Save?save_back_:load_back_,0,0,800,600,0,0);
+    const bool special_rows = !dc2ty_ || page_ == 0;
+    const auto& background = mode_ == SaveMode::Save
+        ? (special_rows ? save_back_ : save_back_later_)
+        : (special_rows ? load_back_ : load_back_later_);
+    native_blit(background,0,0,800,600,0,0);
     const auto hover=confirming()||choosing_icon_?SaveAction{}:hit_test(mx,my);
     const auto active=[&](SaveAction a){return same_action(hover,a) && a.type!=SaveActionType::None;};
     for(int row=0;row<5;++row) {
-        const int index=page_*3+row-2,y=97+row*85;
-        const SaveSlot* slot=row==0?&quick_slot_:row==1?&latest_slot_:
+        const int index=dc2pc_slot_index(row),y=97+row*85;
+        const SaveSlot* slot=special_rows&&row==0?&quick_slot_:special_rows&&row==1?&latest_slot_:
             size_t(index)<slots.size()?&slots[size_t(index)]:nullptr;
         const bool occupied=slot && slot->occupied;
-        SaveAction action=row==0?SaveAction{mode_==SaveMode::Save?SaveActionType::QuickSave:SaveActionType::QuickLoad}:
-            row==1?SaveAction{SaveActionType::LatestLoad}:SaveAction{SaveActionType::Slot,index};
-        const int sy=row==0?0:row==1?72:144;
+        const SaveAction action=visible_slot_action(row);
+        const int sy=special_rows&&row<2?row*72:144;
         native_blit(chip_,active(action)?288:0,sy,288,72,444,y);
         if(occupied && slot->character_icon>=0 && slot->character_icon<16)
             native_blit(system_goto_,slot->character_icon*56,312,56,56,454,y+8);

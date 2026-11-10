@@ -54,6 +54,7 @@ struct Engine {
     bool presentation_reveal = false;
     bool presentation_commit_due = false;
     bool presentation_wait_voice = false;
+    bool dc2ty_title_exit_pending = false;
     bool quitting = false;
     std::string data_dir;
     JavaVM* vm = nullptr;
@@ -79,6 +80,7 @@ struct Engine {
     std::vector<dc4ui::LogRow> log_rows;
     int log_scroll = 0;
     bool log_thumbs = true;
+    bool log_cursor_enabled = false;
     int log_mx = -1, log_my = -1;
     int log_drag_y = -1, log_drag_base = 0;
     bool log_drag_thumb = false, log_drag_moved = false;
@@ -100,6 +102,7 @@ struct Engine {
     dc4::MoviePlayer movie;
     uint64_t movie_frame_serial = UINT64_MAX;
     bool menu_open = true, in_game = false, replay = false, movie_from_scene = false;
+    bool startup_movie = false, startup_title_voice_pending = false;
     bool menu_return = false, current_was_read = false;
     dc4ui::SystemMenuPage return_page = dc4ui::SystemMenuPage::Title;
     Clock::time_point tick = Clock::now();
@@ -169,10 +172,11 @@ void apply_config(Engine* e) {
             e->scene->set_variable(99,20,e->menu.variable(99,20));
         }
         for (size_t i = 0; i < c.character_volume.size(); ++i) {
-            int vol = c.character_volume[i] > 0 ? c.character_volume[i] : 100;
+            int vol = e->menu.is_dc2ty() ? c.character_volume[i]
+                : (c.character_volume[i] > 0 ? c.character_volume[i] : 100);
             e->scene->set_character_volume(i, vol, c.character_muted[i]);
         }
-        e->scene->set_character_volume(15, 100, false);
+        if (!e->menu.is_dc2ty()) e->scene->set_character_volume(15, 100, false);
     }
 }
 
@@ -288,6 +292,8 @@ bool play_system_voice(Engine* e, int event_id) {
     const auto cfg = e->menu.config();
     if (!cfg.voice_enabled || !cfg.master_enabled) return false;
     std::string asset = e->menu.system_voice(event_id);
+    if (asset.empty()) return false;
+    if (e->menu.is_dc2ty() && e->scene) e->scene->prepare_system_voice();
     e->audio.set_channel_user_volume(8, 100);
     const bool played = play_row_voice(e, asset);
     if (played) LOGI("system voice event=%d asset=%s", event_id, asset.c_str());
@@ -409,9 +415,14 @@ void refresh_menu_saves(Engine* e) {
     std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
     for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
         if (dir.empty()) continue;
-        for (const auto& sub : {"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"}) {
-            if (std::filesystem::exists(dir + sub)) {
-                e->menu.load_system_dat(dir + sub);
+        const std::vector<std::string> paths = e->menu.is_dc2ty()
+            ? std::vector<std::string>{"/system.dat", "/savegame/system.dat", "/savedata/system.dat",
+                "/advdata/savegame/system.dat", "/dacapo2_ty/dacapo2_ty/system.dat"}
+            : std::vector<std::string>{"/system.dat", "/SAVEDATA/system.dat", "/savedata/system.dat"};
+        for (const auto& sub : paths) {
+            const auto path = e->menu.is_dc2ty() ? dc4::resolve_asset(dir + sub) : dir + sub;
+            if (std::filesystem::exists(path)) {
+                e->menu.load_system_dat(path);
             }
         }
     }
@@ -442,7 +453,11 @@ void begin_dc2pc_boundary(Engine* e, uint32_t wait_ms, bool reveal, std::functio
     bool black = true;
     for (size_t i=0; i+3<outgoing.size(); i+=4)
         if (outgoing[i] || outgoing[i+1] || outgoing[i+2]) { black=false; break; }
-    if (title_particles && e->menu.is_dc2dm())
+    if (title_particles && e->menu.is_dc2ty() && e->scene->start_dc2ty_title_exit(outgoing))
+        e->presentation.start_custom_outgoing(std::move(outgoing),e->menu.variable(99,12),wait_ms,
+            [e](uint32_t elapsed) { return e->scene->update_dc2ty_title_exit(elapsed); },
+            [e](std::vector<uint8_t>* pixels) { e->scene->draw_dc2ty_title_exit(pixels); });
+    else if (title_particles && e->menu.is_dc2dm())
         e->presentation.start_dc2dm_title(std::move(outgoing),dc4ui::dc2dm_title_particle_sheet(e->data_dir));
     else e->presentation.start(std::move(outgoing),e->menu.variable(99,12),wait_ms,!black);
     e->presentation_commit = std::move(commit);
@@ -564,7 +579,7 @@ std::string restore_save(Engine* e, const std::string& path) {
             finish_restore(e,true);
             e->menu.set_in_game(true);
         });
-        if (e->menu.is_dc2dm()) e->presentation_wait_voice = play_system_voice(e,23);
+        if (e->menu.is_dc2dm() || e->menu.is_dc2ty()) e->presentation_wait_voice = play_system_voice(e,23);
         return {};
     }
     if (!e->scene->load_state(path)) return "Load failed: " + e->scene->last_error();
@@ -585,11 +600,11 @@ void open_menu(Engine* e, dc4ui::SystemMenuPage page) {
     menu_page_changed(e, before);
 }
 
-bool play_menu_music(Engine* e, std::string asset, bool loop) {
+bool play_menu_music(Engine* e, std::string asset, bool loop, bool restart = false) {
     if (asset.empty()) return false;
     std::replace(asset.begin(),asset.end(),'\\','/');
     if (std::filesystem::path(asset).extension().empty()) asset += ".pcm";
-    if (e->current_bgm == asset && e->audio.channel_playing(0)) return true;
+    if (!restart && e->current_bgm == asset && e->audio.channel_playing(0)) return true;
     int first = 0, last = 0;
     if(e->menu.scene_ui_script() != "start.mes") dc4::bgm_loop_for(asset,&first,&last);
     e->audio.set_group_volume(dc4::AudioGroup::Bgm,100);
@@ -602,6 +617,8 @@ bool play_menu_music(Engine* e, std::string asset, bool loop) {
 
 void return_to_title_now(Engine* e) {
     using P = dc4ui::SystemMenuPage;
+    e->dc2ty_title_exit_pending = false;
+    e->startup_movie = e->startup_title_voice_pending = false;
     e->movie.close();
     if (e->menu.is_dc2dm()) e->movie_from_scene = false;
     e->movie_suspended = false;
@@ -636,6 +653,10 @@ void return_to_title_now(Engine* e) {
     e->scene->finish_replay();
     e->menu.set_in_game(false);
     open_menu(e, P::Title);
+    if (e->menu.is_dc2ty()) {
+        e->menu.open_title_intro();
+        e->startup_title_voice_pending = true;
+    }
     e->menu_music = false;
     play_menu_music(e, e->menu.title_music(), true);
 }
@@ -673,8 +694,10 @@ void return_to_title(Engine* e) {
         return;
     }
     if (dc2pc_menu(e) && e->in_game) {
-        // advmenu/go_title: five 200 ms ticks, then a black-out before transfer.
-        begin_dc2pc_boundary(e,1000,true,[e] { return_to_title_now(e); },e->menu.is_dc2dm());
+        // TY advmenu/go_title waits five 200 ms ticks before raw0D(14,4).
+        e->dc2ty_title_exit_pending = e->menu.is_dc2ty();
+        begin_dc2pc_boundary(e,1000,!e->menu.is_dc2ty(),[e] { return_to_title_now(e); },
+            e->menu.is_dc2dm() || e->menu.is_dc2ty());
     } else return_to_title_now(e);
 }
 
@@ -683,6 +706,10 @@ void finish_scenario_menu(Engine* e, dc4ui::SystemMenuPage page) {
     e->scene->finish_replay();
     e->audio.stop_all(); e->menu_music = false;
     save_profile(e); open_menu(e,page);
+    if (page == dc4ui::SystemMenuPage::Title && e->menu.is_dc2ty()) {
+        e->menu.open_title_intro();
+        e->startup_title_voice_pending = true;
+    }
     if (page == dc4ui::SystemMenuPage::Scenes) e->menu.resume_scenes();
     if (page != dc4ui::SystemMenuPage::Music) play_menu_music(e,e->menu.title_music(),true);
 }
@@ -754,11 +781,20 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
                     e->audio.set_device_paused(true);
                 }
                 jstring jpath = env->NewStringUTF(full_path.c_str());
+                // Startup runs on the UI thread, where Java can complete synchronously.
+                e->movie_playing_in_java = true;
                 env->CallVoidMethod(e->activity, play_method, jpath);
+                const bool failed = env->ExceptionCheck();
+                if (failed) {
+                    env->ExceptionClear();
+                    e->movie_playing_in_java = false;
+                    e->audio.set_device_paused(false);
+                    if (error) *error = "Java movie playback failed";
+                }
                 env->DeleteLocalRef(jpath);
                 env->DeleteLocalRef(cls);
                 if (attached) e->vm->DetachCurrentThread();
-                e->movie_playing_in_java = true;
+                if (failed) return false;
                 LOGI("movie playing in Java MediaPlayer: %s", full_path.c_str());
                 return true;
             }
@@ -769,6 +805,35 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
 
     dc4::AudioEngine* movie_audio = is_kotori ? nullptr : (e->audio.channel_playing(0) ? nullptr : &e->audio);
     return e->movie.open_file(full_path, movie_audio, error);
+}
+
+bool finish_movie_playback(Engine* e, bool skipped = false) {
+    const bool from_scene = e->movie_from_scene;
+    const double remaining = skipped ? e->movie.duration() - e->movie.time() : 0;
+    e->movie.close();
+    e->movie_from_scene = false;
+    e->movie_playing_in_java = false;
+    e->movie_suspended = false;
+    if (e->startup_movie) {
+        e->startup_movie = false;
+        e->in_game = e->replay = false;
+        open_menu(e, dc4ui::SystemMenuPage::Title);
+        e->menu.open_title_intro();
+        e->startup_title_voice_pending = true;
+        play_menu_music(e, e->menu.title_music(), true);
+        e->tick = Clock::now();
+        return true;
+    }
+    if (remaining > 0 && e->audio.channel_playing(0))
+        e->audio.seek_channel_seconds(0, e->audio.channel_position_seconds(0) + remaining);
+    if (from_scene) {
+        e->scene->finish_movie();
+        return advance_scene(e);
+    }
+    if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music)
+        play_menu_music(e, e->menu.title_music(), true);
+    e->tick = Clock::now();
+    return true;
 }
 
 std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
@@ -792,6 +857,7 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
     case A::Save: case A::Load:
         if (!e->scene->save_load_allowed()) return {};
         if (action.type == A::Save && !e->in_game) return {};
+        if (action.voice_event) play_system_voice(e, action.voice_event);
         // dc4SlotsOpen owns the entry announcement after Java scans the slots.
         // Starting it here too repeats the opening words after that scan.
         e->menu_return = e->menu_open; e->return_page = e->menu.page(); e->menu_open = false;
@@ -809,10 +875,11 @@ std::string menu_action(Engine* e, const dc4ui::SystemMenuAction& action) {
     case A::PlayVoice:
         apply_config(e);
         save_profile(e);
+        if (e->menu.is_dc2ty() && e->scene) e->scene->prepare_system_voice();
         e->audio.set_channel_user_volume(8, 100);
         return play_row_voice(e,action.asset) ? "" : "Voice unavailable";
     case A::PlayMusic: {
-        e->menu_music = play_menu_music(e,action.asset,e->menu.variable(100,26) == 0);
+        e->menu_music = play_menu_music(e,action.asset,e->menu.variable(100,26) == 0,true);
         return e->menu_music ? "" : "Music unavailable: " + action.asset;
     }
     case A::StopMusic: e->audio.stop_bgm(); e->menu_music = false; e->current_bgm.clear(); return {};
@@ -872,27 +939,21 @@ void tick_engine(Engine* e) {
     }
     if (e->movie.active() && !e->movie_suspended) {
         e->movie.update(elapsed);
-        if (e->movie.finished()) {
-            const bool from_scene = e->movie_from_scene;
-            e->movie.close();
-            e->movie_from_scene = false;
-            if (from_scene) {
-                e->scene->finish_movie();
-                advance_scene(e);
-            } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
-                play_menu_music(e, e->menu.title_music(), true);
-            }
-        }
+        if (e->movie.finished()) finish_movie_playback(e);
         return;
     }
     if (e->menu_open && e->menu_music && !e->audio.channel_playing(0)) {
         e->menu_music = false;
-        menu_action(e,e->menu.activate("next"));
+        menu_action(e,e->menu.music_finished());
     }
     if (e->menu_open && e->menu.page() == dc4ui::SystemMenuPage::Music)
         e->menu.set_music_position(int(100*e->audio.channel_fraction(0)));
     if (e->menu_open) {
         e->menu.update(elapsed);
+        if (e->startup_title_voice_pending && e->menu.title_voice_ready()) {
+            e->startup_title_voice_pending = false;
+            play_system_voice(e, 1);
+        }
         return;
     }
     if (!e->in_game) return;
@@ -1035,13 +1096,13 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         e->in_game = true;
     } else {
         std::string parent_dir = std::filesystem::path(e->data_dir).parent_path().string();
-        const bool dc2pc = e->menu.scene_ui_script() == "start.mes";
+        const bool classic_dc2 = e->menu.is_dc2pc() || e->menu.is_dc2ty();
         const auto load_android_profiles = [&] {
             for (const auto& dir : {e->data_dir, e->save_dir})
                 if (std::filesystem::exists(dir + "/system-profile.dat"))
                     e->menu.load_profile(dir + "/system-profile.dat");
         };
-        if (dc2pc) load_android_profiles();
+        if (classic_dc2) load_android_profiles();
         else {
             // Retain the existing import order and discovery for other games.
             for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
@@ -1061,14 +1122,21 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
             }
             return root / name;
         };
+        std::set<std::string> imported_paths;
         for (const auto& dir : {e->save_dir, e->data_dir, parent_dir}) {
-            if (!dc2pc || dir.empty()) continue;
+            if (!classic_dc2 || dir.empty()) continue;
             const std::filesystem::path root(dir);
-            for (const auto& folder : {root, child_ci(root, "savedata"),
-                    child_ci(child_ci(root, "advdata"), "savedata")}) {
+            std::vector<std::filesystem::path> folders = {root, child_ci(root, "savedata"),
+                child_ci(child_ci(root, "advdata"), "savedata")};
+            if (e->menu.is_dc2ty()) {
+                folders.push_back(child_ci(root, "savegame"));
+                folders.push_back(child_ci(child_ci(root, "advdata"), "savegame"));
+                folders.push_back(child_ci(child_ci(root, "dacapo2_ty"), "dacapo2_ty"));
+            }
+            for (const auto& folder : folders) {
                 const auto path = child_ci(folder, "system.dat");
                 std::string import_error;
-                if (!std::filesystem::is_regular_file(path)) continue;
+                if (!std::filesystem::is_regular_file(path) || !imported_paths.insert(path.string()).second) continue;
                 if (e->menu.load_system_dat(path.string(), &import_error)) {
                     imported_pc_progress = true;
                     LOGI("Imported PC progress: %s", path.string().c_str());
@@ -1137,9 +1205,20 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene->set_auto_save_path(dc4::auto_save_target(e->save_dir,e->scene->save_format_version()).string());
     if (menu_ok) {
         apply_config(e);
-        open_menu(e, dc4ui::SystemMenuPage::Title);
-        play_menu_music(e, e->menu.title_music(), true);
-        LOGI("title ready");
+        const auto startup = e->menu.startup_movie();
+        if (!startup.empty()) {
+            e->startup_movie = true;
+            e->menu_open = e->in_game = false;
+            if (!play_movie_resource(e, startup, false, &err)) {
+                LOGE("startup movie: %s", err.c_str());
+                finish_movie_playback(e);
+            }
+            LOGI("startup opening ready");
+        } else {
+            open_menu(e, dc4ui::SystemMenuPage::Title);
+            play_menu_music(e, e->menu.title_music(), true);
+            LOGI("title ready");
+        }
     } else {
         e->audio.set_master_volume(100);
         e->audio.set_user_volume(dc4::AudioGroup::Bgm, 80);
@@ -1241,24 +1320,7 @@ Java_org_dc4engine_Dc4Activity_dc4MenuTouch(JNIEnv* env,jobject,jint action,jint
             // Prevent accidental instant skip from the touch-up of the previous dialog/button.
             // Require at least 1.0 second of playback before allowing touch-to-skip.
             if (e->movie.time() >= 1.0) {
-                const bool from_scene = e->movie_from_scene;
-                const double movie_time = e->movie.time();
-                const double movie_duration = e->movie.duration();
-                e->movie.close();
-                e->movie_from_scene = false;
-                if (e->audio.channel_playing(0)) {
-                    const double remaining = movie_duration - movie_time;
-                    if (remaining > 0) {
-                        const double current_pos = e->audio.channel_position_seconds(0);
-                        e->audio.seek_channel_seconds(0, current_pos + remaining);
-                    }
-                }
-                if (from_scene) {
-                    e->scene->finish_movie();
-                    advance_scene(e);
-                } else if (e->menu_open && e->menu.page() != dc4ui::SystemMenuPage::Music) {
-                    play_menu_music(e, e->menu.title_music(), true);
-                }
+                finish_movie_playback(e, true);
             }
         }
         return env->NewStringUTF("");
@@ -1367,18 +1429,7 @@ Java_org_dc4engine_Dc4Activity_dc4Advance(JNIEnv*, jobject) {
     if (e->scene->sidebar_visible()) { e->scene->set_sidebar_visible(false); return JNI_TRUE; }
     if (e->scene->reviewing_dialogue()) { e->scene->return_to_dialogue(); return JNI_TRUE; }
     if (e->movie.active()) {
-        const double movie_time = e->movie.time();
-        const double movie_duration = e->movie.duration();
-        e->movie.close();
-        if (e->audio.channel_playing(0)) {
-            const double remaining = movie_duration - movie_time;
-            if (remaining > 0) {
-                const double current_pos = e->audio.channel_position_seconds(0);
-                e->audio.seek_channel_seconds(0, current_pos + remaining);
-            }
-        }
-        e->scene->finish_movie();
-        return advance_scene(e);
+        return finish_movie_playback(e, true);
     }
     if (e->scene->waiting_for_time()) {
         if (e->scene->effect_pck_active()) {
@@ -1517,8 +1568,8 @@ Java_org_dc4engine_Dc4Activity_dc4SetPaused(JNIEnv* env, jobject, jboolean pause
     if (paused) {
         save_profile(e);
         const auto path = jstr_to_std(env, checkpoint);
-        if (!path.empty() && e->scene->save_load_allowed()) {
-            if (e->in_game && !e->scene->scene_ended()) {
+        if (!path.empty() && (e->dc2ty_title_exit_pending || e->scene->save_load_allowed())) {
+            if (e->in_game && !e->dc2ty_title_exit_pending && !e->scene->scene_ended()) {
                 if (!e->scene->save_state(path)) {
                     message = "Cannot keep paused session: " + e->scene->last_error();
                     std::error_code ec; std::filesystem::remove(path,ec);
@@ -1612,16 +1663,26 @@ Java_org_dc4engine_Dc4Activity_dc4SkipAdvance(JNIEnv*, jobject) {
     return advance_scene(e) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jstring JNICALL
-Java_org_dc4engine_Dc4Activity_dc4Save(JNIEnv* env, jobject, jstring path) {
+static jstring save_with_icon(JNIEnv* env, jstring path, int icon) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused || !e->in_game) return env->NewStringUTF("Start a game before saving");
     if (e->presentation.active()) return env->NewStringUTF("Scene transition in progress");
-    if (!e->scene->save_state(jstr_to_std(env, path)))
+    const auto version = e->scene->save_format_version();
+    const bool native_icon = (version == 0x9969 || version == 0x5F69) && icon >= 0 && icon < 16;
+    const int previous_icon = e->scene->variable(9,20);
+    if (native_icon) e->scene->set_variable(9,20,icon);
+    if (!e->scene->save_state(jstr_to_std(env, path))) {
+        if (native_icon) e->scene->set_variable(9,20,previous_icon);
         return env->NewStringUTF(("Save failed: " + e->scene->last_error()).c_str());
+    }
     sync_progress(e); save_profile(e);
-    if (e->menu.is_dc2dm()) play_system_voice(e,22);
+    if (e->menu.is_dc2dm() || e->menu.is_dc2ty()) play_system_voice(e,22);
     return env->NewStringUTF("");
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Dc4Activity_dc4Save(JNIEnv* env, jobject, jstring path) {
+    return save_with_icon(env,path,-1);
 }
 
 JNIEXPORT jstring JNICALL
@@ -1795,12 +1856,24 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(JNIEnv* env, jobject, jint action, 
 
 // ------------------------------------------------------------ Log screen
 
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Dc4Activity_dc4LogSetCursorEnabled(JNIEnv*, jobject, jboolean enabled) {
+    Engine* e = g_engine;
+    if (!e || e->log_cursor_enabled == bool(enabled)) return;
+    e->log_cursor_enabled = bool(enabled);
+    e->log_mx = e->log_my = -1;
+    e->log_drag_y = -1;
+    e->log_drag_moved = e->log_drag_thumb = false;
+    e->log_pressed = 0;
+}
+
 // Opens the Log screen: scroll snaps to the newest row (native behavior).
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogOpen(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e) return;
     e->log_scroll = e->log.last_scroll(e->log_rows.size());
+    if (!e->log_cursor_enabled) e->log.select_top(e->log_scroll, e->log_rows.size());
     e->log_mx = e->log_my = -1;
     e->log_drag_y = -1;
     e->log_drag_moved = false;
@@ -1867,6 +1940,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
         return voice >= 0 ? 10000+voice : 0;
     };
     if (action == 0) {
+        e->log.select_at(x, y, e->log_scroll, count);
         e->log_pressed = control_at(x,y);
         e->log_drag_y = y;
         e->log_drag_base = e->log_scroll;
@@ -1875,7 +1949,10 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
         return env->NewStringUTF("");
     }
     if (action == 2) {
-        if (e->log_drag_y < 0) return env->NewStringUTF("");
+        if (e->log_drag_y < 0) {
+            e->log.select_at(x, y, e->log_scroll, count);
+            return env->NewStringUTF("");
+        }
         if (std::abs(y - e->log_drag_y) > 12) e->log_drag_moved = true;
         if (e->log_drag_thumb) {
             e->log_scroll = e->log.thumb_scroll(y, count);
@@ -1884,16 +1961,22 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
             const int delta = (y - e->log_drag_y) / e->log.row_pitch();
             e->log_scroll = std::clamp(e->log_drag_base - delta, 0, e->log.last_scroll(count));
         }
+        e->log.select_at(x, y, e->log_scroll, count);
         return env->NewStringUTF("");
     }
     const bool had_press = e->log_drag_y >= 0;
+    if (action == 1 && had_press) e->log.select_at(x, y, e->log_scroll, count);
     e->log_drag_y = -1;
     e->log_mx = e->log_my = -1;
     if (action != 1 || !e->log_drag_moved) {
         e->log_drag_thumb = false;
-        if (action != 1) return env->NewStringUTF("");
+        if (action != 1) {
+            e->log_pressed = 0;
+            return env->NewStringUTF("");
+        }
     } else {
         e->log_drag_thumb = false;
+        e->log_pressed = 0;
         return env->NewStringUTF("");
     }
     const int pressed = e->log_pressed;
@@ -1910,6 +1993,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, ji
     }
     const int jump = e->log.jump_hit(x, y, e->log_scroll, count);
     if (jump >= 0) {
+        e->log.select_top(e->log_scroll, count);
         return env->NewStringUTF(request_confirm(e,dc4ui::ConfirmKind::SceneJump,[e,jump]{
             const auto error=jump_to_row(e,jump);return error.empty()?std::string("jump"):error;
         }).c_str());
@@ -2093,6 +2177,10 @@ JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4Save(JNIEnv* env, jobject thiz, jstring path) {
     return Java_org_dc4engine_Dc4Activity_dc4Save(env, thiz, path);
 }
+JNIEXPORT jstring JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SaveWithIcon(JNIEnv* env, jobject, jstring path, jint icon) {
+    return save_with_icon(env,path,icon);
+}
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4SaveLoadAllowed(JNIEnv*, jobject) {
     return g_engine && g_engine->scene && !g_engine->presentation.active() && g_engine->scene->save_load_allowed() ? JNI_TRUE : JNI_FALSE;
@@ -2142,6 +2230,11 @@ JNIEXPORT void JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4LogOpen(JNIEnv* env, jobject thiz) {
     Java_org_dc4engine_Dc4Activity_dc4LogOpen(env, thiz);
 }
+
+JNIEXPORT void JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4LogSetCursorEnabled(JNIEnv* env, jobject thiz, jboolean enabled) {
+    Java_org_dc4engine_Dc4Activity_dc4LogSetCursorEnabled(env, thiz, enabled);
+}
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4LogClear(JNIEnv* env, jobject thiz) {
     Java_org_dc4engine_Dc4Activity_dc4LogClear(env, thiz);
@@ -2158,17 +2251,9 @@ JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4MovieCompleted(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e) return;
-    if (e->menu.is_dc2dm() && !e->movie_playing_in_java) return;
-    e->movie_playing_in_java = false;
+    if (!e->movie_playing_in_java) return;
     e->audio.set_device_paused(false);
-    const bool from_scene = e->movie_from_scene;
-    if (e->menu.is_dc2dm()) e->movie_from_scene = false;
-    if (from_scene && e->scene) {
-        e->scene->finish_movie();
-        advance_scene(e);
-    } else {
-        e->tick = Clock::now();
-    }
+    finish_movie_playback(e);
 }
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4MovieCompleted(JNIEnv* env, jobject thiz) {

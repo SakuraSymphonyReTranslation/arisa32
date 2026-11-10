@@ -132,10 +132,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native String dc4Speaker();
     private native boolean dc4SkipAdvance();
     private native String dc4Save(String path);
+    private native String dc4SaveWithIcon(String path, int characterIcon);
     private native boolean dc4SaveLoadAllowed();
     private native String dc4Load(String path);
     private native void dc4RenderPreview(Bitmap bitmap);
     private native void dc4LogOpen();
+    private native void dc4LogSetCursorEnabled(boolean enabled);
     private native boolean dc4LogFrame(Bitmap bitmap);
     private native String dc4LogTouch(int action, int x, int y);
     private native void dc4LogClear();
@@ -564,7 +566,15 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private static final class Touch {
         final int action, x, y;
-        Touch(int action, int x, int y) { this.action = action; this.x = x; this.y = y; }
+        final Boolean cursorEnabled;
+        Touch(int action, int x, int y) {
+            this.action = action; this.x = x; this.y = y; this.cursorEnabled = null;
+        }
+        private Touch(boolean cursorEnabled) {
+            action = x = y = -1;
+            this.cursorEnabled = cursorEnabled;
+        }
+        static Touch cursorMode(boolean enabled) { return new Touch(enabled); }
     }
 
     /** MS932, matching Windows CP932 rather than strict JIS-only decoding. */
@@ -817,6 +827,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             activePointerId = -1;
             touches.offer(new Touch(MotionEvent.ACTION_CANCEL, -1, -1));
             cursorOverlay.setCursorEnabled(enabled);
+            touches.offer(Touch.cursorMode(enabled));
             updateCursorActivity();
         }
     }
@@ -1140,6 +1151,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             lastLineSerial = -1;
         }
         touches.clear();
+        dc4LogSetCursorEnabled(selected.cursorEnabled);
         running = true;
         cursorMovieFrame = false;
         updateCursorActivity();
@@ -1276,6 +1288,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     /** Routes one queued touch to the open overlay or to the native scene. */
     private void dispatchTouch(Touch touch) {
+        if (touch.cursorEnabled != null) {
+            dc4LogSetCursorEnabled(touch.cursorEnabled);
+            return;
+        }
         if (quitAfterMenuVoice) return;
         if(dc4ConfirmActive()){
             handleOriginalAction(dc4ConfirmTouch(touch.action,touch.x,touch.y));return;
@@ -1502,7 +1518,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private boolean hasNativeSidebar() {
         String id = currentProfile().getId();
-        return "dc2pc".equals(id) || "dc2dm".equals(id);
+        return "dc2pc".equals(id) || "dc2dm".equals(id) || "dc2ty".equals(id);
     }
 
     private File resolveSlotSaveFile(File dir, int slotIndex) {
@@ -1686,7 +1702,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             closeMenus();
             notifyUser(what + tr(" restored", " dipulihkan", "を読み込みました"));
         } else {
-            final String error = dc4Save(file.getAbsolutePath());
+            final String error = dc4SaveWithIcon(file.getAbsolutePath(), characterIcon);
             if (!error.isEmpty()) { notifyUser(error); return; }
             try (FileOutputStream out = new FileOutputStream(file.getAbsolutePath() + ".icon")) {
                 out.write(Integer.toString(characterIcon >= 0 && characterIcon < 16 ? characterIcon : -1).getBytes(StandardCharsets.UTF_8));
@@ -1739,17 +1755,16 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void updateLatestSlot() {
         pickerLatestFile = null;
-        long newest = Long.MIN_VALUE;
+        boolean minutePrecision = "dc2ty".equals(currentProfile().getId());
         for (int i = 0; i < SLOT_COUNT; ++i) {
             final File file = pickerSaveFiles[i + 1];
             final boolean occupied = file != null && file.isFile();
             if (occupied) {
-                final long modified = SaveMetadata.timestamp(file);
-                if (modified > newest) { newest = modified; pickerLatestFile = file; }
+                if (SaveMetadata.isNewer(file, pickerLatestFile, minutePrecision)) pickerLatestFile = file;
             }
         }
         if (pickerLatestCopy != null && pickerLatestCopy.isFile()
-                && SaveMetadata.timestamp(pickerLatestCopy) > newest) pickerLatestFile = pickerLatestCopy;
+                && SaveMetadata.isNewer(pickerLatestCopy, pickerLatestFile, minutePrecision)) pickerLatestFile = pickerLatestCopy;
     }
 
     private void updateWrittenSlot(File dir, int slot, File file) {
@@ -1759,6 +1774,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         pickerSaveFiles[slot + 1] = file;
         publishSlotInfo(slot,file);
+        pickerLatestCopy = currentProfile().resolveLatestSaveCopy(dir);
         updateLatestSlot();
         publishSlotInfo(-2,pickerLatestFile);
     }
@@ -1770,16 +1786,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             timestamp=dateFormat.format(new Date(SaveMetadata.timestamp(file)));
             excerpt=resolveSlotExcerpt(file,index+1);
             thumbnail=resolveSlotThumbnail(file);
-            try { icon=Integer.parseInt(readSmallFile(file.getAbsolutePath()+".icon").trim()); }
-            catch(NumberFormatException ignored) {}
-            if (icon < 0 && "dc2pc".equals(currentProfile().getId())
+            if (("dc2pc".equals(currentProfile().getId()) || "dc2ty".equals(currentProfile().getId()))
                     && file.getName().toLowerCase(Locale.ROOT).endsWith(".dat")) {
-                try (java.io.RandomAccessFile nativeSave = new java.io.RandomAccessFile(file, "r")) {
-                    if (nativeSave.length() >= 0x2B20 && Integer.reverseBytes(nativeSave.readInt()) == 1) {
-                        nativeSave.seek(0xFF0 + 9 * 100 + 20);
-                        icon = nativeSave.readUnsignedByte();
-                    }
-                } catch (IOException ignored) {}
+                icon = SaveMetadata.characterIcon(file);
+            }
+            if (icon < 0) {
+                try { icon=Integer.parseInt(readSmallFile(file.getAbsolutePath()+".icon").trim()); }
+                catch(NumberFormatException ignored) {}
             }
         }
         dc4SlotInfo(index,occupied,timestamp,excerpt,thumbnail,icon);
@@ -2921,8 +2934,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         float navWidth = dp(backSidemenu == null ? 48 : 64);
         float minX = safeLeft + dp(4);
         float maxX = gameLayout.getWidth() - safeRight - navWidth - dp(4);
-        if (backSidemenu != null && "dc2pc".equals(currentProfile().getId())) {
-            // DC2PC keeps a native left margin inside the composed frame.
+        if (backSidemenu != null && ("dc2pc".equals(currentProfile().getId()) || "dc2ty".equals(currentProfile().getId()))) {
+            // Classic 4:3 games keep a native left margin inside the composed frame.
             float margin = (gameLayout.getWidth() - gameLayout.getHeight()*4f/3f)/2f;
             if (surface != null && surface.getWidth() > 0) {
                 RectF vp = viewport(surface.getWidth(), surface.getHeight());

@@ -135,6 +135,45 @@ void write_thumbnail(const fs::path& save, int width = 128, int height = 72) {
         throw std::runtime_error("cannot write thumbnail fixture");
 }
 
+void dc2ty_save_metadata(const fs::path& root) {
+    const auto data = root / "ty" / "AdvData";
+    const char mes[] = {0,0,0,0,0x69,0x5F,2,0,0,0};
+    write_fixture(data / "MES/main.mes", std::string(mes, sizeof(mes)));
+    const char* override_dir = std::getenv("DC4_SAVE_DIR");
+    if (!override_dir || !*override_dir) {
+        CHECK(save_directory(data.string()) == data / "Savegame");
+        fs::rename(data / "Savegame", data / "SaveData");
+        CHECK(save_directory(data.string()) == data / "SaveData");
+    }
+    std::string bytes(0x2944, '\0');
+    bytes[0] = 1;
+    const std::string script = "hyd_0611_a1_avn";
+    std::copy(script.begin(), script.end(), bytes.begin() + 4);
+    bytes[0x1388] = 2; bytes[0x1389] = 11; bytes[0x138A] = 10;
+    bytes[0x138B] = 22; bytes[0x138C] = 35; bytes[0x138D] = 26;
+    const auto native = root / "ty-metadata" / "dc2ty00.dat";
+    write_fixture(native, bytes);
+    auto entry = SaveSlots::read(native, 0x5F69);
+    CHECK(entry.occupied && entry.character_icon == 2);
+    CHECK(entry.excerpt == u"始まりの始まり");
+    CHECK(entry.timestamp == u"2026 11/10 22:35:00");
+    write_fixture(native.string() + ".icon", "DC4ICON1 " + save_fingerprint(native) + "\n7");
+    CHECK(SaveSlots::read(native, 0x5F69).character_icon == 2);
+    write_fixture(native.string() + ".preview.txt", "DC4PREVIEW1 " + save_fingerprint(native) + "\nOld dialogue preview");
+    CHECK(SaveSlots::read(native, 0x5F69).excerpt == u"始まりの始まり");
+    const auto legacy = root / "ty-metadata" / "slot1.dc4sav";
+    const std::string legacy_script = "set_0214_f1_214.mes";
+    std::string snapshot(28, '\0');
+    snapshot.replace(0, 8, "DC4SAVE\0", 8);
+    snapshot[24] = char(legacy_script.size()); snapshot += legacy_script;
+    write_fixture(legacy, snapshot);
+    CHECK(SaveSlots::read(legacy, 0x5F69).excerpt == u"小恋とバレンタイン");
+    CHECK(SaveSlots::read(legacy, 0x9969).excerpt.empty());
+    bytes[0x1389] = 13;
+    write_fixture(native, bytes);
+    CHECK(SaveSlots::read(native, 0x5F69).timestamp != u"2027 01/10 22:35:00");
+}
+
 void slot_metadata(const fs::path& root) {
     const fs::path directory = root / "engine-saves";
     const auto baseline = fs::file_time_type::clock::now() - std::chrono::hours(1);
@@ -270,6 +309,36 @@ void native_filenames(const fs::path& root) {
     write_fixture(classic/"DC2PC00.dat","quick");
     fs::last_write_time(classic/"DC2PC00.dat",baseline+std::chrono::hours(2));
     CHECK(dc4::latest_save(classic,0x9969)==numbered);
+    const auto ty=directory/"ty";fs::create_directories(ty);
+    CHECK(dc4::save_target(ty,0x5F69,0).filename()=="dc2ty00.dat");
+    CHECK(dc4::save_target(ty,0x5F69,1).filename()=="dc2ty02.dat");
+    CHECK(dc4::save_target(ty,0x5F69,4).filename()=="dc2ty08.dat");
+    CHECK(dc4::save_target(ty,0x5F69,48).filename()=="dc2ty76.dat");
+    for(int logical=0;logical<=48;++logical)
+        CHECK(dc4::save_slot_number(dc4::save_target(ty,0x5F69,logical).filename().string(),0x5F69)==logical);
+    for(const auto* filename : {"dc2ty01.dat","dc2ty05.dat","dc2ty06.dat","dc2ty07.dat","dc2ty02.dat.arisa"})
+        CHECK(dc4::save_slot_number(filename,0x5F69)==-1);
+    const auto ty_legacy=ty/"slot1.dc4sav", ty_native=ty/"DC2TY02.DAT", ty_latest=ty/"dc2ty01.dat";
+    write_fixture(ty_legacy,"existing snapshot");
+    CHECK(dc4::resolve_save(ty,0x5F69,1)==ty_legacy);
+    write_fixture(ty_native,"native slot");
+    CHECK(dc4::resolve_save(ty,0x5F69,1)==ty_native);
+    CHECK(dc4::save_target(ty,0x5F69,1)==ty_native);
+    write_fixture(ty_latest,"latest copy");
+    fs::last_write_time(ty_native,baseline);fs::last_write_time(ty_latest,baseline+std::chrono::hours(1));
+    write_fixture(ty/"dc2ty00.dat","quick");
+    fs::last_write_time(ty/"dc2ty00.dat",baseline+std::chrono::hours(2));
+    CHECK(dc4::latest_save(ty,0x5F69)==ty_latest);
+    std::string ty_bytes(0x2944,'\0');ty_bytes[0]=1;
+    ty_bytes[0x1389]=11;ty_bytes[0x138A]=10;ty_bytes[0x138B]=22;ty_bytes[0x138C]=35;ty_bytes[0x138D]=26;
+    write_fixture(ty_latest,ty_bytes);
+    ty_bytes[0x138A]=9;
+    write_fixture(ty_native,ty_bytes);
+    fs::last_write_time(ty_latest,baseline);fs::last_write_time(ty_native,baseline+std::chrono::hours(1));
+    CHECK(dc4::latest_save(ty,0x5F69)==ty_latest);
+    ty_bytes[0x138A]=10;
+    write_fixture(ty_native,ty_bytes);fs::last_write_time(ty_native,baseline+std::chrono::hours(1));
+    CHECK(dc4::latest_save(ty,0x5F69)==ty_native);
 }
 }  // namespace
 
@@ -279,6 +348,7 @@ int main() {
         page_options();
         protected_directories(temporary.path);
         dc2pc_save_directory(temporary.path);
+        dc2ty_save_metadata(temporary.path);
         slot_metadata(temporary.path);
         native_filenames(temporary.path);
     } catch (const std::exception& e) {

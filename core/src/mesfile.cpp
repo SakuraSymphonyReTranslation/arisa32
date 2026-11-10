@@ -48,7 +48,7 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
     const size_t te6 = size_t(count) * 6 + 4;
 
     bool is_4byte = false;
-    if (te4 + 2 <= size && rd_u16(data + te4) == 0x9969) {
+    if (te4 + 2 <= size && (rd_u16(data + te4) == 0x9969 || rd_u16(data + te4) == 0x5F69)) {
         is_4byte = true;
     } else if (count == 0 && te4 + 2 <= size && data[te4] == 0x69) {
         is_4byte = true;

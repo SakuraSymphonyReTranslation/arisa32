@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,8 @@ public:
     bool active() const { return phase_ != Phase::Idle; }
     bool revealing() const { return phase_ == Phase::In; }
     void start(std::vector<uint8_t> outgoing, int native_speed, uint32_t wait_ms = 0, bool fade_out = true) {
+        outgoing_update_ = {};
+        outgoing_draw_ = {};
         circles_ = false;
         circle_sheet_.clear();
         frame_ = std::move(outgoing);
@@ -22,6 +25,13 @@ public:
         wait_ = wait_ms;
         elapsed_ = 0;
         phase_ = Phase::Out;
+    }
+    void start_custom_outgoing(std::vector<uint8_t> outgoing, int native_speed, uint32_t wait_ms,
+                               std::function<bool(uint32_t)> update,
+                               std::function<void(std::vector<uint8_t>*)> draw) {
+        start(std::move(outgoing), native_speed, wait_ms);
+        outgoing_update_ = std::move(update);
+        outgoing_draw_ = std::move(draw);
     }
     // DC2DM advmenu/title1 breaks the captured scene into moving EFF tiles.
     // Only the return-to-title host path opts in; regular DC2PC fades stay intact.
@@ -34,7 +44,14 @@ public:
     // True exactly once, when the host may replace the scene behind black.
     bool update(uint32_t elapsed_ms) {
         if (phase_ == Phase::Idle || phase_ == Phase::Black) return false;
+        const uint32_t previous = elapsed_;
         elapsed_ = uint32_t(std::min<uint64_t>(uint64_t(elapsed_) + elapsed_ms, UINT32_MAX));
+        if (phase_ == Phase::Out && outgoing_update_) {
+            if (elapsed_ < wait_ || !outgoing_update_(elapsed_ - std::max(wait_, previous))) return false;
+            phase_ = Phase::Black;
+            elapsed_ = 0;
+            return true;
+        }
         if (phase_ == Phase::Out && elapsed_ >= uint64_t(wait_) + out_duration_) {
             phase_ = Phase::Black;
             elapsed_ = 0;
@@ -44,11 +61,15 @@ public:
         return false;
     }
     void reveal(std::vector<uint8_t> incoming) {
+        outgoing_update_ = {};
+        outgoing_draw_ = {};
         frame_ = std::move(incoming);
         elapsed_ = 0;
         phase_ = Phase::In;
     }
     void finish() {
+        outgoing_update_ = {};
+        outgoing_draw_ = {};
         phase_ = Phase::Idle;
         frame_.clear();
         circle_sheet_.clear();
@@ -56,6 +77,10 @@ public:
     bool draw(std::vector<uint8_t>* output) const {
         if (!active() || frame_.empty()) return false;
         *output = frame_;
+        if (outgoing_draw_ && phase_ == Phase::Out && elapsed_ >= wait_) {
+            outgoing_draw_(output);
+            return true;
+        }
         if (circles_ && phase_ == Phase::Out && elapsed_ > wait_) {
             draw_circles(output, std::min(24u, (elapsed_ - wait_) / 40));
             return true;
@@ -108,5 +133,7 @@ private:
     int step_ = 2;
     bool circles_ = false;
     std::vector<uint8_t> circle_sheet_;
+    std::function<bool(uint32_t)> outgoing_update_;
+    std::function<void(std::vector<uint8_t>*)> outgoing_draw_;
 };
 } // namespace dc4ui

@@ -151,11 +151,18 @@ const auto dc2pc = [] {
     p.opcodes[0x52].transform = OperandTransform::StaticState;
     return p;
 }();
+const auto dc2ty = [] {
+    auto p = dc2pc;
+    p.id = MesProfileId::DC2TY;
+    p.name = "dc2ty";
+    return p;
+}();
 } // namespace
 
 const MesOpcodeProfile& mes_opcode_profile(MesDialect dialect, uint32_t version) {
     switch (dialect) {
     case MesDialect::ClassicDC2:
+        if ((version & 0xFFFF) == 0x5F69) return dc2ty;
         return (version & 0xFFFF) == 0x9969 ? dc2pc : classic;
     case MesDialect::ClassicDM:
         return marriage;

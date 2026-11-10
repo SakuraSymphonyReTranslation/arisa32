@@ -12,11 +12,14 @@ public final class SaveMetadata {
     public static long timestamp(File file) {
         if (file == null) return 0;
         try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
-            if (in.length() == 0x3FE0 && Integer.reverseBytes(in.readInt()) == 0x3FE1) {
-                in.seek(0x28D9);
+            int header = Integer.reverseBytes(in.readInt());
+            boolean dm = in.length() == 0x3FE0 && header == 0x3FE1;
+            boolean ty = in.length() == 0x2944 && header == 1;
+            if (dm || ty) {
+                in.seek(ty ? 0x1389 : 0x28D9);
                 int month = in.readUnsignedByte(), day = in.readUnsignedByte();
                 int hour = in.readUnsignedByte(), minute = in.readUnsignedByte();
-                int year = in.readUnsignedByte(), second = in.readUnsignedByte();
+                int year = in.readUnsignedByte(), second = ty ? 0 : in.readUnsignedByte();
                 java.util.Calendar date = java.util.Calendar.getInstance();
                 date.clear(); date.setLenient(false);
                 date.set(2000 + year, month - 1, day, hour, minute, second);
@@ -26,14 +29,38 @@ public final class SaveMetadata {
         return file.lastModified();
     }
 
+    public static int characterIcon(File file) {
+        if (file == null) return -1;
+        try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
+            if ((in.length() == 0x2944 || in.length() == 0x2B20)
+                    && Integer.reverseBytes(in.readInt()) == 1) {
+                in.seek(0x1388);
+                return in.readUnsignedByte();
+            }
+        } catch (IOException ignored) {}
+        return -1;
+    }
+
+    public static boolean isNewer(File candidate, File current, boolean minutePrecision) {
+        if (candidate == null) return false;
+        if (current == null) return true;
+        long next = timestamp(candidate), previous = timestamp(current);
+        if (!minutePrecision) return next > previous;
+        long nextMinute = next / 60000, previousMinute = previous / 60000;
+        return nextMinute != previousMinute ? nextMinute > previousMinute
+                : candidate.lastModified() > current.lastModified();
+    }
+
     public static String script(File file, boolean dc2pc) {
         if (file == null) return "";
         try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
             if (in.length() < 28) return "";
             byte[] magic = new byte[8];
             in.readFully(magic);
-            int offset = dc2pc ? 4 : 8;
-            int limit = dc2pc ? 128 : 160;
+            boolean ty = in.length() == 0x2944 && magic[0] == 1
+                    && magic[1] == 0 && magic[2] == 0 && magic[3] == 0;
+            int offset = dc2pc || ty ? 4 : 8;
+            int limit = dc2pc || ty ? 128 : 160;
             if (new String(magic, StandardCharsets.US_ASCII).equals("DC4SAVE\u0000")) {
                 in.seek(24);
                 limit = Integer.reverseBytes(in.readInt());

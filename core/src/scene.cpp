@@ -213,6 +213,7 @@ void blit(std::vector<uint8_t>* dst, int dst_w, int dst_h, int dx, int dy,
 
 bool FontRenderer::load(const std::string& path, int font_index, float pixel_size, bool native) {
     pretendard_jp_bold_ = false;
+    ms_gothic_ = false;
     if (!read_file(path, &font_data_)) return false;
     int offset = stbtt_GetFontOffsetForIndex(font_data_.data(), font_index);
     if (offset < 0) return false;
@@ -230,6 +231,9 @@ bool FontRenderer::load(const std::string& path, int font_index, float pixel_siz
     constexpr char pretendard_name[] = "PretendardJP-Bold";
     pretendard_jp_bold_ = face_name && stbtt_CompareUTF8toUTF16_bigendian(
         pretendard_name, sizeof(pretendard_name) - 1, face_name, face_name_length);
+    constexpr char ms_gothic_name[] = "MS-Gothic";
+    ms_gothic_ = face_name && stbtt_CompareUTF8toUTF16_bigendian(
+        ms_gothic_name, sizeof(ms_gothic_name) - 1, face_name, face_name_length);
     glyphs_.clear();
 #ifdef _WIN32
     for (auto& item : native_fonts_) DeleteObject(static_cast<HFONT>(item.second));
@@ -322,17 +326,20 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
                                   std::vector<uint8_t>* rgba, int buf_w,
                                   int buf_h, float pixel_size, uint32_t rgb, bool wide,
                                   uint32_t outline_rgb, bool fixed_grid, int tracking,
-                                  float raster_size) const {
+                                  float raster_size, float output_scale, bool outlined) const {
     if (!font_) return;
     if (!rgba || buf_w <= 0 || buf_h <= 0 || rgba->size() < size_t(buf_w) * buf_h * 4) return;
+    if (!std::isfinite(output_scale) || output_scale <= 0) return;
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
-    const int glyph_size = int(raster_size > 0 ? raster_size : ps);
+    const int glyph_size = std::max(1, int(std::round(int(raster_size > 0 ? raster_size : ps) * output_scale)));
+    const int output_baseline = int(std::round(baseline * output_scale));
     std::vector<uint8_t> mask(size_t(buf_w) * buf_h, 0);
     int x = x0;
     for (char16_t ch : text) {
         const Glyph& g = glyph(ch, glyph_size, wide);
+        const int output_x = int(std::round(x * output_scale));
         for (int ry = 0; ry < g.h; ++ry) for (int rx = 0; rx < g.w; ++rx) {
-            int px = x + g.x + rx, py = baseline + g.y + ry;
+            int px = output_x + g.x + rx, py = output_baseline + g.y + ry;
             if (px < 0 || py < 0 || px >= buf_w || py >= buf_h) continue;
             auto& value = mask[size_t(py) * buf_w + px];
             value = std::max(value, g.coverage[size_t(ry) * g.w + rx]);
@@ -343,7 +350,7 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
     for (int y = 0; y < buf_h; ++y) for (int px = 0; px < buf_w; ++px) {
         const size_t i = size_t(y) * buf_w + px;
         uint8_t edge = mask[i];
-        const int r = outline_rgb != 0 ? 2 : 1;
+        const int r = outlined ? (outline_rgb != 0 ? 2 : 1) : 0;
         for (int dy = -r; dy <= r; ++dy) for (int dx = -r; dx <= r; ++dx) {
             if (dx * dx + dy * dy > r * r + (r > 1 ? 1 : 0)) continue;
             const int xx = px + dx, yy = y + dy;
@@ -444,7 +451,10 @@ void SceneRunner::set_dialogue_font_size(int size) {
 
 SceneRunner::~SceneRunner() = default;
 
-bool SceneRunner::replay_voice() { return scene_audio_.replay_voice(); }
+bool SceneRunner::replay_voice() {
+    scene_audio_.set_profile(dc4::mes_opcode_profile(mes_.dialect, mes_.version).id);
+    return scene_audio_.replay_voice();
+}
 
 const std::string& SceneRunner::displayed_line() const {
     return reviewing_dialogue() ? dialogue_history_[size_t(dialogue_cursor_)].text : current_line_;
@@ -553,6 +563,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     }
     if (!vm_.bind(mes_)) { last_error_ = vm_.error(); return false; }
     if (!entry_label.empty() && !vm_.jump(entry_label)) { last_error_ = vm_.error(); return false; }
+    scene_audio_.set_profile(dc4::mes_opcode_profile(mes_.dialect, mes_.version).id);
     if (mes_.version != 0xAAB6 && mes_.version != 0xABB6) {
         sakura_ = {}; sakura_sheet_ = {};
         fairy_lights_ = {}; fairy_light_sheet_ = {};
@@ -561,12 +572,13 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
 
     finish_dc2pc_transition();
     finish_dc2dm_transition();
+    dc2ty_draw_pending_ = false;
     const bool keep_dc2dm_black = internal_dc2dm_transfer && dc2dm_transition_.black &&
         mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72;
     dc2dm_transition_ = {};
     dc2dm_transition_.black = keep_dc2dm_black;
     dc2dm_transition_mask_ = {};
-    if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id != dc4::MesProfileId::DC2PC) {
+    if (!dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version)) {
         dc2pc_present_pending_ = dc2pc_black_ = false;
         dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
     } else if (dc2pc_displayed_frame_.empty()) {
@@ -846,7 +858,7 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
             return true;
         }
     }
-    if (c.dc2pc && c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT) {
+    if (c.classic_dc2() && c.kind == K::Param2 && c.opcode() == dc4::Opcode::WAIT) {
         if (!animation_enabled_) return true;
         // Native 0x42448F: bit1 doubles the count and uses 100ms; bit3
         // then overrides that unit to 10ms. Unlike modern scripts, 254/255
@@ -857,6 +869,14 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
             dc2pc_wait_reference_ms_ = dc2pc_clock_ms_;
             dc2pc_wait_reference_valid_ = true;
             return true;
+        }
+        if (c.dc2ty && dc2ty_draw_pending_) {
+            // TY 0x41DFB6 publishes authored drawing before a wait. The
+            // timer-arm branch above returns without publishing anything.
+            compose_scene();
+            dc2pc_displayed_frame_ = scene_frame_;
+            dc2pc_black_ = false;
+            dc2ty_draw_pending_ = false;
         }
         script_wait_ms_ = c.p1 ? count * unit : -1;
         if (c.p2 & 4) {
@@ -956,8 +976,9 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
         if (use_system_menu_ && (system_name == "main" || system_name == "start" ||
             system_name == "config" || system_name == "save" || system_name == "load" ||
             system_name == "cgmode" || system_name == "music" || system_name == "scemode" ||
-            system_name == "sce_end" || (c.dc2dm && (system_name == "sc_end" || system_name == "option")) || (c.dc2pc && (system_name == "sc_end" || system_name == "option" ||
-            system_name.rfind("title_",0)==0 || system_name.rfind("cg_",0)==0 || system_name.rfind("sce_",0)==0)))) {
+            system_name == "sce_end" || (c.dc2dm && (system_name == "sc_end" || system_name == "option")) || (c.classic_dc2() && (system_name == "sc_end" || system_name == "option" ||
+            system_name.rfind("title_",0)==0 || system_name.rfind("cg_",0)==0 ||
+            (system_name.rfind("sce_",0)==0 && !(c.dc2ty && system_name == "sce_select")))))) {
             next_script_ = c.str;
             scene_end_ = true;
             return true;
@@ -1049,6 +1070,11 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
         pending_scene_chip_.w = c.words[0];
         pending_scene_chip_.h = c.words[1];
         pending_scene_chip_.sheet = c.words[2];
+        if (c.dc2ty && !pending_chip_is_button_ && !(c.words[2] & 0x40)) {
+            // TY raw53/raw52 stores source endpoints, except flag0x40.
+            pending_scene_chip_.w -= pending_scene_chip_.src_x;
+            pending_scene_chip_.h -= pending_scene_chip_.src_y;
+        }
         int state = (c.words[3] == 99 || c.words[3] == 9) ? 0 : c.words[3];
         if (pending_chip_is_button_) {
             if (!buttons_.empty() && state >= 0 && state < 3) {
@@ -1056,6 +1082,7 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
             }
         } else {
             scene_chips_.push_back(pending_scene_chip_);
+            if (c.dc2ty) dc2ty_draw_pending_ = true;
         }
         pending_scene_blit_ = false;
         scene_dirty_ = true;
@@ -1082,7 +1109,7 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
-    const bool modern_dc4 = is_dc4_or_dc4ph_ && !c.dc2dm && !c.dc2pc &&
+    const bool modern_dc4 = is_dc4_or_dc4ph_ && !c.dc2dm && !c.classic_dc2() &&
         (mes_.version == 0xAAB6 || mes_.version == 0xABB6);
     if (c.dc2dm && c.kind == K::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
         load_sheet(c.p1 + 21, c.str);
@@ -1090,7 +1117,8 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     }
     if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::TRANSITION) {
         if (c.dc2dm && mes_.version == 0x9D72 && start_dc2dm_transition(c.p1, c.p2)) return true;
-        if (c.dc2pc) {
+        if (c.dc2ty && start_dc2ty_transition(c.p1, c.p2)) return true;
+        if (c.classic_dc2()) {
             start_dc2pc_transition(c.p1);
             return true;
         }
@@ -1164,12 +1192,13 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
             if (c.opcode() == dc4::Opcode::LEGACY_BACKGROUND || c.opcode() == dc4::Opcode::BACKGROUND) {
                 load_layer(1, c.str);
                 scene_chips_.clear();
+                if (c.dc2ty) dc2ty_draw_pending_ = true;
                 if (c.dc2dm) {
                     scene_chip_origin_x_ = scene_chip_origin_y_ = 0;
                     scene_chip_source_x_ = scene_chip_source_y_ = 0;
                 }
                 scene_dirty_ = true;
-                if (c.dc2pc) {
+                if (c.classic_dc2()) {
                     // DC2PC raw30 dismisses native body layers 1..4 even
                     // when bodies were loaded earlier in this command batch.
                     // Layer 5 and retained assets/transforms are untouched.
@@ -1218,7 +1247,7 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
             scene_dirty_ = true;
             return true;
         }
-        if (c.dc2pc) {
+        if (c.classic_dc2()) {
             if (c.opcode() == dc4::Opcode::FACE_LAYER) {
                 if (c.p1 < 5) load_bst_expression(c.p1, c.str);
                 scene_dirty_ = true;
@@ -1291,7 +1320,7 @@ bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
         return true;
     }
     if (c.kind == K::Words4 && c.opcode() == dc4::Opcode::SPRITE_TRANSFORM) {
-        if (c.dc2pc) {
+        if (c.classic_dc2()) {
             if (c.raw_op == 0x64) {
                 if (c.words[2] < 5) {
                     auto& s = sprites_[c.words[2]];
@@ -1364,7 +1393,7 @@ bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
     if (c.kind != K::Text)
         return false;
-    if ((c.dc2pc || c.dc2dm) && c.opcode() != dc4::Opcode::SPEAKER && c.opcode() != dc4::Opcode::DIALOGUE)
+    if ((c.classic_dc2() || c.dc2dm) && c.opcode() != dc4::Opcode::SPEAKER && c.opcode() != dc4::Opcode::DIALOGUE)
         return false;
     std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
     // Modern: 0x6A speaker, 0x6B.. line
@@ -1390,14 +1419,14 @@ bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
         current_line_ = dc2dm_minigame_score_text(current_line_, variable(100, index), variable(100, index + 1));
     }
     schedule_dialogue_actions();
-    if (c.dc2pc) dc2pc_present_pending_ = dc2pc_black_ = false;
+    if (c.classic_dc2()) dc2pc_present_pending_ = dc2pc_black_ = false;
     return true;
 }
 
 bool SceneRunner::advance_to_next_text() {
     if (reviewing_dialogue() || sidebar_visible_ || scene_end_ || vm_.waiting_for_choice() || !pending_movie_.empty() || waiting_for_time()) return false;
     last_error_.clear();
-    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
     // Record the last presented dialogue even when the interactive host did
     // not request a frame between advances. Pending commands stay off screen.
     if (dc2pc && animation_enabled_) draw(-1);
@@ -1411,6 +1440,7 @@ bool SceneRunner::advance_to_next_text() {
         dialogue_batches_ = {}; collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
     }
     if (dc2pc) dc2pc_present_pending_ = true;
+    dc2ty_draw_pending_ = false;
     scene_dirty_ = true;
     std::string prev_speaker = speaker_;
     std::string prev_line = current_line_;
@@ -1622,7 +1652,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     buttons_.clear();
     dc2pc_choices_.clear();
     dc2dm_toolbar_.clear();
-    dc2pc_ui_ = ui.dialect == dc4::MesDialect::ClassicDC2 && (ui.version & 0xFFFF) == 0x9969;
+    dc2pc_ui_ = dc4::mes_uses_classic_dc2(ui.dialect, ui.version);
     dc2dm_ui_ = ui.dialect == dc4::MesDialect::ClassicDM;
     dc2dm_toolbar_count_ = 0;
     ui_bar_top_ = dc2pc_ui_ ? 458 : dc2dm_ui_ ? 520 : 690;
@@ -1728,7 +1758,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
                 pending.valid = false;
             }
         }
-        printf("ui: DC2PC dialogue toolbar: %zu buttons\n", buttons_.size());
+        printf("ui: %s dialogue toolbar: %zu buttons\n", dc4::mes_opcode_profile(ui.dialect, ui.version).name, buttons_.size());
         load_dc2pc_choices(stream);
         load_dc2pc_sidebar();
         return true;
@@ -2009,7 +2039,7 @@ void SceneRunner::release_dc4_message_face(size_t index) {
 }
 
 bool SceneRunner::dispatch_dc4_message_face(const dc4::MesCommand& c) {
-    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.dc2pc) return false;
+    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.classic_dc2()) return false;
     if (c.op == 0x8D && c.kind == dc4::CmdKind::Words4) {
         sprites_[8].cur_x = int16_t(c.words[0]);
         sprites_[8].cur_y = int16_t(c.words[1]);
@@ -2094,7 +2124,7 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     s.expression.clear();
     CrxInfo info;
     std::string err;
-    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
     const bool message_face = (mes_.dialect == dc4::MesDialect::ClassicDM || dc4_message_faces()) && (idx == 8 || idx == 9);
     s.visible = false;
     s.img = Image{};
@@ -2114,6 +2144,9 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     s.frame_cy = (info.offset_y - shift_y) + float(info.height) / 2;
     s.canvas_w = info.canvas_width; s.canvas_h = info.canvas_height;
     if (dc2pc) {
+        // Native classic DC2 uses bitmap dimensions for loose CRX close-ups.
+        if (!s.canvas_w) s.canvas_w = info.width;
+        if (!s.canvas_h) s.canvas_h = info.height;
         const auto ref = dc4::bst_parse_name(name, true);
         for (size_t i = 0; i < s.img.rgba.size(); i += 4) {
             if (!s.img.rgba[i+3]) continue;
@@ -2199,7 +2232,7 @@ void SceneRunner::load_preload(int slot, const std::string& name) {
     Image img;
     CrxInfo info;
     std::string err;
-    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
     if (!bst_load(data_ + "/GRP/BST", name, &img.rgba, &info, &err, dc2pc) &&
         !bst_load(data_ + "/GRP/FACE", name, &img.rgba, &info, &err, dc2pc)) {
         if (debug_) printf("  preload bst: %s\n", err.c_str());
@@ -2288,6 +2321,7 @@ void SceneRunner::start_dc2pc_transition(int mode) {
     if (mode == 14) mode = 2;
     if (mode != 0 && mode != 1 && mode != 2 && mode != 5 && mode != 10 && mode != 12) return;
     compose_scene();
+    dc2ty_draw_pending_ = false;
     if (dc2pc_displayed_frame_.size() != frame_.size()) {
         dc2pc_displayed_frame_.assign(frame_.size(), 0);
         for (size_t i = 3; i < frame_.size(); i += 4) dc2pc_displayed_frame_[i] = 255;
@@ -2317,7 +2351,16 @@ void SceneRunner::start_dc2pc_transition(int mode) {
 void SceneRunner::finish_dc2pc_transition() {
     if (!dc2pc_transition_active_) return;
     dc2pc_displayed_frame_ = std::move(dc2pc_transition_target_);
-    dc2pc_black_ = dc2pc_transition_mode_ == 2;
+    dc2pc_black_ = dc2pc_transition_mode_ == 2 || dc2pc_transition_mode_ == 14;
+    if (dc2pc_transition_mode_ == 14) {
+        for (size_t i = 0; i < 5; ++i) {
+            sprites_[i].visible = false;
+            sprites_[i].fade = BstSprite::Fade{};
+            pending_sprites_[i] = false;
+        }
+        scene_dirty_ = true;
+    }
+    dc2ty_transition_ = {};
     dc2pc_transition_active_ = false;
     dc2pc_transition_elapsed_ms_ = dc2pc_transition_duration_ms_ = 0;
     // Only an active DC2PC effect owns this wait. Keep pending set so the
@@ -2327,7 +2370,17 @@ void SceneRunner::finish_dc2pc_transition() {
 
 void SceneRunner::draw_dc2pc_transition() {
     frame_ = dc2pc_displayed_frame_;
-    if (!dc2pc_transition_active_ || dc2pc_transition_mode_ == 0) return;
+    if (!dc2pc_transition_active_ || dc2pc_transition_mode_ == 0 || dc2pc_transition_mode_ == 13) return;
+    if (dc2pc_transition_mode_ == 14) { draw_dc2ty_circles(); return; }
+    if (dc2pc_transition_mode_ == 20) {
+        const auto& effect = dc2ty_transition_;
+        const int alpha = std::min(256, (int(dc2pc_transition_elapsed_ms_ / effect.tick_ms) + 1) * effect.step);
+        for (size_t i = 0; i < frame_.size(); i += 4)
+            for (size_t c = 0; c < 3; ++c)
+                frame_[i + c] = uint8_t((int(frame_[i + c]) * (256 - alpha) +
+                    int(dc2pc_transition_target_[i + c]) * alpha) >> 8);
+        return;
+    }
     const int step = 1 << dc2pc_transition_speed_;
     int level = std::min(16, int(dc2pc_transition_elapsed_ms_ / 40) * step);
     if (dc2pc_transition_mode_ == 1) frame_ = dc2pc_transition_target_;
@@ -2336,6 +2389,214 @@ void SceneRunner::draw_dc2pc_transition() {
     // endpoint rather than repeatedly blending against the previous frame.
     for (size_t i = 0; i < frame_.size(); i += 4)
         for (size_t c = 0; c < 3; ++c) frame_[i+c] = uint8_t(int(frame_[i+c]) * level / 16);
+}
+
+bool SceneRunner::Dc2tyCircleTile::advance() {
+    if (life <= 0) return false;
+    if (age < 0) { ++age; return true; }
+    x = origin_x + 4 * int(int64_t(vx) * time / 1024);
+    const int quadratic = int((int64_t(time) * 4008 / 1024) * time / 1024);
+    y = origin_y - int(int64_t(vy) * time / 1024) - quadratic;
+    if (x >= 800 * 1024 || y >= 600 * 1024) life = 0;
+    life = std::max(0, life - 1);
+    time += 81;
+    ++age;
+    return life > 0;
+}
+
+bool SceneRunner::start_dc2ty_title_exit(const std::vector<uint8_t>& outgoing) {
+    if (mes_.version != 0x5F69 || outgoing.size() != frame_.size()) return false;
+    finish_dc2pc_transition();
+    dc2pc_displayed_frame_ = outgoing;
+    return start_dc2ty_transition(14, 4);
+}
+
+bool SceneRunner::update_dc2ty_title_exit(uint32_t elapsed_ms) {
+    update_dc2pc_transition(elapsed_ms);
+    return !dc2pc_transition_active_;
+}
+
+void SceneRunner::draw_dc2ty_title_exit(std::vector<uint8_t>* outgoing) {
+    draw_dc2pc_transition();
+    *outgoing = frame_;
+}
+
+void SceneRunner::update_dc2pc_transition(uint32_t elapsed_ms) {
+    if (!dc2pc_transition_active_) return;
+    const int previous_tick = int(dc2pc_transition_elapsed_ms_ / 40);
+    dc2pc_transition_elapsed_ms_ += elapsed_ms;
+    if (dc2pc_transition_elapsed_ms_ >= dc2pc_transition_duration_ms_) {
+        finish_dc2pc_transition();
+    } else if (dc2pc_transition_mode_ == 13 || dc2pc_transition_mode_ == 14) {
+        for (int tick = previous_tick; tick < int(dc2pc_transition_elapsed_ms_ / 40); ++tick)
+            tick_dc2ty_transition();
+    } else if (dc2pc_transition_mode_ == 0) {
+        // 0x423470 repeatedly blends with weights 3/6/8/10 out of 16.
+        static constexpr int weights[] = {3, 6, 8, 10};
+        const int weight = weights[dc2pc_transition_speed_];
+        for (int tick = previous_tick; tick < int(dc2pc_transition_elapsed_ms_ / 40); ++tick)
+            for (size_t i = 0; i < dc2pc_displayed_frame_.size(); i += 4)
+                for (size_t c = 0; c < 3; ++c)
+                    dc2pc_displayed_frame_[i+c] = uint8_t(
+                        (int(dc2pc_displayed_frame_[i+c]) * (16-weight) +
+                         int(dc2pc_transition_target_[i+c]) * weight) / 16);
+    }
+}
+
+bool SceneRunner::start_dc2ty_transition(int mode, int parameter) {
+    if (mode != 13 && mode != 14 && mode != 20) return false;
+    if (mode == 14 && (variable(99, 20) == 0 || (parameter != 4 && parameter != 5))) {
+        start_dc2pc_transition(2);
+        return true;
+    }
+    compose_scene();
+    dc2ty_transition_ = {};
+    dc2ty_draw_pending_ = false;
+    auto& effect = dc2ty_transition_;
+    dc2pc_transition_target_ = scene_frame_;
+    if (dc2pc_displayed_frame_.size() != frame_.size()) {
+        dc2pc_displayed_frame_.assign(frame_.size(), 0);
+        for (size_t i = 3; i < frame_.size(); i += 4) dc2pc_displayed_frame_[i] = 255;
+    }
+    dc2pc_transition_mode_ = mode;
+    dc2pc_transition_speed_ = std::clamp(variable(99, 12), 0, 3);
+    dc2pc_transition_elapsed_ms_ = 0;
+    dc2pc_transition_active_ = dc2pc_present_pending_ = true;
+    if (mode == 14)
+        for (size_t i = 0; i < dc2pc_transition_target_.size(); i += 4)
+            dc2pc_transition_target_[i] = dc2pc_transition_target_[i + 1] = dc2pc_transition_target_[i + 2] = 0;
+    if (!animation_enabled_ || !effects_enabled_) {
+        finish_dc2pc_transition();
+        return true;
+    }
+    if (mode == 13) {
+        effect.step = 1 << dc2pc_transition_speed_;
+        effect.mask.resize(800 * 600);
+        for (int y = 0; y < 600; ++y) for (int x = 0; x < 800; ++x)
+            effect.mask[size_t(y) * 800 + x] = int16_t(parameter == 1 ? 8 - x / 4 :
+                parameter == 2 ? 8 - x / 4 - y / 4 : parameter == 99 ? 4 - effect_random(64) : 0);
+        int minimum = *std::min_element(effect.mask.begin(), effect.mask.end());
+        int ticks = 1, progress = effect.step;
+        while (minimum < 16) {
+            progress += effect.step;
+            minimum += progress;
+            progress = std::min(progress, 16);
+            ++ticks;
+        }
+        dc2pc_transition_duration_ms_ = ticks * 40;
+        tick_dc2ty_transition();
+    } else if (mode == 20) {
+        effect.step = parameter == 0 ? 16 << dc2pc_transition_speed_ : 256 >> std::clamp(parameter, 1, 7);
+        effect.tick_ms = parameter >= 8 ? (parameter - 7) * 40 : 40;
+        dc2pc_transition_duration_ms_ = (256 / effect.step) * effect.tick_ms;
+    } else {
+        std::string error;
+        if (!load_grp_crx("system\\eff", &effect.atlas, &error) || effect.atlas.w < 800 || effect.atlas.h < 32) {
+            dc2pc_transition_active_ = false;
+            dc2ty_transition_ = {};
+            start_dc2pc_transition(2);
+            return true;
+        }
+        effect.tiles.resize(25 * 19);
+        for (size_t i = 0; i < effect.tiles.size(); ++i) {
+            auto& tile = effect.tiles[i];
+            tile.vx = 32 - effect_random(32);
+            tile.vy = 32 + effect_random(32);
+            if (effect_random(2) == 0) tile.vx = effect_random(32) - 32;
+            tile.life = 16 + effect_random(32);
+            tile.vx *= 1024; tile.vy *= 1024;
+            tile.origin_x = tile.x = int(i % 25) * 32 * 1024;
+            tile.origin_y = tile.y = int(i / 25) * 32 * 1024;
+        }
+        for (size_t i = 0; i < effect.tiles.size(); ++i) {
+            auto& tile = effect.tiles[i];
+            if (parameter == 4) {
+                effect_random(32768);
+                if (effect_random(2) == 0) tile.vx = (effect_random(32) - 32) * 1024;
+                tile.vy = (32 - (effect_random(32768) & 0x30)) * 1024;
+            } else {
+                tile.age = -int(i % 25) - 2 * int(i / 25);
+                tile.vx = (2 - (effect_random(32768) & 8)) * 1024;
+                tile.vy = ((effect_random(32768) & 8) - 2) * 1024;
+            }
+        }
+        auto simulated = effect.tiles;
+        int ticks = 0;
+        bool active;
+        do {
+            active = false;
+            for (auto& tile : simulated) active |= tile.advance();
+            ++ticks;
+        } while (active);
+        dc2pc_transition_duration_ms_ = ticks * 40;
+        effect.source.w = effect.canvas.w = 800;
+        effect.source.h = effect.canvas.h = 600;
+        effect.source.rgba.resize(800 * 600 * 4);
+        effect.canvas.rgba.resize(800 * 600 * 4);
+        for (int y = 0; y < 600; ++y) for (int x = 0; x < 800; ++x) {
+            const size_t source = (size_t(y * 6 / 5) * kScreenW + 160 + x * 6 / 5) * 4;
+            const size_t destination = (size_t(y) * 800 + x) * 4;
+            std::copy_n(dc2pc_displayed_frame_.begin() + source, 4, effect.source.rgba.begin() + destination);
+            auto* pixel = effect.source.rgba.data() + destination;
+            if (pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 255) pixel[3] = 0;
+        }
+        tick_dc2ty_transition();
+    }
+    script_wait_ms_ = dc2pc_transition_duration_ms_;
+    script_wait_pending_ = script_wait_skippable_ = true;
+    return true;
+}
+
+void SceneRunner::tick_dc2ty_transition() {
+    auto& effect = dc2ty_transition_;
+    if (dc2pc_transition_mode_ == 13) {
+        const bool first = effect.progress == 0;
+        effect.progress += effect.step;
+        if (!first) for (auto& alpha : effect.mask) alpha = int16_t(alpha + effect.progress);
+        effect.progress = std::min(effect.progress, 16);
+        // Native 0x4117D0 blends into the last displayed result, not a frozen source.
+        for (int y = 0; y < kScreenH; ++y) for (int x = 160; x < kScreenW - 160; ++x) {
+            const int alpha = std::clamp(int(effect.mask[size_t(y * 5 / 6) * 800 + (x - 160) * 5 / 6]), 0, 16);
+            const size_t pixel = (size_t(y) * kScreenW + x) * 4;
+            for (int c = 0; c < 3; ++c)
+                dc2pc_displayed_frame_[pixel + c] = uint8_t((int(dc2pc_displayed_frame_[pixel + c]) * (16 - alpha) +
+                    int(dc2pc_transition_target_[pixel + c]) * alpha) >> 4);
+        }
+        return;
+    }
+    for (auto& tile : effect.tiles) {
+        if (!tile.advance() || tile.age < 0 || tile.age >= 25) continue;
+        const int origin_x = tile.origin_x / 1024, origin_y = tile.origin_y / 1024;
+        // 0x40E6E0 burns the atlas's magenta key into the captured tile permanently.
+        for (int y = 0; y < std::min(32, 600 - origin_y); ++y) for (int x = 0; x < 32; ++x) {
+            const size_t mask = (size_t(y) * effect.atlas.w + tile.age * 32 + x) * 4;
+            if (effect.atlas.rgba[mask + 3] == 0)
+                effect.source.rgba[(size_t(origin_y + y) * 800 + origin_x + x) * 4 + 3] = 0;
+        }
+    }
+}
+
+void SceneRunner::draw_dc2ty_circles() {
+    auto& effect = dc2ty_transition_;
+    std::fill(effect.canvas.rgba.begin(), effect.canvas.rgba.end(), 0);
+    for (size_t i = 3; i < effect.canvas.rgba.size(); i += 4) effect.canvas.rgba[i] = 255;
+    for (const auto& tile : effect.tiles) {
+        if (tile.life <= 0) continue;
+        const int left = tile.x / 1024, top = tile.y / 1024;
+        const int origin_x = tile.origin_x / 1024, origin_y = tile.origin_y / 1024;
+        const int opacity = std::min(16, tile.life);
+        for (int y = std::max(0, -top); y < std::min({32, 600 - origin_y, 600 - top}); ++y)
+            for (int x = std::max(0, -left); x < std::min(32, 800 - left); ++x) {
+                const auto* source = effect.source.rgba.data() + (size_t(origin_y + y) * 800 + origin_x + x) * 4;
+                if (source[3] == 0) continue;
+                auto* target = effect.canvas.rgba.data() + (size_t(top + y) * 800 + left + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    target[c] = uint8_t((int(target[c]) * (16 - opacity) + int(source[c]) * opacity) >> 4);
+            }
+    }
+    frame_ = dc2pc_transition_target_;
+    blit(&frame_, kScreenW, kScreenH, 160, 0, effect.canvas, 1.2f, 255);
+    clip_dc2pc_viewport(frame_);
 }
 
 void SceneRunner::draw_dc2dm_scene_controls() {
@@ -2848,24 +3109,7 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         if (dc2dm_ending_.elapsed_ms >= dc2dm_ending_.duration_ms) finish_dc2dm_ending(false);
     }
     double remaining = elapsed_ms;
-    if (dc2pc_transition_active_) {
-        const int previous_tick = int(dc2pc_transition_elapsed_ms_ / 40);
-        dc2pc_transition_elapsed_ms_ += elapsed_ms;
-        if (dc2pc_transition_elapsed_ms_ >= dc2pc_transition_duration_ms_) {
-            finish_dc2pc_transition();
-        } else if (dc2pc_transition_mode_ == 0) {
-            // 0x423470 repeatedly blends with weights 3/6/8/10 out of 16,
-            // then copies the destination exactly after 16/8/4/2 ticks.
-            static constexpr int weights[] = {3, 6, 8, 10};
-            const int weight = weights[dc2pc_transition_speed_];
-            for (int tick = previous_tick; tick < int(dc2pc_transition_elapsed_ms_ / 40); ++tick)
-                for (size_t i = 0; i < dc2pc_displayed_frame_.size(); i += 4)
-                    for (size_t c = 0; c < 3; ++c)
-                        dc2pc_displayed_frame_[i+c] = uint8_t(
-                            (int(dc2pc_displayed_frame_[i+c]) * (16-weight) +
-                             int(dc2pc_transition_target_[i+c]) * weight) / 16);
-        }
-    }
+    update_dc2pc_transition(elapsed_ms);
     if (dc2dm_transition_.active) {
         dc2dm_transition_.elapsed_ms += elapsed_ms;
         if (dc2dm_transition_.elapsed_ms >= dc2dm_transition_.duration_ms) finish_dc2dm_transition();
@@ -2939,7 +3183,7 @@ void SceneRunner::compose_scene() {
         Image& l = kv.second;
         if (l.name.find("EFF") != std::string::npos) continue;  // particles
         if (!l.valid()) continue;
-        if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC) {
+        if (dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version)) {
             blit(&frame_, kScreenW, kScreenH, 160, 0, l, 1.2f, 255);
             continue;
         }
@@ -3001,7 +3245,7 @@ void SceneRunner::compose_scene() {
                                  + s.frame_cy * s.scale;
             const int base_x = int(std::lround(centre_x - float(s.img.w) * s.scale / 2));
             const int base_y = int(std::lround(centre_y - float(s.img.h) * s.scale / 2));
-            if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC) {
+            if (dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version)) {
                 int dx = base_x, dy = base_y;
                 if (s.scale == 1) {
                     if (s.canvas_w > 882) dx += s.x - (s.canvas_w*100/882)*s.x/100;
@@ -3024,7 +3268,7 @@ void SceneRunner::compose_scene() {
     // COMU phone chat overlays the scene, under the message window.
     draw_sakura();
     if (comu_visible_) draw_comu();
-    if (dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC)
+    if (dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version))
         clip_dc2pc_viewport(frame_);
     scene_frame_ = frame_;
     scene_dirty_ = false;
@@ -3038,7 +3282,7 @@ void SceneRunner::draw(int reveal_chars) {
     if (dc2dm_ending_.active) { draw_dc2dm_ending(); return; }
     if (credits_active_) { draw_credits(); return; }
     compose_scene();
-    const bool dc2pc = dc4::mes_opcode_profile(mes_.dialect, mes_.version).id == dc4::MesProfileId::DC2PC;
+    const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
     const bool dc2dm = mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72;
     if (dc2dm) draw_dc2dm_scene_controls();
     const bool dc2pc_held = dc2pc && (dc2pc_present_pending_ || dc2pc_black_ || dc2pc_transition_active_) &&
@@ -3635,6 +3879,61 @@ int text_width(const std::u16string& text, int size) {
     for (auto ch : text) width += cell_width(ch, size);
     return width;
 }
+bool dc2ty_choice_text(std::u16string* text) {
+    std::u16string normalized;
+    bool space = false, latin = false;
+    for (char16_t ch : *text) {
+        if ((ch >= 0x3040 && ch <= 0x30FA) || (ch >= 0x3400 && ch <= 0x9FFF) ||
+            (ch >= 0xFF66 && ch <= 0xFF9F)) return false;
+        if (ch >= 0xFF01 && ch <= 0xFF5E) ch -= 0xFEE0;
+        if (ch == u' ' || ch == u'\t' || ch == u'\r' || ch == u'\n' || ch == 0x3000 || ch == 0xA0) {
+            space = !normalized.empty();
+            continue;
+        }
+        if (ch < 0x20) return false;
+        latin |= (ch >= u'A' && ch <= u'Z') || (ch >= u'a' && ch <= u'z');
+        if (space) normalized.push_back(u' ');
+        normalized.push_back(ch);
+        space = false;
+    }
+    if (!latin || normalized.size() < 2 || normalized.front() != u'\u25CB') return false;
+    if (normalized[1] != u' ') normalized.insert(1, 1, u' ');
+    *text = std::move(normalized);
+    return true;
+}
+Image dc2ty_choice_label(const FontRenderer& font, const std::u16string& text, int max_width, int max_height) {
+    if (max_width <= 0 || max_height <= 0) return {};
+    // Match the translation patch's cropped bitmap placement while using the selected face.
+    for (int size = 28; size >= 18; --size) {
+        const int advance = font.text_width(text, float(size));
+        if (advance <= 0 || advance > 8192 || (advance > max_width && size > 18)) continue;
+        Image canvas;
+        canvas.w = advance + 16; canvas.h = 64;
+        canvas.rgba.assign(size_t(canvas.w) * canvas.h * 4, 0);
+        font.rasterize_line(text, 8, 40, &canvas.rgba, canvas.w, canvas.h, float(size),
+                            0xFFFFFF, false, 0, false, 0, 0, 1, false);
+        int left = canvas.w, top = canvas.h, right = -1, bottom = -1;
+        for (int y = 0; y < canvas.h; ++y) for (int x = 0; x < canvas.w; ++x) {
+            if (!canvas.rgba[(size_t(y) * canvas.w + x) * 4 + 3]) continue;
+            left = std::min(left, x); right = std::max(right, x);
+            top = std::min(top, y); bottom = std::max(bottom, y);
+        }
+        const int width = right - left + 1, height = bottom - top + 1;
+        if (width <= 0 || height <= 0 || height > max_height) continue;
+        Image label;
+        label.w = std::min(width, max_width); label.h = height;
+        label.rgba.assign(size_t(label.w) * label.h * 4, 255);
+        for (int y = 0; y < height; ++y) for (int x = 0; x < label.w; ++x) {
+            const int begin = x * width / label.w, end = (x + 1) * width / label.w;
+            int alpha = 0;
+            for (int sx = begin; sx < end; ++sx)
+                alpha += canvas.rgba[(size_t(top + y) * canvas.w + left + sx) * 4 + 3];
+            label.rgba[(size_t(y) * label.w + x) * 4 + 3] = uint8_t((alpha + (end - begin) / 2) / (end - begin));
+        }
+        return label;
+    }
+    return {};
+}
 }
 
 std::u16string SceneRunner::visible_text() const {
@@ -3844,13 +4143,12 @@ UiButton SceneRunner::dc2pc_choice_button(size_t index) const {
 
 void SceneRunner::draw_dc2pc_choices() {
     const auto& choices = vm_.choices();
+    const bool dc2ty = mes_.version == 0x5F69;
     const int offset_y = dc2dm_ui_ ? 240 - int(choices.size()) * 30 - 64 : 0;
     for (size_t i = 0; i < choices.size(); ++i) {
         const auto b = dc2pc_choice_button(i);
         const bool hover = choice_at(pointer_x_, pointer_y_) == int(i);
-        // Keep the authored selection flower/border visible on touch-down
-        // too; the native pressed chip alone contains only the row fill.
-        const int state = hover ? (dc2dm_ui_ && pointer_down_ ? 2 : 1) : 0;
+        const int state = hover ? ((dc2dm_ui_ || dc2ty) && pointer_down_ ? 2 : 1) : 0;
         const ChoiceUi* ui = i < dc2pc_choices_.size() ? &dc2pc_choices_[i] : nullptr;
         if (ui && !ui->state[state].empty()) {
             for (size_t n = 0; n < ui->state[state].size(); ++n) {
@@ -3865,12 +4163,28 @@ void SceneRunner::draw_dc2pc_choices() {
         } else {
             const int y = 200 + int(i) * 56;
             blit_chip(UiChip{136, y, 0, 378, 480, 40, 37, true}, 128);
-            if (hover) blit_chip(UiChip{136, y, 0, 458, 480, 40, 37, true}, 255);
+            if (state == 1) blit_chip(UiChip{136, y, 0, 458, 480, 40, 37, true}, 255);
         }
         if (!font_) continue;
         const bool dm_latin = dc2dm_ui_ && dc2dm_latin_text(sjis_to_utf16(choices[i].text));
         auto text = display_text(choices[i].text, 22, dm_latin).text;
         if (dc4::is_latin()) std::replace(text.begin(), text.end(), u'\u3000', u' ');
+        if (dc2ty && dc2ty_choice_text(&text)) {
+            const int panel_width = int(std::lround(b.w / 1.2)), panel_height = int(std::lround(b.h / 1.2));
+            auto label = dc2ty_choice_label(*font_, text, panel_width - 25, std::min(28, panel_height - 9));
+            if (label.valid()) {
+                const int x = int(std::lround((b.x - 160) / 1.2)) + 12;
+                const int y = int(std::lround(b.y / 1.2)) + (panel_height - label.h) / 2;
+                Image shadow = label;
+                for (size_t at = 0; at < shadow.rgba.size(); at += 4)
+                    shadow.rgba[at] = shadow.rgba[at + 1] = shadow.rgba[at + 2] = 0;
+                blit(&frame_, kScreenW, kScreenH, 160 + int(std::lround((x + 1) * 1.2)),
+                     int(std::lround((y + 1) * 1.2)), shadow, 1.2f, 255);
+                blit(&frame_, kScreenW, kScreenH, 160 + int(std::lround(x * 1.2)),
+                     int(std::lround(y * 1.2)), label, 1.2f, 255);
+                continue;
+            }
+        }
         const int text_x = ui && ui->text_x ? ui->text_x : dc2dm_ui_ ? 312 : 182;
         const int text_y = (ui && ui->text_y ? ui->text_y : dc2dm_ui_ ? 80 + int(i) * 60 : 204 + int(i) * 56) + offset_y;
         const double scale = dc2dm_ui_ ? 1.25 : 1.2;

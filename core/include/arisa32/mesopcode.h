@@ -5,7 +5,7 @@
 namespace dc4 {
 
 enum class CmdKind { Nop, Param2, ParamStr, Str, Text, Words4 };
-enum class MesProfileId { Modern, ClassicDC2, ClassicDM, DC2PC };
+enum class MesProfileId { Modern, ClassicDC2, ClassicDM, DC2PC, DC2TY };
 enum class OperandTransform { None, ButtonSource, StaticState, ByteAudio };
 
 // Values are shared engine service IDs. Operand kind still matters for legacy
@@ -127,6 +127,10 @@ struct MesOpcodeProfile {
 };
 
 const MesOpcodeProfile& mes_opcode_profile(MesDialect dialect, uint32_t version = 0);
+inline bool mes_uses_classic_dc2(MesDialect dialect, uint32_t version) {
+    const auto id = mes_opcode_profile(dialect, version).id;
+    return id == MesProfileId::DC2PC || id == MesProfileId::DC2TY;
+}
 // Returns zero for an incomplete command; used by loading and decoding.
 size_t mes_command_size(const uint8_t* code, size_t size, size_t pos, CmdKind kind);
 

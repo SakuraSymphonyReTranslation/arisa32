@@ -204,6 +204,18 @@ the additional emulator slots have filenames beyond that menu's range.
 Previews use native stems (for example `DC403.png`). Scenario-title descriptions
 are resolved from the scenario identity in both old snapshots and native saves.
 
+DC2TY uses `dc2ty00.dat` for quicksave and `dc2ty01.dat` for the latest
+manual-save copy. Its 48 manual slots follow the original ten-page layout:
+02..04, 08..12, then five-record groups with an eight-record page stride,
+ending at 72..76. Each new save has a checksum-bound `.dat.arisa` companion;
+old `.dc4sav` records remain loadable. Save rows show the scenario title and
+native character icon. Companions retain BGM and looping sound-effect
+positions, while dialogue voice replay starts from the beginning. Original
+PC reader/loader acceptance has been checked in isolated emulation; full
+PC scene restoration remains unverified. Import rejects conditional overlays,
+background-plane chips, and nonzero background/pan offsets. See the
+[DC2TY save validation](../docs/dc2ty-save-compatibility.md) for details.
+
 **Game settings → Export saves / Import saves** uses Android document providers
 and a versioned ZIP archive. Exports include manual/quick/automatic saves,
 previews, native progress/profile and read history. Import closes the running

@@ -18,6 +18,7 @@ set(DC4_CORE_SRC
     ${DC4_CORE}/src/mesvm.cpp
     ${DC4_CORE}/src/voice.cpp
     ${DC4_CORE}/src/xpcm.cpp
+    ${DC4_CORE}/src/circus_vq.cpp
     ${DC4_CORE}/src/bgm.cpp
     ${DC4_CORE}/src/audio.cpp
     ${DC4_CORE}/src/scene_audio.cpp

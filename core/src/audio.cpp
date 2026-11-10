@@ -1,6 +1,7 @@
 #include "arisa32/audio.h"
 #include "arisa32/xpcm.h"
 #include "arisa32/resource.h"
+#include "circus_vq.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -49,15 +50,27 @@ bool normalize_ogg(std::vector<uint8_t>* bytes) {
 bool decode_xpcm_pcm(const uint8_t* data, size_t size,
                      std::vector<int16_t>* out, uint32_t* rate,
                      uint16_t* channels) {
-    if (!data || !out || !rate || !channels) return false;
+    if (!out || !rate || !channels) return false;
     out->clear();
     *rate = 0;
     *channels = 0;
+    if (!data) return false;
     XpcmInfo info;
     if (!parse_xpcm(data, size, &info) || info.header_size > size ||
         info.data_size > size - info.header_size) return false;
     const uint8_t* payload = data + info.header_size;
     size_t length = info.data_size;
+    if (info.codec == XpcmCodec::CircusVq) {
+        if (info.format_tag != 1 || !info.sample_rate ||
+            (info.channels != 1 && info.channels != 2) || info.bits != 16 ||
+            info.block_align != info.channels * 2 ||
+            info.decoded_pcm_size % (info.channels * 2) != 0 ||
+            !decode_circus_vq(payload, length, info.decoded_pcm_size, info.compression_flags, out))
+            return false;
+        *rate = info.sample_rate;
+        *channels = info.channels;
+        return true;
+    }
     if (info.codec == XpcmCodec::Vorbis) {
         if (length > size_t(std::numeric_limits<int>::max())) return false;
         std::vector<uint8_t> fixed(payload, payload + length);

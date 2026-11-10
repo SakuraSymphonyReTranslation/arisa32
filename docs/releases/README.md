@@ -6,6 +6,7 @@ Ketentuan pengguna: setiap deskripsi rilis harus tersedia lengkap dalam Bahasa I
 
 | Versi | Bahasa Indonesia | English |
 | --- | --- | --- |
+| v0.7.2 | [Catatan rilis](v0.7.2/id.md) | [Release notes](v0.7.2/en.md) |
 | v0.7.1 | [Catatan rilis](v0.7.1/id.md) | [Release notes](v0.7.1/en.md) |
 | v0.7.0 | [Catatan rilis](v0.7.0/id.md) | [Release notes](v0.7.0/en.md) |
 | v0.6.9 | [Catatan rilis](v0.6.9/id.md) | [Release notes](v0.6.9/en.md) |

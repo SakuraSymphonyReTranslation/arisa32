@@ -45,7 +45,13 @@ public:
     bool load(const std::string& data_dir, std::string* error = nullptr);
     bool loaded() const;
     bool is_dc2pc() const;
+    bool is_dc2ty() const;
     bool is_dc2dm() const;
+    std::string startup_movie() const;
+    void open_title_intro();
+    bool title_intro_active() const;
+    bool title_voice_ready() const;
+    bool story_picker_active() const;
     void open(SystemMenuPage page);
     // Restore the character tab and page from the last selected replay.
     void resume_scenes();
@@ -63,6 +69,7 @@ public:
     void scroll(int delta); // Music list and gallery variant browsing.
     SystemMenuAction back();
     SystemMenuAction activate(const std::string& original_tag);
+    SystemMenuAction music_finished();
     bool confirming() const;
     SystemMenuAction answer_confirmation(bool yes);
     // Bound dialogs must not outlive this menu; all use its native bank 93.

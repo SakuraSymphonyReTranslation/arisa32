@@ -89,6 +89,8 @@ final class GameLibrary {
     static String detectTitle(File dataRoot) {
         org.dc4engine.profile.Dc2PlusCommunicationProfile dc2pc = new org.dc4engine.profile.Dc2PlusCommunicationProfile();
         if (dc2pc.matches(dataRoot, null)) return dc2pc.getDisplayName();
+        org.dc4engine.profile.Dc2ToYouProfile dc2ty = new org.dc4engine.profile.Dc2ToYouProfile();
+        if (dc2ty.matches(dataRoot, null)) return dc2ty.getDisplayName();
         org.dc4engine.profile.Dc2DearestMarriageProfile dc2dm = new org.dc4engine.profile.Dc2DearestMarriageProfile();
         if (dc2dm.matches(dataRoot, null)) return dc2dm.getDisplayName();
         if (dataRoot == null) return "CIRCUS ADV32";

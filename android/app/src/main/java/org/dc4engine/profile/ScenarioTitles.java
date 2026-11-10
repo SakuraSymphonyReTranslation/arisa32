@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/** Native DC4/DC2DM pointer tables and the fixed-width DC2PC chapter table. */
+/** Native DC4/DC2DM pointer tables and fixed-width DC2PC/DC2TY chapter tables. */
 public final class ScenarioTitles {
     private ScenarioTitles() {}
     private static int u32(byte[] b, int p) {
@@ -36,8 +36,9 @@ public final class ScenarioTitles {
             case 'd': return prefix(b,p,"dc4_");
             case 'm': return prefix(b,p,"mar_");
             case 'f': return prefix(b,p,"fst_");
-            case 's': return prefix(b,p,"snd_") || prefix(b,p,"sin_") || prefix(b,p,"suc");
-            case 't': return prefix(b,p,"trd_");
+            case 's': return prefix(b,p,"snd_") || prefix(b,p,"sin_") || prefix(b,p,"suc") || prefix(b,p,"set_");
+            case 't': return prefix(b,p,"trd_") || prefix(b,p,"ty_");
+            case 'h': return prefix(b,p,"hyd_");
             case '1': case '2': case '3': return prefix(b,p+1,"ind_");
             default: return false;
         }
@@ -48,6 +49,14 @@ public final class ScenarioTitles {
             if (c >= '\u3040' && c <= '\u30ff' || c >= '\u4e00' && c <= '\u9fff') return true;
         }
         return false;
+    }
+    private static boolean tyScript(String name) {
+        return name.startsWith("hyd_") || name.startsWith("set_") || name.startsWith("ty_");
+    }
+    private static boolean inlineNamePadding(byte[] bytes, int offset, int length) {
+        if (offset > bytes.length - 256) return false;
+        for (int i = length; i < 256; ++i) if (bytes[offset + i] != 0) return false;
+        return true;
     }
     public static Map<String, String> readExe(File exe) throws IOException {
         Map<String, String> titles = new HashMap<>();
@@ -67,20 +76,21 @@ public final class ScenarioTitles {
             if (i > 0 && b[i-1] != 0) continue;
             if (!scriptStart(b,i)) continue;
             String name = string(b, i, 64, StandardCharsets.US_ASCII).toLowerCase(Locale.ROOT);
-            if (!name.matches("(?:dc4_[a-z0-9_]+|(?:mar|sin)_[0-9]{4}_[a-z][0-9]+|suc[0-9]{2}_[0-9]{4}_[a-z0-9_]+|(?:fst|snd|trd|[123]ind)_[a-z0-9_]+)")) continue;
+            if (!name.matches("(?:dc4_[a-z0-9_]+|(?:mar|sin)_[0-9]{4}_[a-z][0-9]+|suc[0-9]{2}_[0-9]{4}_[a-z0-9_]+|(?:fst|snd|trd|[123]ind|hyd|set|ty)_[a-z0-9_]+)")) continue;
             for (int s = 0; s < count; ++s) {
                 int off = sections+s*40, raw = u32(b, off+20), bytes = u32(b, off+16);
                 if (raw >= 0 && bytes >= 0 && i >= raw && (long)i < (long)raw + bytes)
                     scripts.put(base + u32(b, off+12) + i - raw, name);
             }
-            // DC2PC's inline record includes a four-byte field after the name.
+            // Classic inline records include a four-byte field after the name.
             String title = string(b, i+260, 256, sjis);
-            if (!dmScript(name) && japanese(title)) titles.put(name, title);
+            if (!dmScript(name) && (!tyScript(name) || inlineNamePadding(b, i, name.length()))
+                    && japanese(title)) titles.put(name, title);
         }
         if (scripts.isEmpty()) return titles;
         for (int i = 0; i <= b.length-8; i += 4) {
             String name = scripts.get(u32(b, i));
-            if (name == null) continue;
+            if (name == null || tyScript(name)) continue;
             long va = Integer.toUnsignedLong(u32(b, i+4));
             for (int s = 0; s < count; ++s) {
                 int off = sections+s*40;

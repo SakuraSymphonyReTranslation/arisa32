@@ -115,6 +115,71 @@ public final class ProfileChecks {
             check(actual.size()==279,"all real DM scenario titles");
             check("Awal semester terakhir sekolah".equals(actual.get("mar_0114_a1")),"real Indonesian PC title");
         }
+        ByteBuffer tyExe = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN);
+        tyExe.put(0, (byte)'M'); tyExe.put(1, (byte)'Z'); tyExe.putInt(60, 128);
+        tyExe.putInt(128, 0x4550); tyExe.putShort(134, (short)1); tyExe.putShort(148, (short)224);
+        tyExe.putInt(180, 0x400000);
+        tyExe.putInt(section + 12, 0x1000); tyExe.putInt(section + 16, 3584); tyExe.putInt(section + 20, 512);
+        String[] tyScripts = {"HYD_0611_A1_AVN", "set_0214_f1_214", "ty_myu09_d1_myu"};
+        String[] tyTitles = {"始まりの始まり", "小恋とバレンタイン", "機械の心"};
+        for (int i = 0; i < tyScripts.length; ++i) {
+            tyExe.position(512 + i * 520); tyExe.put(tyScripts[i].getBytes(StandardCharsets.US_ASCII));
+            tyExe.position(772 + i * 520); tyExe.put(tyTitles[i].getBytes(Charset.forName("windows-31j")));
+        }
+        tyExe.position(3000); tyExe.put("HYD_0611_A1_AVN\0runtime reference".getBytes(StandardCharsets.US_ASCII));
+        tyExe.position(3260); tyExe.put("別の文字列".getBytes(Charset.forName("windows-31j")));
+        Files.write(exe, tyExe.array());
+        Map<String,String> tyExtracted = ScenarioTitles.readExe(exe.toFile());
+        check(tyExtracted.size() == 3, "TY title table has all three script families");
+        GameProfile ty = GameProfileRegistry.getProfileById("dc2ty");
+        for (int i = 0; i < tyScripts.length; ++i)
+            check(ty.resolveScenarioTitle(tyScripts[i] + ".MES", "jp", tyExtracted, null).equals(tyTitles[i]),
+                    "TY title resolves script identity " + tyScripts[i]);
+        check(ty.resolveScenarioTitle(tyScripts[0], "id", tyExtracted,
+                Map.of("始まりの始まり", "Awal dari awal")).equals("Awal dari awal"), "TY scenario.ini translation applied");
+        byte[] tySave = new byte[0x2944];
+        ByteBuffer.wrap(tySave).order(ByteOrder.LITTLE_ENDIAN).putInt(1);
+        byte[] tyScript = "HYD_0611_A1_AVN".getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(tyScript, 0, tySave, 4, tyScript.length);
+        tySave[0x1388] = 2; tySave[0x1389] = 11; tySave[0x138A] = 10;
+        tySave[0x138B] = 22; tySave[0x138C] = 35; tySave[0x138D] = 26;
+        Files.write(save, tySave);
+        date.clear(); date.set(2026, 10, 10, 22, 35, 0);
+        check(SaveMetadata.timestamp(save.toFile()) == date.getTimeInMillis(), "TY date uses native minute precision");
+        check(SaveMetadata.script(save.toFile(), false).equals("HYD_0611_A1_AVN"), "TY native script auto detection");
+        check(SaveMetadata.characterIcon(save.toFile()) == 2, "TY native character icon");
+        Path previousSave = root.resolve("previous-ty.dc4sav");
+        Files.write(previousSave, new byte[]{1});
+        check(previousSave.toFile().setLastModified(date.getTimeInMillis() + 40000), "legacy save timestamp fixture");
+        check(save.toFile().setLastModified(date.getTimeInMillis() + 55000), "TY save timestamp fixture");
+        check(SaveMetadata.isNewer(save.toFile(), previousSave.toFile(), true), "new TY save wins over earlier legacy save in same minute");
+        check(!SaveMetadata.isNewer(previousSave.toFile(), save.toFile(), true), "earlier legacy save does not replace newer TY save");
+        check(!SaveMetadata.isNewer(save.toFile(), previousSave.toFile(), false), "other profiles retain full timestamp precision");
+        check(SaveMetadata.isNewer(save.toFile(), null, true) && !SaveMetadata.isNewer(null, save.toFile(), true), "newest-save empty state");
+        check(previousSave.toFile().setLastModified(date.getTimeInMillis() - 1000), "earlier minute fixture");
+        check(SaveMetadata.isNewer(save.toFile(), previousSave.toFile(), true), "TY latest selection respects distinct embedded minutes");
+        tySave[0x1389] = 13; Files.write(save, tySave);
+        check(SaveMetadata.timestamp(save.toFile()) == save.toFile().lastModified(), "invalid TY date falls back to file date");
+        tySave[0] = 2; Files.write(save, tySave);
+        check(SaveMetadata.characterIcon(save.toFile()) == -1, "unsupported native header has no icon");
+        Files.write(save, new byte[]{1, 0, 0, 0});
+        check(SaveMetadata.characterIcon(save.toFile()) == -1, "truncated native record has no icon");
+        check(SaveMetadata.characterIcon(null) == -1, "missing native record has no icon");
+        realExe = System.getenv("DC2TY_EXE");
+        if (realExe != null) {
+            Map<String,String> actual = ScenarioTitles.readExe(new File(realExe));
+            check(actual.size() == 129, "all real TY scenario titles");
+            check("始まりの始まり".equals(actual.get("hyd_0611_a1_avn")), "real TY quicksave title");
+            check("小恋とバレンタイン".equals(actual.get("set_0214_f1_214")), "real TY current slot title");
+            check("梅雨のある晴れた日".equals(actual.get("set_0613_b1_kko")), "real TY PC screenshot title");
+            Map<String,String> bundled = new HashMap<>();
+            for (String line : Files.readAllLines(Path.of("android/app/src/main/assets/scenario-titles/dc2ty.tsv"))) {
+                int tab = line.indexOf('\t');
+                check(tab > 0, "valid bundled TY title row");
+                bundled.put(line.substring(0, tab), line.substring(tab + 1));
+            }
+            check(actual.equals(bundled), "bundled TY titles match native executable exactly");
+        }
         check(GameProfileRegistry.getProfileById("dc4").isNativeSaveFile("DC403.png"), "native stem thumbnail archive");
         check(GameProfileRegistry.getProfileById("dc4").extractSlotNumber("DC4103.dat") == -1, "native slot beyond 100 rejected");
     }
@@ -180,11 +245,78 @@ public final class ProfileChecks {
         Files.write(main, new byte[]{0, 0, 0, 0, 0x72, (byte) 0x9D});
         check(!dm.matches(data.toFile(), "DC2DM"), "DC2DM rejects truncated version");
     }
+    private static void toYou(Path root) throws Exception {
+        Path data = root.resolve("renamed-ty/AdvData");
+        mes(data, 0x5F69, 24);
+        Files.delete(data.resolve("mes/TITLE_00.MES"));
+        GameProfile ty = GameProfileRegistry.resolveProfile(data.toFile(), "unknown");
+        check(ty.getId().equals("dc2ty"), "TY signature after four-byte labels");
+        check(GameProfileRegistry.getProfileById("DC2TY") == ty, "TY profile ID lookup");
+        check(GameLibrary.detectTitle(data.toFile()).equals(ty.getDisplayName()), "TY content title in neutral directory");
+        check(ty.matches(data.getParent().toFile(), null), "TY accepts game parent directory");
+        check(GameProfileRegistry.resolveProfile(null, ty.getDisplayName()) == ty, "TY full title fallback");
+        check(GameProfileRegistry.resolveProfile(null, "DC2TY") == ty, "TY short name fallback");
+        check(!GameProfileRegistry.getProfileById("dc2pc").matches(data.toFile(), "DC2PC"), "TY cannot select PC profile");
+        check(ty.getSaveFilePrefix().equals("dc2ty"), "TY uses original lowercase native prefix");
+        check(ty.getSaveSubdir().equals("Savegame"), "TY uses original native save directory");
+        Path saves = Files.createDirectories(data.resolve("sAvEdAtA"));
+        Files.write(saves.resolve("SLOT1.DC4SAV"), new byte[]{1});
+        Files.write(saves.resolve("DC2PC02.dat"), new byte[]{2});
+        check(GameSaveDirectory.resolve(data.getParent().toFile(), data.toFile(), data.toFile()).toPath().equals(saves),
+                "TY preserves existing save folder casing");
+        check(ty.resolveSlotSaveFile(saves.toFile(), 0).getName().equals("SLOT1.DC4SAV"), "TY finds existing snapshot casing");
+        check(ty.saveTarget(saves.toFile(), 0).getName().equals("dc2ty02.dat"), "TY new save uses native target and preserves legacy snapshot");
+        check(ty.saveTarget(saves.toFile(), 1).getName().equals("dc2ty03.dat"), "TY second native slot");
+        check(ty.resolveQuickSaveFile(saves.toFile()).getName().equals("dc2ty00.dat"), "TY native quicksave target");
+        check(ty.extractSlotNumber("SLOT100.DC4SAV") == 100 && ty.extractSlotNumber("slot101.dc4sav") == -1,
+                "TY slot bounds match core save paths");
+        check(ty.extractSlotNumber("DC2PC02.dat") == -1 && ty.extractSlotNumber("DC2TY02.dat") == 1,
+                "TY native numbering is isolated from PC profile");
+        check(ty.extractSlotNumber("dc2ty00.dat") == 0 && ty.extractSlotNumber("dc2ty01.dat") == -1,
+                "TY quicksave and latest-copy identities");
+        check(ty.extractSlotNumber("dc2ty05.dat") == -1 && ty.extractSlotNumber("dc2ty07.dat") == -1,
+                "TY native page gaps are not regular slots");
+        check(ty.extractSlotNumber("dc2ty08.dat") == 4 && ty.extractSlotNumber("dc2ty76.dat") == 48,
+                "TY native page two and final visible slot");
+        for (int logical = 0; logical <= 100; ++logical)
+            check(ty.extractSlotNumber(ty.saveTarget(saves.toFile(), logical - 1).getName()) == logical,
+                    "TY native sparse page mapping round trip " + logical);
+        Path nativeSlot = Files.write(saves.resolve("Dc2Ty02.DAT"), new byte[]{3});
+        Path nativeQuick = Files.write(saves.resolve("DC2TY00.dat"), new byte[]{4});
+        Path nativeLatest = Files.write(saves.resolve("dc2ty01.DaT"), new byte[]{5});
+        Files.write(saves.resolve("QUICKSAVE.DC4SAV"), new byte[]{6});
+        check(ty.resolveSlotSaveFile(saves.toFile(), 0).toPath().equals(nativeSlot), "TY native slot takes priority over legacy snapshot");
+        check(ty.saveTarget(saves.toFile(), 0).toPath().equals(nativeSlot), "TY native write preserves existing casing");
+        check(ty.resolveQuickSaveFile(saves.toFile()).toPath().equals(nativeQuick), "TY native quicksave takes priority over legacy snapshot");
+        check(ty.resolveLatestSaveCopy(saves.toFile()).toPath().equals(nativeLatest), "TY latest-copy uses existing casing");
+        directoryReads.clear();
+        File[] batch = ty.resolveSaveFiles(new CountedFile(saves.toString()), 100);
+        check(batch[0].toPath().equals(nativeQuick) && batch[1].toPath().equals(nativeSlot), "TY batched save picker native priority");
+        check(batch[4].getName().equals("dc2ty08.dat") && batch[48].getName().equals("dc2ty76.dat"), "TY batched save picker sparse pages");
+        check(directoryReads.getOrDefault(saves.toString(), 0) == 1, "TY batched picker reads directory once");
+        check(ty.resolveSaveFiles(null, 100)[0] == null, "TY missing directory leaves picker empty");
+        check(ty.isNativeSaveFile("system-profile.dat") && ty.isNativeSaveFile("slot1.dc4sav.png"),
+                "TY backup includes progress and thumbnails");
+        check(!ty.isNativeSaveFile("DC2PC02.dat"), "TY excludes another game's saves");
+        check(ty.isNativeSaveFile("dc2ty02.dat.arisa") && ty.isNativeSaveFile("DC2TY00.dat"),
+                "TY archives native saves and extended companions");
+        check(ty.extractSlotNumber("dc2ty02.dat.arisa") == -1, "TY companion is not a separate save slot");
+        check(!ty.isNativeSaveFile("dc2ty02.dat.arisa.tmp"), "TY excludes incomplete companion writes");
+        Path movie = Files.createDirectories(data.resolve("MOVIE")).resolve("DC2TY_OP.mpg");
+        Files.write(movie, new byte[]{3});
+        check(ty.resolveMovieFile(data.toFile(), "jp", "DC2TY_OP").toPath().equals(movie), "TY movie resolver adds extension");
+        mes(data, 0x5E69, 24);
+        check(!ty.matches(data.toFile(), "DC2TY"), "TY neighboring signature overrides name fallback");
+        Files.write(data.resolve("mes/MAIN.MES"), new byte[]{24,0,0,0,0x69,0x5F});
+        check(!ty.matches(data.toFile(), "DC2TY"), "TY truncated label table rejected");
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("arisa32-profile-check-");
         try {
             scenarioMetadata(root);
             dearestMarriage(root);
+            toYou(root);
             Path data = root.resolve("renamed-game/AdvData");
             mes(data, 0x9969, 2);
             GameProfile dc2pc = GameProfileRegistry.resolveProfile(data.toFile(), "unknown");
@@ -305,9 +437,10 @@ public final class ProfileChecks {
             check(!dc2pc.matches(data.toFile(), "DC2PC"), "neighboring classic MES version cannot select DC2PC");
             Files.write(data.resolve("mes/MAIN.MES"), new byte[]{-1,-1,-1,127});
             check(!dc2pc.matches(data.toFile(), null), "truncated label table rejected");
-            check(GameProfileRegistry.getAllProfiles().size() == 5, "all five profiles registered");
+            check(GameProfileRegistry.getAllProfiles().size() == 6, "all six profiles registered");
             check(GameProfileRegistry.getAllStandardScanPaths().contains("DC2PC/AdvData"), "DC2PC scan path");
             check(GameProfileRegistry.getAllStandardScanPaths().contains("Games/DC2DM/AdvData"), "DC2DM scan path");
+            check(GameProfileRegistry.getAllStandardScanPaths().contains("Games/DC2TY/AdvData"), "DC2TY scan path");
             System.out.println("PASS: " + assertions + " profile checks");
         } finally {
             try (var paths = Files.walk(root)) {

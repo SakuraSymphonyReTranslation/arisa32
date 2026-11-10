@@ -124,8 +124,10 @@ LogRow capture_log_row(dc4scene::SceneRunner& scene, int line) {
     return row;
 }
 
-std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bool latin, bool dc2dm) {
+std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bool latin, bool dc2dm,
+                                              const dc4scene::FontRenderer* font) {
     const int size = dc2dm ? 22 : (latin ? 18 : 22);
+    const bool proportional = dc2dm && font && font->is_pretendard_jp_bold();
     // The Japanese MES already lays out its lines. Only wrap unusually long
     // lines at the row's right edge; 545px incorrectly split a 25-cell line.
     const int wrap = dc2dm ? 506 : (latin ? 545 : 720);
@@ -155,7 +157,8 @@ std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bo
             int width = 0;
             while (take < end) {
                 const char16_t ch = normalized[take];
-                const int cell = (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size) - (dc2dm ? 1 : 0);
+                const int cell = proportional ? font->glyph_advance(ch,float(size)) :
+                    (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? size / 2 : size) - (dc2dm ? 1 : 0);
                 if (width + cell > wrap && take > begin) {
                     if (last_break > begin) take = last_break;
                     break;
@@ -469,11 +472,35 @@ int LogScreen::scroll_button(int x, int y, int scroll, size_t row_count) const {
     return 0;
 }
 
+void LogScreen::select_at(int x, int y, int scroll, size_t row_count) {
+    if (!dc2dm_) return;
+    scroll = std::clamp(scroll, 0, last_scroll(row_count));
+    const int row = dm_row_at(x, y, scroll, row_count);
+    if (row >= 0)
+        dc2dm_selected_reverse_ = std::min(visible_rows(), int(row_count) - scroll) - 1 - (row - scroll);
+}
+
+void LogScreen::select_top(int scroll, size_t row_count) {
+    if (!dc2dm_) return;
+    scroll = std::clamp(scroll, 0, last_scroll(row_count));
+    dc2dm_selected_reverse_ = std::max(0, std::min(visible_rows(), int(row_count) - scroll) - 1);
+}
+
 void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
                           int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
                           std::vector<uint8_t>* frame) {
     constexpr int width = 1024, height = 576;
+    const bool proportional = font.is_pretendard_jp_bold();
     std::vector<uint8_t> native(size_t(width) * height * 4, 0);
+    struct OutputText {
+        std::u16string value;
+        int x, baseline, size, raster_size, top, bottom;
+        uint32_t rgb;
+        bool proportional = false;
+        bool voice_after = false;
+        int left = 0, right = 1024;
+    };
+    std::vector<OutputText> output_text;
     const auto native_blit = [&](const dc4scene::Image& image, int sx, int sy,
                                  int w, int h, int x, int y) {
         for (int py = 0; py < h; ++py) for (int px = 0; px < w; ++px) {
@@ -497,17 +524,24 @@ void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
         }
         return ascii;
     };
-    const auto text = [&](const std::u16string& value, int x, int top, bool latin, uint32_t rgb) {
-        font.rasterize_line(value, x, top + (latin ? 18 : 22), &native, width, height,
-                            22, rgb, false, 0, true, -1, latin ? 17 : 22);
+    const auto render_text = [&](const std::u16string& value, int x, int baseline,
+                                 int size, int raster_size, bool latin, uint32_t rgb,
+                                 int top, int bottom) {
+        if (proportional || (latin && font.is_ms_gothic())) {
+            output_text.push_back({value,x,baseline,size,proportional ? size : raster_size,top,bottom,rgb,proportional});
+        } else {
+            font.rasterize_line(value,x,baseline,&native,width,height,
+                                float(size),rgb,false,0,true,-1,float(raster_size));
+        }
     };
     scroll = std::clamp(scroll, 0, last_scroll(rows.size()));
     const int visible = std::min(visible_rows(), int(rows.size()) - scroll);
-    const int hovered = dm_row_at(mouse_x, mouse_y, scroll, rows.size());
-    if (hovered >= 0) dc2dm_selected_reverse_ = visible - 1 - (hovered - scroll);
+    select_at(mouse_x, mouse_y, scroll, rows.size());
     native_blit(back_, 0, 0, back_.w, back_.h, 0, 0);
     if (rows.empty())
-        text(latin_mode_ ? u"No dialogue history yet." : u"履歴はありません。", 364, 41, latin_mode_, dc2dm_text_rgb_);
+        render_text(latin_mode_ ? u"No dialogue history yet." : u"履歴はありません。",
+                    364,41+(latin_mode_ ? 18 : 22),22,latin_mode_ ? 17 : 22,
+                    latin_mode_,dc2dm_text_rgb_,29,145);
     for (int slot = 0; slot < visible_rows(); ++slot) {
         const int index = scroll + slot, top = 29 + slot * 133;
         if (index >= int(rows.size())) break;
@@ -516,6 +550,7 @@ void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
             ? dc2dm_selected_rgb_ : dc2dm_text_rgb_;
         native_blit(chip_, 228, 0, 680, 124, 200, top - 4);
         const int id = face_id(row.name, row.script);
+        bool deferred_voice = false;
         if (id >= 0)
             native_blit(chip_, id == 24 ? 864 : 168 + id % 6 * 116,
                         id == 24 ? 480 : 132 + id / 6 * 116, 116, 116, 240, top);
@@ -524,18 +559,26 @@ void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
             for (char16_t ch : row.name)
                 bytes += ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? 1 : 2;
             const bool latin = latin_text(row.name);
-            const int x = (bytes >= 16 ? 304 : 288) - 4 * bytes;
-            font.rasterize_line(row.name, x, top + 15 + (latin ? 13 : 16),
-                                &native, width, height, 16, rgb, false, 0, true, -1, latin ? 12 : 16);
+            const int x = (bytes >= 16 ? 304 : 288) -
+                (proportional ? font.text_width(row.name,16)/2 : 4 * bytes);
+            render_text(row.name,x,top+15+(latin ? 13 : 16),16,latin ? 12 : 16,
+                        latin,rgb,top,top+116);
+            if (proportional) {
+                output_text.back().left = 200;
+                output_text.back().right = 364;
+            }
+            deferred_voice = (proportional || (latin && font.is_ms_gothic())) && !row.voice.empty();
+            if (deferred_voice) output_text.back().voice_after = true;
         }
         const int body_top = top + (row.name.empty() ? 4 : 12);
-        if (!row.voice.empty())
+        if (!row.voice.empty() && !deferred_voice)
             native_blit(chip_, 84, 120, 24, 24, 208, body_top - 4);
         const bool latin = latin_text(row.text);
         int y = body_top;
-        for (const auto& line : text_lines(row.text, latin, true)) {
+        for (const auto& line : text_lines(row.text, latin, true, &font)) {
             if (y + 22 > top + 116) break;
-            text(line, 364, y, latin, rgb);
+            render_text(line,364,y+(latin ? 18 : 22),22,latin ? 17 : 22,
+                        latin,rgb,top,top+116);
             y += latin ? 24 : 32;
         }
     }
@@ -558,6 +601,41 @@ void LogScreen::draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
         const auto src = (size_t(y * 4 / 5) * width + x * 4 / 5) * 4;
         const auto dst = (size_t(y) * dc4scene::kScreenW + x) * 4;
         std::copy_n(native.data() + src, 4, frame->data() + dst);
+    }
+    for (const auto& run : output_text) {
+        // Align the strip to four native pixels so rounding keeps the global
+        // baseline, including rows whose native origins are not multiples of four.
+        const int top = std::max(0,run.top/4*4);
+        const int y = top*5/4;
+        const int bottom = std::min(dc4scene::kScreenH,(run.bottom*5+3)/4);
+        const auto begin = frame->begin()+size_t(y)*dc4scene::kScreenW*4;
+        const auto end = frame->begin()+size_t(bottom)*dc4scene::kScreenW*4;
+        std::vector<uint8_t> strip(begin,end);
+        font.rasterize_line(run.value,run.x,run.baseline-top,&strip,dc4scene::kScreenW,
+                            bottom-y,float(run.size),run.rgb,false,0,!run.proportional,
+                            run.proportional ? 0 : -1,float(run.raster_size),1.25f);
+        if (run.voice_after) {
+            const int icon_top = run.top+8;
+            for (int py = (icon_top*5+3)/4; py < ((icon_top+24)*5+3)/4; ++py)
+                for (int px = 260; px < 290; ++px) {
+                    const int sx = 84+px*4/5-208, sy = 120+py*4/5-icon_top;
+                    if (sx < 0 || sx >= chip_.w || sy < 0 || sy >= chip_.h) continue;
+                    const auto* src = &chip_.rgba[(size_t(sy)*chip_.w+sx)*4];
+                    auto* dst = &strip[(size_t(py-y)*dc4scene::kScreenW+px)*4];
+                    for (int c = 0; c < 3; ++c)
+                        dst[c] = uint8_t((int(src[c])*src[3]+int(dst[c])*(255-src[3]))/255);
+                    dst[3] = 255;
+                }
+        }
+        if (run.left == 0 && run.right == width) {
+            std::copy(strip.begin(),strip.end(),begin);
+        } else {
+            const int left = run.left*5/4, right = run.right*5/4;
+            for (int row = 0; row < bottom-y; ++row) {
+                const size_t offset = (size_t(row)*dc4scene::kScreenW+left)*4;
+                std::copy_n(strip.begin()+offset,size_t(right-left)*4,begin+offset);
+            }
+        }
     }
 }
 

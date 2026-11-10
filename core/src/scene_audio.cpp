@@ -99,22 +99,37 @@ void SceneAudio::set_character_volume(size_t id, int percent, bool muted) {
     if (audio_ && id == voice_character_)
         for (int channel=8; channel<12; ++channel) audio_->set_channel_user_volume(channel, character_volume_[id]);
 }
+void SceneAudio::prepare_system_voice() {
+    voice_character_ = character_volume_.size();
+    if (audio_) for (int channel = 8; channel < 12; ++channel)
+        audio_->set_channel_user_volume(channel, 100);
+}
 void SceneAudio::apply_character_volume(const std::string& name) {
-    // Original charv_set slots 0..11. ASU/ASA share Arisu's control;
-    // HYR/HIY share Hiyori's. Unmapped guest voices use the 'other' group.
-    static const char* actors[] = {"asa","nin","sor","hyr","sii","miu","tiy","sgn","kan","izu","ktr","che"};
+    static const char* modern_actors[] = {"asa","nin","sor","hyr","sii","miu","tiy","sgn","kan","izu","ktr","che"};
+    static const char* ty_actors[] = {"otm","yme","kko","anz","akn","mhr","myk","yki",
+                                    "mik","myu","skr","sgn","wtr","kmk","mki","hrm"};
+    const std::string normal = lower(name);
+    if (dc2ty_ && (normal.rfind("sys", 0) == 0 || normal.find("/sys") != std::string::npos)) {
+        prepare_system_voice();
+        return;
+    }
     std::string actor;
     size_t last_underscore = name.find_last_of('_');
     if (last_underscore != std::string::npos && last_underscore + 4 <= name.size()) {
         actor = lower(name.substr(last_underscore + 1, 3));
     }
-    if (actor == "asu") actor = "asa";
-    if (actor == "hiy") actor = "hyr";
+    if (!dc2ty_) {
+        // DC4's ASU/ASA and HYR/HIY aliases share their respective actor control.
+        if (actor == "asu") actor = "asa";
+        if (actor == "hiy") actor = "hyr";
+    }
     voice_character_ = 15;
-    for (size_t i = 0; i < 12; ++i) if (actor == actors[i]) voice_character_ = i;
+    const auto actors = dc2ty_ ? ty_actors : modern_actors;
+    const size_t actor_count = dc2ty_ ? 16 : 12;
+    for (size_t i = 0; i < actor_count; ++i) if (actor == actors[i]) voice_character_ = i;
     if (audio_) {
         int vol = character_volume_[voice_character_];
-        if (vol <= 0) vol = 100;
+        if (!dc2ty_ && vol <= 0) vol = 100;
         for (int channel = 8; channel < 12; ++channel)
             audio_->set_channel_user_volume(channel, vol);
     }
@@ -388,6 +403,7 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
         return invalid(mixer_error);
     state_ = snapshot;
     last_voice_.swap(voice_bytes);
+    if (replay && !state_.last_voice_name.empty()) apply_character_volume(state_.last_voice_name);
     pending_bgm_fade_ = false;
     last_error_.clear();
     if (error) error->clear();
@@ -403,7 +419,7 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         if (extension) return true;
     }
     if (c.kind == CmdKind::Param2 &&
-        ((c.dc2dm && c.raw_op == 0x06) || (!c.dc2dm && !c.dc2pc && c.op == 0x06))) {
+        ((c.dc2dm && c.raw_op == 0x06) || (!c.dc2dm && !c.classic_dc2() && c.op == 0x06))) {
         // The runner consumes this wait when advancing past the voiced line.
         state_.last_voice_name.clear();
         last_voice_.clear();
@@ -426,6 +442,7 @@ bool SceneAudio::dispatch(const MesCommand& c) {
     if (is_voice_cmd) {
         // DC2DM 0x37 only preloads; our play_voice decodes synchronously.
         if (c.dc2dm && c.raw_op == 0x37) return true;
+        dc2ty_ = c.dc2ty;
         play_voice(c.str);
         return true;
     }

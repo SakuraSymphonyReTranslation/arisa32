@@ -27,7 +27,8 @@ public final class ExportChecks {
             Map<String, byte[]> source = new LinkedHashMap<>();
             for (String name : new String[]{"DC2PC03.dat", "DC2PC03.dat.arisa", "DC403.dat", "DC403.DAT.ARISA",
                     "DC4PHDL03.dat", "DC4PHDL03.dat.arisa", "DC403.dat.icon", "DC403.png", "DC403.txt",
-                    "DC2DM00.dat", "DC2DM01.dat", "DC2DM01.png",
+                    "DC2DM00.dat", "DC2DM01.dat", "DC2DM01.dat.arisa", "DC2DM01.png",
+                    "dc2ty00.dat", "dc2ty02.dat", "dc2ty02.dat.arisa", "dc2ty02.dat.icon", "dc2ty02.png",
                     "system.dat", "system-profile.dat", "read-lines.txt", "slot1.dc4sav", "quicksave.dc4sav",
                     "autosave.dc4sav", "slot1.dc4sav.png", "slot1.dc4sav.txt"}) {
                 byte[] bytes = ("fixture:" + name).getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -38,7 +39,7 @@ public final class ExportChecks {
             check(new File(saves, "folder.dat").mkdir(), "create non-file fixture");
             for (boolean include : new boolean[]{true, false}) {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
-                int expected = source.size() - (include ? 0 : 3);
+                int expected = source.size() - (include ? 0 : 5);
                 int[] updates = {0}, lastCompleted = {-1};
                 SaveArchive.write(out, saves, "game", "content", include, (name, completed, total) -> {
                     check(total == expected, "progress counts only exported files");

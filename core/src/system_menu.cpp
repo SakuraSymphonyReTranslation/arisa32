@@ -3,6 +3,7 @@
 #include "arisa32/mem_safe.h"
 #include "arisa32/names.h"
 #include "arisa32/dc2dm_music_titles.h"
+#include "dc2ty_music.h"
 #include <algorithm>
 #include <array>
 #include <unordered_map>
@@ -37,6 +38,44 @@ std::string key(std::string name) {
     for (const char* ext : {".mes", ".crx", ".pcm", ".mpg"})
         if (name.size() >= 4 && name.compare(name.size() - 4, 4, ext) == 0) name.resize(name.size() - 4);
     return name;
+}
+int dc2ty_scene_header(const std::string& name) {
+    if (name=="hyd_0611_a1_avn" || name=="set_0214_f1_214" ||
+        name=="ty_mhr01_d1_mhr" || name=="ty_myu01_d1_myu") return 1;
+    if (name=="hyd_xxxx_end" || name=="set_xxxx_f1_com" ||
+        name=="ty_mhr25_d1_mhr" || name=="ty_myu09_d1_myu") return 2;
+    const auto number=[&](size_t at,size_t count) {
+        int value=0;
+        if (at+count>name.size()) return 0;
+        for (size_t i=at;i<at+count;++i) {
+            if (name[i]<'0' || name[i]>'9') return 0;
+            value=value*10+name[i]-'0';
+        }
+        return value;
+    };
+    // Native replay headers follow story chronology, including flashbacks and year boundaries.
+    if (name.rfind("hyd_b_",0)==0) {
+        constexpr int dates[]={1208,1208,1211,1213,1216,1216,1218,1219,1222,1223,
+            107,108,108,108,108,109,109,117,117,118,123,125,216,216,217,303,307,312,318};
+        const int chapter=number(6,3);
+        return chapter>=1 && chapter<=29 ? dates[chapter-1] : 0;
+    }
+    if (name.rfind("ty_mhr",0)==0) {
+        constexpr int dates[]={1,907,914,917,922,924,925,1003,1007,1013,1015,1015,
+            1024,1103,1202,1217,1221,1222,1224,1231,119,122,124,204,2};
+        const int chapter=number(6,2);
+        return chapter>=1 && chapter<=25 ? dates[chapter-1] : 0;
+    }
+    if (name.rfind("ty_myu",0)==0) {
+        const int chapter=number(6,2);
+        return chapter>=1 && chapter<=8 ? 619+chapter : 0;
+    }
+    if (name.rfind("hyd_",0)==0 || name.rfind("set_",0)==0) {
+        if (name.size()>=4 && name.compare(name.size()-4,4,"_214")==0) return 214;
+        const int date=number(4,4),month=date/100,day=date%100;
+        if (month>=1 && month<=12 && day>=1 && day<=31) return date;
+    }
+    return 0;
 }
 bool safe_name(const std::string& name) {
     return !name.empty() && name.size() < 512 && name.front() != '/' &&
@@ -190,8 +229,10 @@ struct Caption {
     std::u16string unicode;
     int line_spacing = 0;
     bool dc2dm_preview = false, translated = false, animated = false;
+    bool dc2ty_reset_prompt = false;
     size_t preview_count = 0, preview_revealed = 0;
     uint64_t preview_elapsed_ms = 0;
+    bool dc2ty_scene = false, dc2ty_scene_title = false;
 };
 bool dc2dm_preview_translation(std::u16string* text) {
     size_t latin = 0, japanese = 0;
@@ -231,10 +272,13 @@ constexpr MenuProfile ModernMenu{
     dc4::MesProfileId::Modern, 1280, 720, 100, 150, "main", "ex_main", "config", "menu1"};
 constexpr MenuProfile DC2PCMenu{
     dc4::MesProfileId::DC2PC, 800, 600, 0, 23, "", "extra", "option", "init_menu"};
+constexpr MenuProfile DC2TYMenu{
+    dc4::MesProfileId::DC2TY, 800, 600, 0, 5, "main", "extra", "option", "init_menu"};
 constexpr MenuProfile DC2DMMenu{
     dc4::MesProfileId::ClassicDM, 1024, 576, 0, 23, "start_main", "ex_main", "option", "menu1"};
 struct Script {
     bool dc2pc = false;
+    bool dc2ty = false;
     bool dc2dm = false;
     std::vector<Command> code;
     std::map<std::string, size_t> labels;
@@ -339,10 +383,47 @@ void dc2pc_gallery_bitmap(const dc4scene::Image& image, int width, int height,
 }
 
 struct SystemMenu::Impl {
+    // dc2pc selects the shared 800x600 control layout; dc2ty owns game identity.
     bool dc2pc = false;
+    bool dc2ty = false;
     bool dc2dm = false;
     const MenuProfile* profile = &ModernMenu;
     std::string title_script = "title_00";
+    bool title_intro = false, story_select = false;
+    uint32_t title_intro_elapsed = 0;
+    mutable dc4scene::Image title_trail;
+    mutable int title_trail_step = -1;
+    int story_selected = -1;
+    int story_focus = -1;
+    bool story_keyboard_focus = false;
+    uint32_t story_elapsed = 0, story_duration = 0;
+    std::vector<uint8_t> story_outgoing;
+    uint32_t title_transition_ms() const { return 640u >> std::clamp(get(99,12),0,3); }
+    uint32_t title_pan_ms() const {
+        const unsigned speed=2u<<std::clamp(get(99,12),0,3);
+        return (600u+speed-1)/speed*17u;
+    }
+    uint32_t title_intro_ms() const { return 3255u + title_pan_ms() + 2u*title_transition_ms(); }
+    const dc4scene::Image* title_pan_image(const std::string& name,uint32_t elapsed) const {
+        const auto* source=image(name);
+        if (!source || !source->valid() || source->w!=800 || source->h<1200) return source;
+        const int speed=2<<std::clamp(get(99,12),0,3), motion_steps=(600+speed-1)/speed;
+        const int target=std::min(motion_steps+15,int(elapsed/17));
+        if (title_trail.name!=name || title_trail_step>target || title_trail_step<0) {
+            title_trail={}; title_trail.name=name; title_trail.w=800; title_trail.h=600;
+            title_trail.rgba.assign(source->rgba.begin(),source->rgba.begin()+800*600*4);
+            title_trail_step=0;
+        }
+        while(title_trail_step<target) {
+            ++title_trail_step;
+            const int y=std::min(600,title_trail_step*speed);
+            const auto* next=source->rgba.data()+size_t(y)*800*4;
+            for(size_t i=0;i<title_trail.rgba.size();++i)
+                title_trail.rgba[i]=title_trail_step==motion_steps+15 ? next[i] :
+                    uint8_t((title_trail.rgba[i]*14+next[i]*2)/16);
+        }
+        return &title_trail;
+    }
     Rect destination(Rect r) const {
         const int width = profile->canvas_width, height = profile->canvas_height;
         const int scaled_width = width * H / height;
@@ -357,6 +438,7 @@ struct SystemMenu::Impl {
     std::string pending_tag;
     Page page = Page::Title, config_return = Page::Title;
     bool ready = false, in_game = false, latest = false, quick = false, automatic = false;
+    bool profile_loaded = false, native_settings_imported = false;
     std::map<std::pair<int, int>, int> vars;
     std::set<std::string> seen_cg, seen_music, seen_scene;
     std::map<std::string, Script> scripts;
@@ -461,7 +543,7 @@ struct SystemMenu::Impl {
         }
         if ((dc2pc || dc2dm) && b == 100 && i >= 100) return 0;
         if (b == 99 && i == 4) return get(99,1);
-        if (b == 99 && i == 20) return latest;
+        if (!dc2ty && b == 99 && i == 20) return latest;
         if (b == 99 && i == 21) return quick;
         if (b == 99 && i == 22) return automatic;
         auto at = vars.find({b,i});
@@ -491,8 +573,8 @@ struct SystemMenu::Impl {
         if ((dc2pc || dc2dm) && b == 100 && i >= 100) return;
         vars[{b,i}] = value;
         if ((b==94 || b==95) && i==50) for(int character=0;character<18;++character)vars[{b,character}]=value;
-        if (!dc2dm && b == 100 && i == 49) vars[{99,11}] = value;
-        if (!dc2dm && b == 99 && i == 11) vars[{100,49}] = value;
+        if (!dc2dm && !dc2ty && b == 100 && i == 49) vars[{99,11}] = value;
+        if (!dc2dm && !dc2ty && b == 99 && i == 11) vars[{100,49}] = value;
     }
     dc4scene::Image* image(const std::string& raw) const {
         std::string name = key(raw);
@@ -522,6 +604,8 @@ struct SystemMenu::Impl {
         if (!mes.load_file(resolve(data + "/MES", name + ".mes"), &last_error)) return nullptr;
         Script result;
         result.dc2pc = mes.dialect == dc4::MesDialect::ClassicDC2 && mes.version == 0x9969;
+        result.dc2ty = mes.dialect == dc4::MesDialect::ClassicDC2 && mes.version == 0x5F69;
+        result.dc2pc = result.dc2pc || result.dc2ty;
         result.dc2dm = mes.dialect == dc4::MesDialect::ClassicDM;
         dc4::MesStream stream(mes); Command c;
         while (stream.next(&c) && c.op) {
@@ -782,6 +866,48 @@ struct SystemMenu::Impl {
                 return i;
         return -1;
     }
+    bool resolve_chip(Chip& chip, int hover, bool down) const {
+        if (chip.control < 0) return true;
+        if (size_t(chip.control) >= widgets.size()) return false;
+        int state = chip.control == hover ? (down && (!held || pressed == chip.control) ? 2 : 1) : 99;
+        // DC2TY replay slots supply normal/hover artwork, including while held.
+        if (dc2ty && page == Page::Scenes && state == 2 &&
+            std::find(legacy_rows.begin(),legacy_rows.end(),chip.control) != legacy_rows.end())
+            state = 1;
+        const auto& widget = widgets[size_t(chip.control)];
+        if (widget.filled_slider && chip.dst.x == widget.slider_left && chip.dst.h == 16 &&
+            chip.dst.w >= widget.slider_right-widget.slider_left) {
+            if (chip.state == 2) {
+                const int count = std::max(1,widget.slider_count-1);
+                const int value = std::clamp(get(widget.slider_bank,widget.slider_index),0,count);
+                chip.src.w = chip.dst.w = std::min(chip.src.w,2+value*(widget.slider_right-widget.slider_left)/count);
+            } else if (chip.state != 99) return false;
+        } else if (dc2pc && chip.state >= 22 && chip.state <= 26) {
+            if (widget.slider_bank < 0 || widget.slider_count < 2) return false;
+            const int val = std::clamp(get(widget.slider_bank,widget.slider_index),0,widget.slider_count-1);
+            if (chip.state == 22) {
+                chip.src.w = chip.dst.w = std::clamp(widget.slider_left+val*(widget.slider_right-widget.slider_left)/(widget.slider_count-1)-chip.dst.x,0,chip.src.w);
+            } else if (chip.state == 23) {
+                chip.dst.x += val*(widget.slider_right-widget.slider_left)/(widget.slider_count-1);
+            } else {
+                if (widget.slider_stops.size() < size_t(widget.slider_count+1)) return false;
+                const bool active = hover == chip.control;
+                if ((chip.state == 25 && !active) || (chip.state == 26 && active)) return false;
+                const int left = chip.state == 24 ? widget.slider_stops.front() : widget.slider_stops[size_t(val)];
+                const int right = chip.state == 24 ? widget.slider_stops.back() : widget.slider_stops[size_t(val+1)];
+                chip.src.x += left-chip.dst.x; chip.dst.x = left;
+                chip.src.w = chip.dst.w = right-left;
+            }
+        } else if (chip.state == 6 || chip.state == 8 || chip.state == 10) {
+            if (widget.slider_bank < 0) return false;
+            const bool active = hover == chip.control;
+            if ((chip.state == 6 && active) || (chip.state == 8 && !active) || chip.state == 10) return false;
+            const int count = std::max(widget.slider_count-1,1);
+            const int val = std::clamp(get(widget.slider_bank,widget.slider_index),0,count);
+            chip.dst.x = widget.slider_left+val*(widget.slider_right-widget.slider_left)/count-chip.dst.w/2;
+        } else if (chip.state != state) return false;
+        return true;
+    }
     struct RunState {
         Script* source;
         size_t pc = 0;
@@ -929,8 +1055,10 @@ struct SystemMenu::Impl {
     }
 
     void menu_background(Opcode, RunState& context, const Command& c) {
-        if (context.source->dc2pc)
+        if (context.source->dc2pc) {
             chips.clear();
+            if (page == Page::Config) captions.clear();
+        }
         background = c.str;
         image(background);
         if (!c.str.empty() && c.str.front() == '*') {
@@ -954,13 +1082,29 @@ struct SystemMenu::Impl {
                 // A new native layout needs its own artwork boundary. Music
                 // and replay catalogues have different numbers of base chips.
                 catalogue_drawn = false;
-                widgets.clear();
-                chips.erase(std::remove_if(chips.begin(), chips.end(),
-                                           [](const Chip& chip) { return chip.control >= 0; }),
-                            chips.end());
+                // Config popups clear hit targets but retain the underlying native pixels.
+                const bool preserve_config = page == Page::Config;
+                if (preserve_config) {
+                    std::vector<Chip> retained;
+                    retained.reserve(chips.size());
+                    for (auto chip : chips) if (resolve_chip(chip,-1,false)) {
+                        chip.control = -1;
+                        retained.push_back(std::move(chip));
+                    }
+                    chips = std::move(retained);
+                } else {
+                    chips.erase(std::remove_if(chips.begin(),chips.end(),
+                                               [](const Chip& chip) { return chip.control >= 0; }),
+                                chips.end());
+                }
                 captions.erase(std::remove_if(captions.begin(), captions.end(),
-                                             [](const Caption& caption) { return caption.control >= 0; }),
+                                             [&](const Caption& caption) {
+                                                 return caption.control >= 0 &&
+                                                     (!preserve_config || (caption.state >= 0 && caption.state != 99));
+                                             }),
                                captions.end());
+                if (preserve_config) for (auto& caption : captions) caption.control = -1;
+                widgets.clear();
             } else
                 clear_layout();
             context.control = -1;
@@ -983,9 +1127,11 @@ struct SystemMenu::Impl {
         context.expect_tag = true;
         if (context.source->dc2pc &&
             (page==Page::Music || page==Page::Scenes)) {
-            // List slots have no immediate jump target; regular buttons do.
-            if (context.pc >= context.source->code.size() || context.source->code[context.pc].opcode()!=Opcode::JUMP)
+            // List slots have no immediate target; later jumps execute normally.
+            if (context.pc >= context.source->code.size() || context.source->code[context.pc].opcode()!=Opcode::JUMP) {
                 legacy_rows.push_back(context.control);
+                context.expect_tag = false;
+            }
         }
     }
 
@@ -1014,8 +1160,14 @@ struct SystemMenu::Impl {
             // raw52 is its redraw rectangle, not a sprite-sheet chip.
             if (page != Page::Scenes) { context.pending = Command{}; return; }
             const auto& p = context.pending.words;
-            Widget widget{{sw(p[0]),sw(p[1]),sw(p[2])-sw(p[0]),sw(p[3])-sw(p[1])},
-                          "#catalogue:scroll",true};
+            const Rect bounds{sw(p[0]),sw(p[1]),sw(p[2])-sw(p[0]),sw(p[3])-sw(p[1])};
+            // DC2TY hides the track beyond x=800; centring a wider thumb must not expose it.
+            if (bounds.w<=0 || bounds.h<=0 || bounds.x>=profile->canvas_width ||
+                bounds.y>=profile->canvas_height || bounds.x+bounds.w<=0 || bounds.y+bounds.h<=0) {
+                context.pending = Command{};
+                return;
+            }
+            Widget widget{bounds,"#catalogue:scroll",true};
             widget.slider_bank = 206;
             widget.slider_index = 80;
             widget.slider_left = widget.hit.y;
@@ -1118,6 +1270,7 @@ struct SystemMenu::Impl {
         if (id == 255) context.output = {Type::StopMusic};
         else if (id >= 0 && size_t(id) < bgm_names.size()) {
             put(100,26,c.words[1] < 2 ? 0 : 1);
+            if (dc2ty && page == Page::Music) put(99,250,0);
             context.output = {Type::PlayMusic,id,bgm_names[size_t(id)]};
         }
     }
@@ -1149,6 +1302,24 @@ struct SystemMenu::Impl {
                 captions.push_back(std::move(caption));
                 return;
             }
+            if (dc2ty && page == Page::Config && opcode == Opcode::CAPTION &&
+                w[0] == 290 && w[1] == 266 && w[3] == 7) {
+                auto label = dc4scene::sjis_to_utf16(text.str);
+                for (auto& ch : label) {
+                    if (ch >= 0xFF01 && ch <= 0xFF5E) ch -= 0xFEE0;
+                    if (ch == 0x3000) ch = u' ';
+                }
+                const bool translated = label == u"Reset Config?";
+                if (translated || label == u"初期化しますか？" || label == u"初期化しますか?") {
+                    // raw60 supplies line spacing; the native reset label uses 28px, palette 7, no shadow.
+                    Caption caption{sw(w[0]),sw(w[1]),28,-1,99,text.str};
+                    caption.dc2ty_reset_prompt = true;
+                    caption.translated = translated;
+                    caption.unicode = translated ? std::move(label) : dc4scene::sjis_to_utf16(text.str);
+                    captions.push_back(std::move(caption));
+                    return;
+                }
+            }
             captions.push_back({sw(w[0]), sw(w[1]), opcode == Opcode::CAPTION ? int(w[2]) : 20,
                                 opcode == Opcode::CONTROL_CAPTION ? context.control : -1,
                                 opcode == Opcode::CONTROL_CAPTION ? int(w[3]) : 99, text.str});
@@ -1159,6 +1330,12 @@ struct SystemMenu::Impl {
 
     void menu_transfer(Opcode, RunState& context, const Command& c) {
         const std::string dest = key(c.str);
+        if (dc2ty && dest == "main") {
+            page = context.entry == "extra" ? Page::Extras : Page::Title;
+            context.finish(run(dest, page == Page::Extras ? "extra" : "main", false,
+                               context.transfer_depth + 1));
+            return;
+        }
         if (context.source->dc2dm) {
             if (dest == "load" || dest == "save") {
                 context.finish({dest == "load" ? Type::Load : Type::Save});
@@ -1198,7 +1375,7 @@ struct SystemMenu::Impl {
                     run(dest, context.entry, context.action, context.transfer_depth + 1));
                 return;
             }
-            if (dest.rfind("cg_",0)==0 || dest.rfind("sce_",0)==0 || dest=="music" || dest=="interview") {
+            if (dest.rfind("cg_",0)==0 || (dest.rfind("sce_",0)==0 && dest!="sce_select") || dest=="music" || dest=="interview") {
                 page = dest=="interview" ? Page::Interview : dest=="music" ? Page::Music : dest.rfind("cg_",0)==0 ? Page::Gallery : Page::Scenes;
                 context.finish(run(dest,context.entry,false,context.transfer_depth+1));
                 return;
@@ -1244,6 +1421,10 @@ struct SystemMenu::Impl {
         if (context.source->dc2dm && c.raw_op == 0x3E) {
             if (context.control >= 0)
                 widgets[size_t(context.control)].voice = c.str;
+            return;
+        }
+        if (context.source->dc2ty && c.raw_op == 0x3D) {
+            if (context.control >= 0) widgets[size_t(context.control)].voice = c.str;
             return;
         }
         // DC2PC raw 3D attaches a sound to the preceding button. It is not
@@ -1373,26 +1554,50 @@ struct SystemMenu::Impl {
             widget.enabled=!widget.tag.empty();
             Chip chip=item->second.chip;
             chip.dst=widget.hit; chip.dst.w=chip.src.w; chip.dst.h=chip.src.h;
+            const auto name=item->first>=0 && size_t(item->first)<scene_names.size()?
+                key(scene_names[size_t(item->first)]):std::string{};
+            if (dc2ty && page==Page::Scenes && widget.enabled &&
+                (name=="set_0214_f1_214" || name=="ty_myu06_f2_myu")) {
+                // The native executable marks these two scenes with the sheet's pink rim.
+                chips.push_back({sheets[7],{0,328,232,56},widget.hit,99,control});
+                chips.push_back({sheets[7],{0,384,232,56},widget.hit,1,control});
+            }
             chips.push_back(chip);
             if (page == Page::Scenes && widget.enabled && item->first >= 0 &&
                 size_t(item->first) < scene_names.size()) {
-                const auto name = key(scene_names[size_t(item->first)]);
-                // DC2PC's replay catalogue uses route_MMDD_section names.
-                // The global list ID points at that same NAMES.DAT entry.
-                const auto underscore = name.find('_');
-                if (underscore != std::string::npos && underscore + 5 < name.size() && name[underscore+5] == '_') {
-                    const auto date = name.substr(underscore+1, 4);
-                    if (std::all_of(date.begin(), date.end(), [](unsigned char c){return std::isdigit(c);})) {
-                        const int month=std::stoi(date.substr(0,2)), day=std::stoi(date.substr(2));
-                        if (month>=1 && month<=12 && day>=1 && day<=31) {
-                            const std::string text=std::to_string(month)+"\x8c\x8e"+std::to_string(day)+"\x93\xfa";
-                            captions.push_back({widget.hit.x+70,widget.hit.y+2,16,control,99,text,std::max(1,widget.hit.w-74)});
+                if (dc2ty) {
+                    const int header=dc2ty_scene_header(name);
+                    std::ostringstream text;
+                    if (header==1) text<<" prologue";
+                    else if (header==2) text<<" epilogue";
+                    else if (header>=100) text<<std::setw(2)<<header/100<<"\x8c\x8e"
+                                              <<std::setw(2)<<header%100<<"\x93\xfa";
+                    if (header) {
+                        const int x=item->second.captions.empty()?58:item->second.captions.front().x;
+                        Caption caption{widget.hit.x+x,widget.hit.y+6,16,control,-1,text.str(),widget.hit.w-x-12};
+                        caption.dc2ty_scene=true;
+                        captions.push_back(std::move(caption));
+                    }
+                } else {
+                    // DC2PC's replay catalogue uses route_MMDD_section names.
+                    // The global list ID points at that same NAMES.DAT entry.
+                    const auto underscore = name.find('_');
+                    if (underscore != std::string::npos && underscore + 5 < name.size() && name[underscore+5] == '_') {
+                        const auto date = name.substr(underscore+1, 4);
+                        if (std::all_of(date.begin(), date.end(), [](unsigned char c){return std::isdigit(c);})) {
+                            const int month=std::stoi(date.substr(0,2)), day=std::stoi(date.substr(2));
+                            if (month>=1 && month<=12 && day>=1 && day<=31) {
+                                const std::string text=std::to_string(month)+"\x8c\x8e"+std::to_string(day)+"\x93\xfa";
+                                captions.push_back({widget.hit.x+70,widget.hit.y+2,16,control,99,text,std::max(1,widget.hit.w-74)});
+                            }
                         }
                     }
                 }
             }
             for(auto caption:item->second.captions) {
-                caption.max_width=std::max(1,widget.hit.w-caption.x-4);
+                caption.dc2ty_scene=dc2ty && page==Page::Scenes;
+                caption.dc2ty_scene_title=caption.dc2ty_scene;
+                caption.max_width=std::max(1,widget.hit.w-caption.x-(caption.dc2ty_scene?12:4));
                 caption.x+=widget.hit.x;caption.y+=widget.hit.y;
                 caption.control=control;
                 captions.push_back(std::move(caption));
@@ -1524,7 +1729,7 @@ struct SystemMenu::Impl {
             }
         }
     }
-    void rebuild() {
+    void rebuild(bool music_entry = false) {
         if (!ready || gallery_view)
             return;
         gallery_menu_frame.clear();
@@ -1536,13 +1741,14 @@ struct SystemMenu::Impl {
         put(9, 87, latest ? 0 : 1);
         put(9, 91, 1);
         clear_layout();
+        if (dc2ty && story_select) { story_picker(); return; }
         switch (page) {
         case Page::Title:
             // Main selects the authored DC2PC title variant from progression flags.
             run("main", profile->title_entry, false);
             break;
         case Page::Extras:
-            run(dc2pc ? title_script : "main", dc2pc ? "rextra" : profile->extras_entry, false);
+            run(dc2pc && !dc2ty ? title_script : "main", dc2pc && !dc2ty ? "rextra" : profile->extras_entry, false);
             break;
         case Page::Config:
             if (dc2pc) {
@@ -1559,7 +1765,7 @@ struct SystemMenu::Impl {
             break;
         case Page::Music:
             if (dc2dm) run("music", "nostopMUSIC", false);
-            else if (dc2pc) run("music", "menu", false);
+            else if (dc2pc) run("music", dc2ty && music_entry ? "" : "menu", false);
             else {
                 run("music", movie_menu ? "qmovie" : "menu", false);
                 if (movie_menu) movie_back_control();
@@ -1570,6 +1776,42 @@ struct SystemMenu::Impl {
             run("interview", "menu", false);
             break;
         }
+    }
+    void story_picker() {
+        static const char* routes[]={"hyd","set","mhr","myu"};
+        background="system/sce_select_"+std::string(story_selected<0?"back":routes[story_selected]);
+        static const Rect hits[]={{552,32,233,113},{552,160,233,113},{552,288,233,113},{552,416,233,113},{610,541,113,33}};
+        static const Rect normal[]={{528,8,272,160},{528,136,272,152},{528,248,272,176},{528,368,272,180},{610,541,112,32}};
+        static const int source_y[]={0,160,312,488,668};
+        static const int selected_y[]={0,160,328,504};
+        for (int id=0;id<5;++id)
+            widgets.push_back({hits[id],id==4?"#ty:story:back":"#ty:story:"+std::to_string(id),true});
+        const auto row=[&](int id) {
+            Rect dst=normal[id];
+            int x=0,y=source_y[id],hover_x=id==4?112:272;
+            if (id<4 && story_selected>=0) {
+                if (id==story_selected) {
+                    x=544; y=selected_y[id]; hover_x=816;
+                    if (id==1) { dst.y=120; dst.h=168; }
+                } else x=hover_x=1092+272*story_selected;
+            }
+            for (int state:{99,1,2})
+                chips.push_back({"system/sce_select_chip",{state==99?x:hover_x,y,dst.w,dst.h},dst,state,id});
+        };
+        for(int id=0;id<5;++id)if(id!=story_selected)row(id);
+        if(story_selected>=0)row(story_selected);
+    }
+    void begin_story_transition() {
+        story_elapsed=0;
+        story_duration=visual_effects_enabled && get(99,10) ? uint32_t(get(3,35)*get(3,33)) : 0;
+        story_outgoing.clear();
+        if (!story_duration) return;
+        story_outgoing.assign(FrameBytes,0);
+        for(size_t i=3;i<story_outgoing.size();i+=4)story_outgoing[i]=255;
+        if (auto* back=image(background))
+            blit(*back,{0,0,back->w,back->h},destination({0,0,800,600}),&story_outgoing);
+        for (const auto& chip:chips) if(chip.control<0 || chip.state==99)
+            if(auto* source=image(chip.image))blit(*source,chip.src,destination(chip.dst),&story_outgoing);
     }
     Action play_music(int selected, int direction = 1) {
         const int count = music_count();
@@ -1648,6 +1890,10 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->dc4_profile = false; p_->music_underlay.clear(); p_->music_underlay_widgets.clear(); p_->dc2dm_music_ids.clear();
     p_->confirm.load(data_dir);
     p_->dc2pc = false;
+    p_->dc2ty = false;
+    p_->title_intro = p_->story_select = false;
+    p_->profile_loaded = p_->native_settings_imported = false;
+    p_->story_duration = 0; p_->story_outgoing.clear();
     p_->dc2dm = false;
     p_->profile = &ModernMenu;
     auto* main = p_->script("main");
@@ -1670,12 +1916,14 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
         if (error) *error = p_->last_error;
         return p_->last_error.empty();
     }
-    if (main && main->dc2pc && p_->script("title_00")) {
+    if (main && main->dc2pc && (main->dc2ty || p_->script("title_00"))) {
         p_->dc2pc = true;
-        p_->profile = &DC2PCMenu;
+        p_->dc2ty = main->dc2ty;
+        p_->profile = p_->dc2ty ? &DC2TYMenu : &DC2PCMenu;
+        p_->title_script = p_->dc2ty ? "main" : "title_00";
         for(const auto& v : {std::pair<int,int>{7,25},{8,25},{9,29},{11,8},{12,1},{13,0},{16,8},{17,0},{20,1}})
             p_->vars[{99,v.first}]=v.second;
-        if (!p_->names()) { if(error)*error="Invalid DC2PC DAT/names.dat"; return false; }
+        if (!p_->names()) { if(error)*error="Invalid classic DAT/names.dat"; return false; }
         p_->progress_vars();
         p_->ready = true; p_->last_error.clear();
         open(Page::Title);
@@ -1709,7 +1957,26 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->ready = true; p_->progress_vars(); open(Page::Title); if(error)error->clear(); return true;
 }
 bool SystemMenu::loaded() const { return p_->ready; }
-bool SystemMenu::is_dc2pc() const { return p_->dc2pc; }
+bool SystemMenu::is_dc2pc() const { return p_->dc2pc && !p_->dc2ty; }
+bool SystemMenu::is_dc2ty() const { return p_->dc2ty; }
+std::string SystemMenu::startup_movie() const {
+    if (!p_->dc2ty) return {};
+    const auto* start=p_->script("start");
+    if (start) for(const auto& command:start->code)
+        if(command.opcode()==Opcode::MOVIE) return command.str;
+    return {};
+}
+void SystemMenu::open_title_intro() {
+    open(Page::Title);
+    p_->title_intro_elapsed=0;
+    p_->title_trail={}; p_->title_trail_step=-1;
+    p_->title_intro=p_->dc2ty && p_->visual_effects_enabled && p_->get(99,10)!=0;
+}
+bool SystemMenu::title_intro_active() const { return p_->title_intro; }
+bool SystemMenu::title_voice_ready() const {
+    return p_->dc2ty && (!p_->title_intro || p_->title_intro_elapsed>=p_->title_intro_ms()-600);
+}
+bool SystemMenu::story_picker_active() const { return p_->story_select; }
 SystemMenuPage SystemMenu::page() const { return p_->page; }
 bool SystemMenu::gallery_preview_active() const { return p_->ready && p_->gallery_view; }
 bool SystemMenu::draw_gallery(int width, int height, std::vector<uint8_t>* frame) const {
@@ -1739,6 +2006,8 @@ void SystemMenu::resume_scenes() {
 }
 void SystemMenu::open(SystemMenuPage page) {
     p_->confirm.close();p_->pending_tag.clear();cancel_pointer();
+    p_->title_intro = p_->story_select = false;
+    p_->story_duration = 0; p_->story_outgoing.clear();
     if (page == Page::Title) p_->in_game = false;
     if (page == Page::Config && p_->page != Page::Config) p_->config_return = p_->page;
     if (p_->dc2dm && page == Page::Music && p_->page != Page::Music) {
@@ -1755,11 +2024,15 @@ void SystemMenu::open(SystemMenuPage page) {
     if (page == Page::Gallery || page == Page::Scenes) {
         if(p_->dc2pc){p_->put(3,3,0);p_->put(206,80,0);}
         p_->put(3,5,0); p_->put(3,6,0);
-        p_->script_name = page == Page::Gallery ? (p_->dc2pc ? "cg_otome" : p_->dc2dm ? "cgmode" : "cg_asa")
-                                              : (p_->dc2pc ? "sce_otome" : p_->dc2dm ? "scemode" : "sce_asa");
+        p_->put(3,0,0);
+        p_->script_name = page == Page::Gallery ? (p_->dc2ty ? "cg_hyd" : p_->dc2pc ? "cg_otome" : p_->dc2dm ? "cgmode" : "cg_asa")
+                                              : (p_->dc2ty ? "sce_hyd" : p_->dc2pc ? "sce_otome" : p_->dc2dm ? "scemode" : "sce_asa");
     }
-    if (page == Page::Music) { p_->put(3,11,p_->music_selected < 0); p_->put(99,179,1); }
-    p_->rebuild();
+    if (page == Page::Music) {
+        p_->put(3,11,p_->music_selected < 0); p_->put(99,179,1);
+        if (p_->dc2ty) p_->put(99,250,0);
+    }
+    p_->rebuild(page == Page::Music);
 }
 void SystemMenu::set_in_game(bool value) { p_->in_game = value; p_->rebuild(); }
 void SystemMenu::set_save_available(bool latest,bool quick,bool automatic) {
@@ -1778,6 +2051,8 @@ int SystemMenu::config_page() const {
     return p_->get(100,54);
 }
 void SystemMenu::pointer_down(int x,int y) {
+    if (p_->story_duration) return;
+    p_->story_keyboard_focus=false;
     if(confirming()){p_->confirm.pointer_down(x,y);return;}
     x=p_->input_x(x);y=p_->input_y(y);
     p_->held=true; p_->pressed=p_->hit(x,y);
@@ -1792,11 +2067,18 @@ void SystemMenu::pointer_down(int x,int y) {
     }
 }
 Action SystemMenu::pointer_move(int x,int y) {
+    p_->story_keyboard_focus=false;
     if(confirming())return {};
     if (!p_->held || p_->pressed < 0) return {};
     return p_->slider(p_->pressed,p_->input_x(x),p_->input_y(y));
 }
 Action SystemMenu::pointer_up(int x,int y) {
+    if (p_->title_intro) {
+        const bool held=p_->held;
+        cancel_pointer();
+        if (held) p_->title_intro=false;
+        return {};
+    }
     if(confirming()){
         const auto result=p_->confirm.pointer_up(x,y);
         if(result==ConfirmResult::None)return {};
@@ -1808,7 +2090,9 @@ Action SystemMenu::pointer_up(int x,int y) {
     int pressed=p_->pressed, hit=p_->hit(x,y); bool held=p_->held;
     if (held && pressed >= 0 && size_t(pressed)<p_->widgets.size() && p_->widgets[size_t(pressed)].slider_bank != -1) {
         const auto voice=p_->widgets[size_t(pressed)].voice;
+        const auto tag=p_->widgets[size_t(pressed)].tag;
         auto out=p_->slider(pressed,x,y); cancel_pointer();
+        if (p_->dc2ty && tag=="voiceMenu") return activate(tag);
         if (p_->dc2dm && !voice.empty()) return {Type::PlayVoice,-1,voice,{}};
         return out;
     }
@@ -1836,7 +2120,12 @@ Action SystemMenu::pointer_up(int x,int y) {
 }
 void SystemMenu::cancel_pointer() { p_->held=false; p_->pressed=-1;p_->confirm.cancel_pointer(); }
 void SystemMenu::scroll(int delta) {
-    if (!delta||confirming()) return;
+    if (!delta||confirming()||p_->story_duration) return;
+    if (p_->story_select) {
+        p_->story_focus=p_->story_focus<0 ? (delta>0?0:4) : (p_->story_focus+(delta>0?1:4))%5;
+        p_->story_keyboard_focus=true;
+        return;
+    }
     if (p_->gallery_view && !p_->gallery_variants.empty()) {
         if (p_->gallery_duration) {
             p_->gallery_duration=0; p_->gallery_outgoing.clear(); return;
@@ -1854,6 +2143,10 @@ void SystemMenu::scroll(int delta) {
         const size_t next=size_t((int(p_->gallery_variant)+delta%n+n)%n);
         if(next!=p_->gallery_variant || p_->dc2pc)p_->show_gallery(next);
     } else if (p_->page==Page::Music && !p_->movie_menu) {
+        if (p_->dc2ty) {
+            p_->put(3,8,(p_->get(3,8)+delta%3+3)%3);
+            p_->rebuild(); return;
+        }
         if(p_->dc2pc) {
             p_->put(3,25,std::clamp(p_->get(3,25)+delta*2,0,std::max(0,int(p_->legacy_items.size())-int(p_->legacy_rows.size()))));
             p_->rebuild(); return;
@@ -1873,8 +2166,18 @@ void SystemMenu::scroll(int delta) {
     }
 }
 Action SystemMenu::back() {
+    if (p_->story_duration) return {};
+    if (p_->title_intro) { p_->title_intro=false; cancel_pointer(); return {}; }
+    if (p_->story_select) {
+        if (p_->story_selected>=0) { p_->begin_story_transition(); p_->story_selected=-1; p_->rebuild(); }
+        else open(Page::Title);
+        return {};
+    }
     if(confirming())return answer_confirmation(false);
     cancel_pointer();
+    if (p_->dc2pc && p_->page == Page::Config &&
+        std::any_of(p_->widgets.begin(),p_->widgets.end(),[](const Widget& widget) { return widget.tag == "init"; }))
+        return activate("menu");
     if(p_->gallery_view) {
         p_->gallery_view=false; p_->gallery_canvas={}; p_->gallery_previous_canvas={};
         p_->dc2pc_gallery_rows={};
@@ -1903,6 +2206,7 @@ Action SystemMenu::back() {
 }
 Action SystemMenu::activate(const std::string& tag) {
     if (confirming()) return {};
+    if (p_->title_intro) { p_->title_intro=false; p_->rebuild(); return {}; }
     const MenuTag menu_tag = resolve_menu_tag(tag);
     if (p_->dc2pc && p_->page == Page::Scenes && (menu_tag == MenuTag::SelStatUp || menu_tag == MenuTag::SelStatDown)) {
         cancel_pointer();
@@ -1915,11 +2219,11 @@ Action SystemMenu::activate(const std::string& tag) {
         kind = ConfirmKind::NewGame;
         break;
     case MenuTag::StartGame:
-        if (!p_->dc2dm || p_->page != Page::Title || p_->get(100, 1) == 0)
+        if (!p_->dc2ty && (!p_->dc2dm || p_->page != Page::Title || p_->get(100, 1) == 0))
             kind = ConfirmKind::NewGame;
         break;
     case MenuTag::DcRoute:
-        if (!p_->get(100, 100)) return {};
+        if (!p_->dc2pc && !p_->get(100, 100)) return {};
         kind = ConfirmKind::NewGame;
         break;
     case MenuTag::Quit:
@@ -1932,8 +2236,10 @@ Action SystemMenu::activate(const std::string& tag) {
         if (p_->latest) kind = ConfirmKind::Load;
         break;
     case MenuTag::DefaultParts:
-    case MenuTag::Init:
         if (p_->page == Page::Config) kind = ConfirmKind::ResetSettings;
+        break;
+    case MenuTag::Init:
+        if (p_->page == Page::Config && !p_->dc2pc) kind = ConfirmKind::ResetSettings;
         break;
     case MenuTag::Movie01:
     case MenuTag::Movie02:
@@ -1992,8 +2298,35 @@ Action SystemMenu::answer_confirmation(bool yes){
     return yes?activate_confirmed(tag):Action{};
 }
 Action SystemMenu::activate_confirmed(const std::string& tag) {
-    if (tag.empty()) return {};
+    if (tag.empty() || p_->story_duration) return {};
     const MenuTag menu_tag = resolve_menu_tag(tag);
+    if (p_->dc2ty) {
+        if (menu_tag==MenuTag::StartGame) {
+            p_->put(3,33,1); p_->put(3,34,3); p_->put(3,35,1000);
+            p_->begin_story_transition();
+            p_->story_focus=-1; p_->story_keyboard_focus=false;
+            p_->story_select=true; p_->story_selected=-1; p_->rebuild();
+            return {Type::PlayVoice,-1,system_voice(7),{}};
+        }
+        if (p_->story_select && tag=="#ty:story:accept") {
+            if(p_->story_focus<0)return {};
+            return activate_confirmed(p_->story_focus==4?"#ty:story:back":"#ty:story:"+std::to_string(p_->story_focus));
+        }
+        if (p_->story_select && tag=="#ty:story:back") { open(Page::Title); return {}; }
+        if (p_->story_select && tag.size()==11 && tag.rfind("#ty:story:",0)==0) {
+            const int route=tag.back()-'0';
+            if (route<0 || route>3) return {};
+            if (p_->story_selected!=route) { p_->begin_story_transition(); p_->story_selected=route; p_->rebuild(); return {}; }
+            static const char* stories[]={"hyd_0611_a1_avn","set_0214_f1_214","ty_mhr01_d1_mhr","ty_myu01_d1_myu"};
+            p_->put(3,32,route);
+            p_->story_select=false;
+            return {Type::NewGame,-1,stories[route],{},24+route};
+        }
+        if (menu_tag == MenuTag::Load) return {Type::Load,-1,{},{},8};
+        if (tag == "cg") { open(Page::Gallery); return {}; }
+        if (tag == "scene") { open(Page::Scenes); return {}; }
+        if (tag == "bgm") { open(Page::Music); return {}; }
+    }
 
     if (p_->dc2dm) {
         if (p_->page == Page::Music && tag.rfind("#dm:loop",0) == 0 && tag.size() == 9) {
@@ -2072,7 +2405,10 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
         }
 
         const auto before = p_->vars;
-        if (p_->page == Page::Music && tag.rfind("music", 0) == 0 && tag.size() > 5) {
+        std::string button_voice;
+        if (p_->dc2ty) for (const auto& widget:p_->widgets)
+            if (widget.tag==tag) { button_voice=widget.voice; break; }
+        if (!p_->dc2ty && p_->page == Page::Music && tag.rfind("music", 0) == 0 && tag.size() > 5) {
             int id = -1;
             try { id = std::stoi(tag.substr(5)); } catch (...) {}
             if (id < 0) return {};
@@ -2082,10 +2418,10 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
             return p_->run("music", "play_list", true);
         }
 
-        if (p_->page == Page::Music && (menu_tag == MenuTag::Play || menu_tag == MenuTag::LegacyPlay || menu_tag == MenuTag::AllPlayMode))
+        if (!p_->dc2ty && p_->page == Page::Music && (menu_tag == MenuTag::Play || menu_tag == MenuTag::LegacyPlay || menu_tag == MenuTag::AllPlayMode))
             p_->put(3, 5, std::max(0, p_->music_selected));
 
-        if (p_->page == Page::Music && (menu_tag == MenuTag::AllPlayMode || menu_tag == MenuTag::Next)) {
+        if (!p_->dc2ty && p_->page == Page::Music && (menu_tag == MenuTag::AllPlayMode || menu_tag == MenuTag::Next)) {
             if (menu_tag == MenuTag::Next)
                 p_->music_selected = (std::max(0, p_->music_selected) + 1) % std::max(1, int(p_->legacy_items.size()));
             p_->put(3, 5, std::max(0, p_->music_selected));
@@ -2101,10 +2437,12 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
         }
 
         auto out = p_->run(p_->script_name, tag, true);
-        if (out.type == Type::NewGame)
+        if (out.type == Type::NewGame && !p_->dc2ty)
             out.voice_event = tag == "dc" ? 20 : tag == "alfine" ? 21 : 7;
         if (p_->page == Page::Config && before != p_->vars && out.type == Type::None)
             out.type = Type::SettingsChanged;
+        if (!button_voice.empty() && (out.type==Type::None || out.type==Type::SettingsChanged))
+            out = {Type::PlayVoice,-1,button_voice,{}};
         return out;
     }
 
@@ -2338,6 +2676,17 @@ Action SystemMenu::activate_confirmed(const std::string& tag) {
 }
 
 void SystemMenu::update(uint32_t elapsed_ms) {
+    if (p_->story_duration) {
+        p_->story_elapsed=uint32_t(std::min<uint64_t>(uint64_t(p_->story_elapsed)+elapsed_ms,p_->story_duration));
+        if (p_->story_elapsed==p_->story_duration || !p_->visual_effects_enabled || !p_->get(99,10)) {
+            p_->story_duration=0; p_->story_outgoing.clear();
+        }
+    }
+    if (p_->title_intro) {
+        p_->title_intro_elapsed=uint32_t(std::min<uint64_t>(uint64_t(p_->title_intro_elapsed)+elapsed_ms,p_->title_intro_ms()));
+        if (p_->title_intro_elapsed>=p_->title_intro_ms() || !p_->visual_effects_enabled || !p_->get(99,10))
+            p_->title_intro=false;
+    }
     if (p_->gallery_duration) {
         p_->gallery_elapsed=uint32_t(std::min<uint64_t>(uint64_t(p_->gallery_elapsed)+elapsed_ms,p_->gallery_duration));
         if (p_->gallery_elapsed==p_->gallery_duration || !p_->get(99,10)) {
@@ -2368,8 +2717,47 @@ void SystemMenu::update(uint32_t elapsed_ms) {
 
 void SystemMenu::set_visual_effects_enabled(bool enabled) { p_->visual_effects_enabled = enabled; }
 
+Action SystemMenu::music_finished() {
+    if (!p_->dc2ty) return activate("next");
+    if (p_->page != Page::Music || p_->get(3,7)) return {};
+    if (p_->get(3,6) == 3) {
+        p_->put(99,250,1);
+        return p_->run("music","all_play_chk",true);
+    }
+    return {};
+}
+
 void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font,std::vector<uint8_t>* frame) const {
     if(!frame)return;
+    if (p_->title_intro) {
+        frame->assign(FrameBytes,0);
+        for(size_t i=3;i<frame->size();i+=4)(*frame)[i]=255;
+        const std::string prefix=p_->get(100,0)?"system/title_dback":"system/title_rback";
+        const uint32_t elapsed=p_->title_intro_elapsed, transition=p_->title_transition_ms();
+        const uint32_t pan_start=1600+transition, pan_end=pan_start+p_->title_pan_ms();
+        const uint32_t sharp_start=pan_end+255+800;
+        const Rect viewport=p_->destination({0,0,800,600});
+        auto background=[&](const char* variant,int y,int alpha=255) {
+            if (auto* source=p_->image(prefix+variant)) blit(*source,{0,y,800,600},viewport,frame,alpha);
+        };
+        if (elapsed<800) background("01",0);
+        else if (elapsed<800+transition) {
+            background("01",0);
+            background("00",0,int((elapsed-800)*255/transition));
+        } else if (elapsed<sharp_start) {
+            if (elapsed<=pan_start) background("00",0);
+            else if(const auto* pan=p_->title_pan_image(prefix+"00",elapsed-pan_start))
+                blit(*pan,{0,0,800,600},viewport,frame);
+        } else {
+            background("02",0);
+            if (elapsed>sharp_start) {
+                if (auto* logo=p_->image("system/title_chip"))
+                    blit(*logo,{0,330,448,166},p_->destination({0,0,448,166}),frame,
+                         std::min(255,int((elapsed-sharp_start)*255/transition)));
+            }
+        }
+        return;
+    }
     if ((p_->dc2dm || p_->dc2pc) && draw_gallery(W,H,frame)) return;
     frame->assign(FrameBytes,0);for(size_t i=3;i<frame->size();i+=4)(*frame)[i]=255;
     if(auto* back=p_->image(p_->background)) {
@@ -2391,6 +2779,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
             if (auto* sheet = p_->image("SYSTEM/EFFYOUSEI")) p_->fairy_lights.draw(*frame, *sheet);
     }
     int hover=confirming()?-1:p_->hit(p_->input_x(mx),p_->input_y(my));
+    if (p_->story_select && p_->story_keyboard_focus) hover=p_->story_focus;
     auto state_for=[&](int control) {
         if(control<0)return 99;
         if(control==hover) return down && (!p_->held || p_->pressed==control) ? 2 : 1;
@@ -2400,42 +2789,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
         if(chip.control>=0) {
             if(underlay) { if(chip.state!=99)return;chip.control=-1; }
         }
-        if(chip.control>=0) {
-            if(size_t(chip.control)>=p_->widgets.size())return;
-            int state=state_for(chip.control);
-            const auto& widget=p_->widgets[size_t(chip.control)];
-            if(widget.filled_slider && chip.dst.x==widget.slider_left && chip.dst.h==16 &&
-               chip.dst.w>=widget.slider_right-widget.slider_left) {
-                if(chip.state==2) {
-                    const int count=std::max(1,widget.slider_count-1);
-                    const int value=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,count);
-                    chip.src.w=chip.dst.w=std::min(chip.src.w,2+value*(widget.slider_right-widget.slider_left)/count);
-                } else if(chip.state!=99) return;
-            } else if(p_->dc2pc && chip.state>=22 && chip.state<=26) {
-                if(widget.slider_bank<0 || widget.slider_count<2)return;
-                const int val=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,widget.slider_count-1);
-                if(chip.state==22) {
-                    chip.src.w=chip.dst.w=std::clamp(widget.slider_left + val*(widget.slider_right-widget.slider_left)/(widget.slider_count-1)-chip.dst.x,0,chip.src.w);
-                } else if(chip.state==23) {
-                    chip.dst.x+=val*(widget.slider_right-widget.slider_left)/(widget.slider_count-1);
-                } else {
-                    if(widget.slider_stops.size()<size_t(widget.slider_count+1))return;
-                    const bool active=hover==chip.control;
-                    if((chip.state==25&&!active)||(chip.state==26&&active))return;
-                    const int left=chip.state==24?widget.slider_stops.front():widget.slider_stops[size_t(val)];
-                    const int right=chip.state==24?widget.slider_stops.back():widget.slider_stops[size_t(val+1)];
-                    chip.src.x+=left-chip.dst.x;chip.dst.x=left;
-                    chip.src.w=chip.dst.w=right-left;
-                }
-            } else if(chip.state==6 || chip.state==8 || chip.state==10) {
-                if(widget.slider_bank<0)return;
-                bool active=hover==chip.control;
-                if((chip.state==6&&active)||(chip.state==8&&!active)||chip.state==10)return;
-                int count=std::max(widget.slider_count-1,1);
-                int val=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,count);
-                chip.dst.x=widget.slider_left + val*(widget.slider_right-widget.slider_left)/count - chip.dst.w/2;
-            } else if(chip.state!=state)return;
-        }
+        if (!p_->resolve_chip(chip,hover,down)) return;
         const int alpha = chip.window_opacity ? (16-std::clamp(p_->get(99,11),0,14))*255/16 : 255;
         if(auto* img=p_->image(chip.image))blit(*img,chip.src,p_->destination(chip.dst),frame,alpha);
     };
@@ -2456,19 +2810,105 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     }
     for(const auto& c:p_->captions) {
         if(c.control>=0 && c.state>=0 && state_for(c.control)!=c.state)continue;
+        if (c.dc2ty_scene) {
+            std::string line=dc4::translate_ui(c.text);
+            for(size_t at=line.find("@s");at!=std::string::npos;at=line.find("@s"))line.erase(at,2);
+            auto text=dc4scene::sjis_to_utf16(line);
+            bool latin=false, japanese=false;
+            for(char16_t ch:text) {
+                latin|=(ch>=u'A' && ch<=u'Z') || (ch>=u'a' && ch<=u'z') ||
+                       (ch>=0xFF21 && ch<=0xFF3A) || (ch>=0xFF41 && ch<=0xFF5A);
+                japanese|=(ch>=0x3040 && ch<=0x30FF) || (ch>=0x3400 && ch<=0x9FFF);
+            }
+            const bool proportional=c.dc2ty_scene_title && latin && !japanese;
+            int size=line.size()>18?14:16;
+            if(proportional) {
+                for(auto& ch:text) {
+                    if(ch>=0xFF01 && ch<=0xFF5E)ch-=0xFEE0;
+                    if(ch==0x3000)ch=u' ';
+                }
+                size=16;
+                while(size>14 && font.text_width(text,size,false,false)>c.max_width-2)--size;
+                if(font.text_width(text,size,false,false)>c.max_width-2) {
+                    while(!text.empty() && font.text_width(text+u"...",size,false,false)>c.max_width-2)
+                        text.pop_back();
+                    while(!text.empty() && text.back()==u' ')text.pop_back();
+                    text+=u"...";
+                }
+            }
+            const float scale=float(H)/p_->profile->canvas_height;
+            const auto dst=p_->destination({c.x-1,c.y-1,std::max(1,c.max_width+1),size+3});
+            dc4scene::Image label;
+            label.w=dst.w; label.h=dst.h;
+            label.rgba.assign(size_t(label.w)*label.h*4,0);
+            // start.mes sets palette 14 to (0,77,165); native replay adds a one-pixel white outline.
+            for (int dy=-1;dy<=1;++dy) for (int dx=-1;dx<=1;++dx) if (dx || dy)
+                font.rasterize_line(text,1+dx,size-1+dy,&label.rgba,label.w,label.h,
+                                    size,0xFFFFFF,false,0,!proportional,0,0,scale,false);
+            font.rasterize_line(text,1,size-1,&label.rgba,label.w,label.h,
+                                size,0x004DA5,false,0,!proportional,0,0,scale,false);
+            blit(label,{0,0,label.w,label.h},dst,frame);
+            continue;
+        }
+        if (c.dc2ty_reset_prompt) {
+            const float scale = float(H)/p_->profile->canvas_height;
+            if (!c.translated) {
+                const auto point = p_->destination({c.x,c.y+24,0,0});
+                font.rasterize_line(c.unicode,point.x,point.y,frame,W,H,c.size*scale,
+                                    0xFFFFFF,false,0,false,0,0,1,false);
+                continue;
+            }
+            dc4scene::Image label;
+            label.w = int(256*scale); label.h = int(64*scale);
+            Rect ink;
+            bool fitted = false;
+            for (int size = c.size; size >= 18; --size) {
+                label.rgba.assign(size_t(label.w)*label.h*4,0);
+                font.rasterize_line(c.unicode,4,int(40*scale),&label.rgba,label.w,label.h,
+                                    size*scale,0xFFFFFF,false,0,false,0,0,1,false);
+                int left=label.w,top=label.h,right=0,bottom=0;
+                for (int y=0;y<label.h;++y) for (int x=0;x<label.w;++x) {
+                    if (!label.rgba[(size_t(y)*label.w+x)*4+3]) continue;
+                    left=std::min(left,x); top=std::min(top,y);
+                    right=std::max(right,x+1); bottom=std::max(bottom,y+1);
+                }
+                ink={left,top,right-left,bottom-top};
+                if (ink.w>0 && ink.h>0 && ink.w<=216*scale && ink.h<=28*scale &&
+                    font.text_width(c.unicode,size*scale)<=216*scale) {
+                    fitted = true;
+                    break;
+                }
+            }
+            if (fitted) {
+                // The PC translation patch centers cropped glyph ink at (400,278).
+                const auto center=p_->destination({400,278,0,0});
+                blit(label,ink,{center.x-ink.w/2,center.y-ink.h/2,ink.w,ink.h},frame);
+            } else {
+                const auto point=p_->destination({c.x,c.y+24,0,0});
+                font.rasterize_line(c.unicode,point.x,point.y,frame,W,H,c.size*scale,
+                                    0xFFFFFF,false,0,false,0,0,1,false);
+            }
+            continue;
+        }
         if (c.dc2dm_preview) {
             dc4scene::Image preview;
             preview.w = p_->profile->canvas_width;
             const auto lines = std::count(c.unicode.begin(),c.unicode.end(),u'\n');
             preview.h = int(std::min<int64_t>(p_->profile->canvas_height,
                 (int64_t(lines)*c.line_spacing+33)/4*4));
+            const auto dst = p_->destination({0,c.y-4,preview.w,preview.h});
+            const bool proportional = font.is_pretendard_jp_bold();
+            const bool output_text = proportional || (c.translated && font.is_ms_gothic());
+            const float output_scale = output_text ? float(H)/p_->profile->canvas_height : 1;
+            if (output_text) { preview.w = dst.w; preview.h = dst.h; }
             preview.rgba.assign(size_t(preview.w)*preview.h*4,0);
             size_t visible = c.animated ? std::min(c.preview_count,c.preview_revealed) : c.preview_count;
             std::u16string line;
             int baseline = 22;
             const auto draw_line = [&] {
                 font.rasterize_line(line,c.x,baseline,&preview.rgba,preview.w,preview.h,
-                                    22,0xFFFFFF,false,0,true,-1,c.translated ? 22*15.0f/19 : 0);
+                                    22,0xFFFFFF,false,0,!proportional,proportional ? 0 : -1,
+                                    c.translated && !proportional ? 22*15.0f/19 : 0,output_scale);
             };
             for (char16_t ch : c.unicode) {
                 if (ch == u'\r') continue;
@@ -2480,7 +2920,7 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
                 }
             }
             draw_line();
-            blit(preview,{0,0,preview.w,preview.h},p_->destination({0,c.y-4,preview.w,preview.h}),frame);
+            blit(preview,{0,0,preview.w,preview.h},dst,frame);
             continue;
         }
         if (!c.unicode.empty()) {
@@ -2510,12 +2950,34 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
             y+=c.size+4;
         }
     }
+    if (p_->dc2ty && p_->page == Page::Music) {
+        const int selected = p_->get(3,5);
+        if (selected >= 0 && size_t(selected) < Dc2TyMusicTitles.size()) {
+            // Native title text is clipped to (56,98)..(428,116), with a one-pixel shadow.
+            const auto dst = p_->destination({56,98,372,18});
+            dc4scene::Image title;
+            title.w = dst.w; title.h = dst.h;
+            title.rgba.assign(size_t(title.w)*title.h*4,0);
+            const float scale = float(H)/p_->profile->canvas_height;
+            const auto text = Dc2TyMusicTitles[size_t(selected)];
+            font.rasterize_line(text,25,15,&title.rgba,title.w,title.h,
+                                16,0,false,0,false,0,0,scale,false);
+            font.rasterize_line(text,24,14,&title.rgba,title.w,title.h,
+                                16,0xFFFFFF,false,0,false,0,0,scale,false);
+            blit(title,{0,0,title.w,title.h},dst,frame);
+        }
+    }
     if(p_->page==Page::Music && !p_->movie_menu && !p_->dc2pc && !p_->dc2dm) {
         // Scroll thumb supplied by MUSICCHIP (0x74 state -1).
         if(auto* img=p_->image("system/musicchip"))blit(*img,{902,30,24,23},{1072,266+p_->music_top*267/std::max(1,p_->music_max_scroll()),24,23},frame);
     }
     if(!p_->ready) font.rasterize_line(dc4::translate_ui(u"Menu data could not be loaded"),50,80,frame,W,H,28);
     p_->confirm.draw(mx,my,down,font,frame);
+    if (p_->story_duration && p_->story_outgoing.size()==frame->size()) {
+        const int alpha=int(uint64_t(p_->story_elapsed)*255/p_->story_duration);
+        for(size_t i=0;i<frame->size();++i)
+            (*frame)[i]=uint8_t(((*frame)[i]*alpha+p_->story_outgoing[i]*(255-alpha))/255);
+    }
     if((p_->dc4_profile || p_->dc2dm || p_->dc2pc) && p_->page==Page::Gallery && !confirming())p_->gallery_menu_frame=*frame;
 }
 
@@ -2533,6 +2995,7 @@ SystemConfig SystemMenu::config() const {
         c.music_volume=std::clamp(v(7)*100/29,0,100);c.se_volume=std::clamp(v(8)*100/29,0,100);
         c.voice_volume=std::clamp(v(9)*100/29,0,100);c.window_opacity=std::clamp(v(11)*100/15,0,100);
         c.text_speed=(v(13)==1 || v(13)==3)?11:std::clamp(v(12)*11/3,0,11);c.effect_speed=v(16);
+        if (p_->dc2ty) for(int actor=0;actor<16;++actor)c.character_muted[size_t(actor)]=p_->get(100,60+actor)!=0;
     }
     if(p_->dc2dm) {
         c.music_volume=std::clamp(v(7)*100/29,0,100);c.se_volume=std::clamp(v(8)*100/29,0,100);
@@ -2554,12 +3017,38 @@ int SystemMenu::page_voice_event() const {
     return 0;
 }
 int SystemMenu::page_voice_event(SystemMenuPage previous) const {
+    if (p_->dc2ty && (p_->page == Page::Title || previous == Page::Config ||
+        (p_->page == Page::Extras && previous != Page::Title))) return 0;
     if (p_->dc2dm && (p_->page == Page::Title || previous == Page::Config ||
         (p_->page == Page::Extras && previous != Page::Title))) return 0;
     return page_voice_event();
 }
 std::string SystemMenu::system_voice(int event_id) const {
     if (event_id <= 0) return {};
+    if (p_->dc2ty) {
+        static const char* actors[]={"otm","yme","kko","anz","akn","mhr","myk","yki","mik","myu","skr","sgn","wtr","kmk","mki","hrm"};
+        const int actor=p_->get(100,56);
+        if (actor<0 || actor>=16) return {};
+        int event=0;
+        switch(event_id) {
+        case 1: case 2: event=2; break;
+        case 7: event=3; break;
+        case 8: event=4; break;
+        case 10: event=5; break;
+        case 14: event=11; break;
+        case 15: event=6; break;
+        case 16: event=7; break;
+        case 17: event=8; break;
+        case 18: event=13; break;
+        case 22: event=9; break;
+        case 23: event=10; break;
+        case 24: case 25: case 26: case 27: event=event_id-9; break;
+        default: return {};
+        }
+        char buffer[64];
+        std::snprintf(buffer,sizeof(buffer),"VOICE/sys/sys_%s_%02d",actors[actor],event);
+        return buffer;
+    }
     if (p_->dc2dm) {
         // Host events differ from DM_SYS numbers. Back has no announcement;
         // bank100[56] == 3 is the native Nothing choice, not a random actor.
@@ -2635,12 +3124,17 @@ void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) cons
         scene.set_variable(3,30,replay?1:0);
         scene.set_variable(99,12,p_->get(99,12));
         scene.set_variable(99,20,p_->get(99,20));
+        if (p_->dc2ty) {
+            scene.set_variable(3,32,p_->get(3,32));
+            for(int actor=0;actor<16;++actor)
+                scene.set_variable(100,uint16_t(60+actor),p_->get(100,60+actor));
+        }
     }
 }
 void SystemMenu::restore_scene_progress(dc4scene::SceneRunner& scene) const {
-    if (p_->dc2dm) {
+    if (p_->dc2dm || p_->dc2ty) {
         for (int i = 0; i < 100; ++i)
-            scene.set_variable(100, uint16_t(i), i<23 ? std::max(scene.variable(100,uint16_t(i)),p_->get(100,i)) : p_->get(100,i));
+            scene.set_variable(100, uint16_t(i), i<p_->profile->progress_end ? std::max(scene.variable(100,uint16_t(i)),p_->get(100,i)) : p_->get(100,i));
         return;
     }
     if (!p_->dc4_profile) return;
@@ -2672,6 +3166,57 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
     if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
 }
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
+    if (p_->dc2ty) {
+        std::vector<uint8_t> bytes;
+        if (!read_bytes(path,&bytes) || bytes.size()!=0x738) {
+            if (error) *error="Unsupported or truncated DC2TY system data";
+            return false;
+        }
+        for(size_t i=0xD4;i<0x738;++i)if(bytes[i]>1) {
+            if(error)*error="Invalid DC2TY catalogue flag";
+            return false;
+        }
+        for(int i=0;i<5;++i)if(bytes[0x70+i]>1) {
+            if(error)*error="Invalid DC2TY route-clear flag";
+            return false;
+        }
+        if(bytes[0x70+56]>=16) {
+            if(error)*error="Invalid DC2TY system voice selection";
+            return false;
+        }
+        static const struct { int index, offset; uint32_t maximum; } settings[]={
+            {5,0x40,1},{6,0x44,255},{7,0x2C,29},{8,0x34,29},{9,0x3C,29},
+            {10,0x10,1},{11,0x08,15},{12,0x18,3},{13,0x04,3},{14,0x24,1},
+            {15,0x30,1},{16,0x0C,1000000},{17,0x20,1},{18,0x14,255},{20,0x1C,1}
+        };
+        const auto setting_value=[&](int offset) {
+            return uint32_t(bytes[offset]) | uint32_t(bytes[offset+1])<<8 |
+                   uint32_t(bytes[offset+2])<<16 | uint32_t(bytes[offset+3])<<24;
+        };
+        for(const auto& setting:settings)if(setting_value(setting.offset)>setting.maximum) {
+            if(error)*error="Invalid DC2TY system setting";
+            return false;
+        }
+        for(int i=0;i<5;++i)
+            p_->put(100,i,std::max(p_->get(100,i),int(bytes[0x70+i])));
+        if (!p_->profile_loaded && !p_->native_settings_imported) {
+            for(int i=5;i<100;++i)p_->put(100,i,bytes[0x70+i]);
+            for(const auto& setting:settings)p_->put(99,setting.index,int(setting_value(setting.offset)));
+        }
+        p_->native_settings_imported = true;
+        const auto catalogue=[&](int bank,size_t offset,int count,const auto& names,auto& seen) {
+            for(int i=0;i<count;++i)if(bytes[offset+i]) {
+                p_->put(bank,i,1);
+                if(size_t(i)<names.size())seen.insert(key(names[size_t(i)]));
+            }
+        };
+        catalogue(97,0xD4,512,p_->cg_names,p_->seen_cg);
+        catalogue(98,0x2D4,1024,p_->scene_names,p_->seen_scene);
+        catalogue(96,0x6D4,100,p_->bgm_names,p_->seen_music);
+        p_->progress_vars(); p_->rebuild();
+        if(error)error->clear();
+        return true;
+    }
     if (p_->dc2pc) {
         std::error_code ec;
         const auto size = std::filesystem::file_size(path, ec);
@@ -2829,7 +3374,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         if(type=='v'){
             int b,i,value;
             if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}
-            const bool progress=b==100 && (((p_->dc2pc || p_->dc2dm) && i<23) || (p_->dc4_profile && i>=100 && i<150));
+            const bool progress=b==100 && i>=p_->profile->progress_first && i<p_->profile->progress_end;
             vars[{b,i}]=progress?std::max(vars[{b,i}],value):value;
         }
         else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
@@ -2844,6 +3389,7 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
         if (vars.find({100, i}) == vars.end() || vars[{100, i}] == 0) vars[{100, i}] = 1;
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);
+    p_->profile_loaded = true;
     p_->progress_vars();p_->rebuild();if(error)error->clear();return true;
 }
 void SystemMenu::mark_cg_seen(const std::string& asset){if(safe_name(key(asset))&&p_->seen_cg.insert(key(asset)).second)p_->progress_vars();}
@@ -2872,6 +3418,7 @@ bool SystemMenu::sync_progress(const dc4scene::SceneRunner& scene){
 }
 void SystemMenu::set_music_position(int percent){p_->put(99,189,std::clamp(percent,0,100));}
 std::vector<SystemMenu::Control> SystemMenu::controls()const {
+    if (p_->title_intro || p_->story_duration) return {};
     std::vector<Control> result;for(const auto& w:p_->widgets){const auto r=p_->destination(w.hit);result.push_back({r.x,r.y,r.w,r.h,w.tag,w.enabled});}return result;
 }
 std::string SystemMenu::error()const{return p_->last_error;}

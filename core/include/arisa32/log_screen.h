@@ -44,6 +44,10 @@ public:
               int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
               std::vector<uint8_t>* frame);
 
+    // Touch events can finish before draw sees their pointer coordinates.
+    void select_at(int x, int y, int scroll, size_t row_count);
+    void select_top(int scroll, size_t row_count);
+
     bool back_hit(int x, int y) const;
     bool checkbox_hit(int x, int y) const;
     // Absolute row index under (x,y) for the jump/voice buttons, -1 if none.
@@ -72,7 +76,8 @@ public:
     void set_latin_mode(bool latin) { latin_mode_ = latin; }
     bool latin_mode() const { return latin_mode_; }
     // Japanese preserves authored lines/indentation; translations reflow words.
-    static std::vector<std::u16string> text_lines(const std::u16string& text, bool latin, bool dc2dm = false);
+    static std::vector<std::u16string> text_lines(const std::u16string& text, bool latin, bool dc2dm = false,
+                                                const dc4scene::FontRenderer* font = nullptr);
 
 private:
     void draw_dc2dm(const std::vector<LogRow>& rows, int scroll,

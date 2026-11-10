@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import tempfile
 import uuid
 import zipfile
 
@@ -23,10 +24,11 @@ def main():
     parser.add_argument('--exe', required=True, help='Read-only device DC2DM.EXE path')
     parser.add_argument('--font', required=True, type=Path)
     parser.add_argument('--serial', required=True)
+    parser.add_argument('--output', type=Path, help='New evidence directory; defaults to a task directory in system Temp')
     parser.add_argument('--choice-save', type=Path, help='Native PC save at the MAR_0129_E1 birthday choice')
     parser.add_argument('--transition-save', type=Path, help='Native PC save before the MAR_0129_E1 classroom mask wipe')
     parser.add_argument('--cases', nargs='+', choices=['stages', 'DC2DM01.dat', 'DC2DM02.dat',
-                        'DC2DM03.dat', 'DC2DM04.dat', 'DC2DM06.dat', 'rows', 'menus', 'choices', 'transitions', 'selectors',
+                        'DC2DM03.dat', 'DC2DM04.dat', 'DC2DM06.dat', 'rows', 'menus', 'text-render', 'backlog-input', 'choices', 'transitions', 'selectors',
                         'selector-story0', 'selector-story1', 'selector-story2', 'minigames', 'minigame-entry',
                         'read-history', 'read-history-pc-profile', 'read-history-pc-new', 'read-history-profile-only',
                         'minigames-suit', 'minigames-reversi-0', 'minigames-reversi-1', 'minigames-reversi-2'],
@@ -41,9 +43,16 @@ def main():
     suffix = '.exe' if os.name == 'nt' else ''
     adb = [str(sdk / 'platform-tools' / ('adb' + suffix)), '-s', args.serial]
     run = uuid.uuid4().hex[:12]
-    out = repo / 'build/dc2dm-save-validation' / run
+    if args.output:
+        out = args.output.expanduser().resolve()
+        try:
+            out.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            parser.error('--output must name a new directory: ' + str(out))
+    else:
+        out = Path(tempfile.mkdtemp(prefix='arisa32-dc2dm-save-'))
     classes = out / 'classes'
-    classes.mkdir(parents=True)
+    classes.mkdir()
     java = jdk / 'bin' / ('java' + suffix)
     sources = [repo / 'tests/android/dc2dm-save-probe/org/dc4engine/Arisa32Activity.java']
     sources += [repo / 'android/app/src/main/java/org/dc4engine/profile' / (name + '.java')

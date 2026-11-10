@@ -81,6 +81,45 @@ void variable_arithmetic() {
     CHECK(vm.read_variable(99, 217) == 51);
 }
 
+void dc2ty_variables_and_snapshot() {
+    Script script;
+    script.file.dialect = dc4::MesDialect::ClassicDC2;
+    script.file.version = 0x5F69;
+    script.file.code = {0x69, 0x5F};
+    script.words(0x5C, 100, 56, 4, 0);
+    script.words(0x5C, 100, 5, 1, 0);
+    script.words(0x5C, 0, 0, 255, 0);
+    script.words(0x5C, 0, 0, 2, 1);
+    script.byte(0x4C);
+    script.byte('T' - 0x20); script.byte('Y' - 0x20); script.byte(0);
+    script.end();
+    dc4::MesVm vm(script.file);
+    dc4::MesCommand command;
+    CHECK(vm.next(&command));
+    CHECK(command.dc2ty && !command.dc2pc && command.str == "TY");
+    CHECK(vm.read_variable(100, 56) == 4 && vm.read_variable(100, 5) == 1);
+    CHECK(vm.read_variable(0, 0) == 255);
+    CHECK(vm.read_variable(100, 100) == 0);
+    vm.write_variable(100, 100, 1);
+    CHECK(vm.read_variable(100, 100) == 0);
+    vm.write_variable(200, 10, 0x12345678);
+    CHECK(vm.read_variable(0, 10) == 0x12 && vm.read_variable(0, 13) == 0x78);
+    CHECK(vm.read_variable(200, 10) == 0x12345678);
+    vm.write_variable(97, 1499, 1);
+    vm.write_variable(97, 1500, 1);
+    CHECK(vm.read_variable(97, 1499) == 1 && vm.read_variable(97, 1500) == 0);
+    dc4::MesVmSnapshot snapshot;
+    std::string error;
+    CHECK(vm.capture_snapshot(&snapshot, &error));
+    dc4::MesVm restored(script.file);
+    CHECK(restored.restore_snapshot(snapshot, &error));
+    CHECK(restored.read_variable(100, 56) == 4 && restored.read_variable(100, 5) == 1);
+    CHECK(restored.read_variable(200, 10) == 0x12345678);
+    CHECK(!restored.next(&command) && restored.ended() && restored.error().empty());
+    snapshot.variables[{100, 100}] = 1;
+    CHECK(!restored.restore_snapshot(snapshot, &error));
+}
+
 void conditional_scopes() {
     // True and false cases for each recovered comparison operator.
     const int left[] = {5, 5, 6, 4, 5, 5};
@@ -480,6 +519,7 @@ void chapter_corpus_smoke(const std::string& mes_dir) {
 
 int main(int argc, char** argv) {
     variable_arithmetic();
+    dc2ty_variables_and_snapshot();
     conditional_scopes();
     checkpoints_and_labels();
     choices_and_transfers();

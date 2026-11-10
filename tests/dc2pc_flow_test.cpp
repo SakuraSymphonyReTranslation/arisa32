@@ -366,8 +366,12 @@ int main(int argc, char** argv) {
     CHECK(has(menu,"cg1223"));
     menu.activate("cg1223");
     dc4scene::FontRenderer font;std::vector<uint8_t> a,b,c;
-    menu.draw(-1,-1,false,font,&a);menu.scroll(1);menu.draw(-1,-1,false,font,&b);
-    CHECK(a!=b);menu.scroll(1);menu.draw(-1,-1,false,font,&c);CHECK(a==c);
+    menu.update(640);CHECK(menu.variable(99,100)==1223);menu.draw(-1,-1,false,font,&a);
+    menu.scroll(1);menu.update(640);CHECK(menu.variable(99,100)==1224);menu.draw(-1,-1,false,font,&b);
+    CHECK(a!=b);
+    menu.scroll(1);menu.update(640);CHECK(menu.variable(99,100)==1230);
+    menu.scroll(1);menu.update(640);CHECK(menu.variable(99,100)==1223);menu.draw(-1,-1,false,font,&c);
+    CHECK(a==c);
     menu.back();CHECK(has(menu,"cg1223"));
     menu.scroll(1);CHECK(menu.error().empty());CHECK(!has(menu,"cg1223"));
     menu.scroll(-1);CHECK(has(menu,"cg1223"));

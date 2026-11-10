@@ -18,6 +18,7 @@ add_library(arisa32_core STATIC
     core/src/mesvm.cpp
     core/src/voice.cpp
     core/src/xpcm.cpp
+    core/src/circus_vq.cpp
     core/src/bgm.cpp
     core/src/scene.cpp
     core/src/scene_sprite_motion.cpp
@@ -138,17 +139,49 @@ if(BUILD_TESTING)
     add_executable(dc2pc_gallery_test tests/dc2pc_gallery_test.cpp)
     target_link_libraries(dc2pc_gallery_test PRIVATE arisa32_core)
     add_test(NAME dc2pc_gallery_test COMMAND dc2pc_gallery_test)
+    add_executable(dc2ty_profile_test tests/dc2ty_profile_test.cpp)
+    target_link_libraries(dc2ty_profile_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_profile_test COMMAND dc2ty_profile_test)
+    add_executable(dc2ty_sprite_test tests/dc2ty_sprite_test.cpp)
+    target_include_directories(dc2ty_sprite_test PRIVATE third_party/miniz)
+    target_link_libraries(dc2ty_sprite_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_sprite_test COMMAND dc2ty_sprite_test)
+    add_executable(dc2ty_save_test tests/dc2ty_save_test.cpp)
+    target_link_libraries(dc2ty_save_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_save_test COMMAND dc2ty_save_test)
+    add_executable(dc2ty_menu_test tests/dc2ty_menu_test.cpp)
+    target_link_libraries(dc2ty_menu_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_menu_test COMMAND dc2ty_menu_test)
+    add_executable(dc2ty_choice_test tests/dc2ty_choice_test.cpp)
+    target_link_libraries(dc2ty_choice_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_choice_test COMMAND dc2ty_choice_test)
+    add_executable(dc2ty_transition_test tests/dc2ty_transition_test.cpp)
+    target_link_libraries(dc2ty_transition_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_transition_test COMMAND dc2ty_transition_test)
+    add_executable(dc2ty_eyecatch_test tests/dc2ty_eyecatch_test.cpp)
+    target_link_libraries(dc2ty_eyecatch_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_eyecatch_test COMMAND dc2ty_eyecatch_test)
+    add_executable(dc2ty_voice_test tests/dc2ty_voice_test.cpp)
+    target_link_libraries(dc2ty_voice_test PRIVATE arisa32_core)
+    add_test(NAME dc2ty_voice_test COMMAND dc2ty_voice_test)
+    set_tests_properties(dc2ty_voice_test PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(xpcm_test tests/xpcm_test.cpp)
+    target_link_libraries(xpcm_test PRIVATE arisa32_core)
+    add_test(NAME xpcm_test COMMAND xpcm_test)
     add_executable(dc2dm_menu_test tests/dc2dm_menu_test.cpp)
     target_link_libraries(dc2dm_menu_test PRIVATE arisa32_core)
     add_test(NAME dc2dm_menu_test COMMAND dc2dm_menu_test
         "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
+    add_test(NAME dc2dm_menu_pretendard_test COMMAND dc2dm_menu_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/PretendardJP-Bold.ttf")
     add_executable(confirm_dialog_test tests/confirm_dialog_test.cpp)
     target_link_libraries(confirm_dialog_test PRIVATE dc4core)
     add_test(NAME confirm_dialog_test COMMAND confirm_dialog_test)
     add_executable(log_screen_test tests/log_screen_test.cpp)
     target_link_libraries(log_screen_test PRIVATE dc4core)
     add_test(NAME log_screen_test COMMAND log_screen_test
-        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC")
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/MSGOTHIC.TTC"
+        "${CMAKE_CURRENT_SOURCE_DIR}/android/app/src/main/assets/fonts/PretendardJP-Bold.ttf")
     add_executable(resource_test tests/resource_test.cpp)
     target_link_libraries(resource_test PRIVATE dc4core)
     add_test(NAME resource_test COMMAND resource_test)

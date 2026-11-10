@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-**Rilis terbaru: [v0.7.1](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.1)**. D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai. Rilis ini memperbaiki transisi menu dan tata letak teks DC2DM, galeri CG DC2PC, serta jarak huruf COMU di D.C.4 dan Plus Harmony saat memakai Pretendard JP Bold. Font tersebut kini tersedia langsung di aplikasi Android. Baca [catatan rilis](docs/releases/v0.7.1/id.md) untuk rincian dan batasannya. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
+**Rilis terbaru: [v0.7.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.2)**. Rilis ini menambahkan dukungan beta D.C. II To You, termasuk menu, suara, gambar pergantian tanggal, dan save berformat PC dengan judul skenario. Sentuhan backlog dan keterbacaan teks DC2DM juga diperbaiki. Baca [catatan rilis](docs/releases/v0.7.2/id.md) untuk rincian dan batasan cross-save. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -143,10 +143,10 @@ Build menghasilkan APK universal yang berisi ARM64 dan ARMv7. Di PowerShell, gun
 
 APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| APK v0.7.1 | Android minimum | Kegunaan |
+| APK v0.7.2 | Android minimum | Kegunaan |
 | --- | --- | --- |
-| `Arisa32-v0.7.1.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
-| `Arisa32-v0.7.1-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
+| `Arisa32-v0.7.2.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
+| `Arisa32-v0.7.2-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
 
 Kedua APK bersifat universal dan masing-masing berisi ARM64 serta ARMv7. `SHA256SUMS.txt` memuat checksum kedua APK.
 
@@ -182,9 +182,12 @@ Format simpan bergantung pada game:
 | --- | --- |
 | D.C. II P.C., D.C.4, D.C.4 Plus Harmony | Format PC `.dat`, dengan berkas pendamping `.dat.arisa` untuk keadaan tambahan Arisa32 |
 | D.C. II Dearest Marriage | Format PC `.dat` + `.dat.arisa`; save portabel lama tetap dapat dimuat |
+| D.C. II To You | Format PC `.dat` + `.dat.arisa` dengan batas kompatibilitas di bawah; save portabel lama tetap dapat dimuat |
 | Profil tanpa dukungan format PC | Format portabel `.dc4sav`, dengan berkas pratinjau dan metadata |
 
-Arisa32 dapat membaca dan menulis format PC untuk empat judul di atas. Berkas `.dat.arisa` menyimpan keadaan tambahan, termasuk posisi pemutaran audio. Game PC mengabaikan berkas pendamping ini. Arisa32 tetap dapat memuat `.dat` tanpa pendampingnya, tetapi musik dapat mulai dari awal dan sebagian keadaan tambahan tidak tersedia.
+Arisa32 dapat membaca dan menulis format PC untuk lima judul di atas. Berkas `.dat.arisa` menyimpan keadaan tambahan, termasuk posisi pemutaran BGM dan efek suara berulang. Posisi di tengah suara dialog belum disimpan; suara dialog diputar ulang dari awal. Game PC mengabaikan berkas pendamping ini. Arisa32 tetap dapat memuat `.dat` tanpa pendampingnya, tetapi musik dapat mulai dari awal dan sebagian keadaan tambahan tidak tersedia.
+
+Untuk DC2TY, quicksave memakai `dc2ty00.dat`, salinan save manual terakhir memakai `dc2ty01.dat`, dan 48 slot manual mengikuti nomor PC: `02` sampai `04` pada halaman pertama, `08` sampai `12` pada halaman kedua, lalu berlanjut dengan jarak delapan nomor per halaman. Baris Save/Load menampilkan judul skenario dan ikon karakter. Pengujian memastikan struktur save diterima pembaca dan loader asli dalam emulasi terisolasi; pemulihan adegan penuh di aplikasi PC belum diverifikasi. Impor menolak overlay bersyarat, chip pada bidang latar, dan offset latar/pan bukan nol. Lihat [batas dan validasi save DC2TY](docs/dc2ty-save-compatibility.md).
 
 Untuk DC2DM, quicksave memakai `DC2DM01.dat`, autosave `DC2DM02.dat`, dan 100 slot biasa `DC2DM04.dat` sampai `DC2DM103.dat`. Arisa32 juga membaca salinan save terakhir PC `DC2DM03.dat`, tetapi tidak memperbarui salinan terpisah tersebut; pemilihan save terakhir turut memeriksa slot biasa. Judul di layar Save/Load mengikuti judul skenario, termasuk judul dari executable terjemahan. Progres menu dan galeri diimpor dari `system.dat`, kemudian disimpan oleh Arisa32 dalam `system-profile.dat`. Ekspor balik progres global ke `system.dat` belum tersedia; pemuatan hasil ekspor slot dengan executable PC juga belum diverifikasi langsung. Lihat [validasi DC2DM](docs/dc2dm-save-progress-validation.md).
 

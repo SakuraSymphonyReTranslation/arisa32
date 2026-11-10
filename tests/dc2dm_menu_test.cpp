@@ -87,24 +87,80 @@ std::vector<uint8_t> frame(Menu& menu, const dc4scene::FontRenderer& font) {
 }
 std::vector<uint8_t> expected_preview(const dc4scene::FontRenderer& font,
                                     const std::u16string& text, bool translated = true) {
-    std::vector<uint8_t> native(1024u*576u*4u,0), expected(1280u*720u*4u,0);
+    const bool proportional = font.is_pretendard_jp_bold();
+    const bool output_text = proportional || (translated && font.is_ms_gothic());
+    const int width = output_text ? 1280 : 1024, height = output_text ? 720 : 576;
+    std::vector<uint8_t> native(size_t(width)*height*4,0), expected(1280u*720u*4u,0);
     size_t start=0;
     int baseline=442;
     while (start<text.size()) {
         const auto end=text.find(u'\n',start);
-        font.rasterize_line(text.substr(start,end-start),370,baseline,&native,1024,576,
-                            22,0xFFFFFF,false,0,true,-1,translated ? 22*15.0f/19 : 0);
+        font.rasterize_line(text.substr(start,end-start),370,baseline,&native,width,height,
+                            22,0xFFFFFF,false,0,!proportional,proportional ? 0 : -1,
+                            translated && !proportional ? 22*15.0f/19 : 0,
+                            output_text ? 1.25f : 1.0f);
         if (end==std::u16string::npos) break;
         start=end+1; baseline+=29;
     }
     for (int y=0; y<720; ++y) for (int x=0; x<1280; ++x) {
-        const size_t src=(size_t(y*576/720)*1024+x*1024/1280)*4;
+        const size_t src=(size_t(y*height/720)*width+x*width/1280)*4;
         const size_t dst=(size_t(y)*1280+x)*4;
         for (int channel=0; channel<3; ++channel)
             expected[dst+channel]=uint8_t(int(native[src+channel])*native[src+3]/255);
         expected[dst+3]=255;
     }
     return expected;
+}
+void proportional_preview_regressions(const std::filesystem::path& root,
+                                      const dc4scene::FontRenderer& font) {
+    if (!font.is_pretendard_jp_bold()) return;
+    struct Bounds {
+        int left=1280, right=-1, top=720, bottom=-1, pixels=0;
+        int width() const { return right-left+1; }
+        int height() const { return bottom-top+1; }
+    };
+    const auto ink = [](const std::vector<uint8_t>& pixels, int first_y, int last_y) {
+        Bounds bounds;
+        for (int y=first_y;y<last_y;++y) for (int x=0;x<1280;++x) {
+            const size_t at=(size_t(y)*1280+x)*4;
+            if (pixels[at]<180 || pixels[at+1]<180 || pixels[at+2]<180) continue;
+            bounds.left=std::min(bounds.left,x); bounds.right=std::max(bounds.right,x);
+            bounds.top=std::min(bounds.top,y); bounds.bottom=std::max(bounds.bottom,y);
+            ++bounds.pixels;
+        }
+        return bounds;
+    };
+    preview_fixture(root/"proportional-width","iiiiiiii\nWWWWWWWW",false);
+    Menu widths;
+    std::string error;
+    CHECK(widths.load((root/"proportional-width").string(),&error)); widths.open(Page::Config);
+    const auto width_frame=frame(widths,font);
+    const auto narrow=ink(width_frame,525,565), wide=ink(width_frame,565,605);
+    CHECK(narrow.pixels>80 && wide.pixels>80);
+    CHECK(narrow.width()>=35 && narrow.width()<55);
+    CHECK(wide.width()>150 && wide.width()<200);
+    CHECK(wide.width()>3*narrow.width());
+    CHECK(width_frame==expected_preview(font,u"iiiiiiii\nWWWWWWWW"));
+
+    const std::string text="ijltMWgjpqy\nijltMWgjpqy\nijltMWgjpqy";
+    preview_fixture(root/"proportional-height",text);
+    Menu height;
+    CHECK(height.load((root/"proportional-height").string(),&error)); height.open(Page::Config);
+    height.set_variable(99,26,11); height.set_variable(99,29,20);
+    const auto first=frame(height,font);
+    CHECK(first==expected_preview(font,u"i"));
+    height.update(29); CHECK(frame(height,font)==first);
+    height.update(1);
+    const auto full=frame(height,font);
+    CHECK(full==expected_preview(font,u"ijltMWgjpqy\nijltMWgjpqy\nijltMWgjpqy"));
+    const auto line1=ink(full,525,565), line2=ink(full,565,605), line3=ink(full,605,635);
+    CHECK(line1.pixels>100 && line2.pixels==line1.pixels && line3.pixels==line1.pixels);
+    CHECK(line1.height()>=20 && line1.height()<=25);
+    CHECK(line2.top-line1.top==36 && line3.top-line2.top==36);
+    CHECK(line2.left==line1.left && line3.left==line1.left);
+    CHECK(line3.bottom>=625 && line3.bottom<635);
+    height.update(199); CHECK(frame(height,font)==full);
+    height.update(1); CHECK(frame(height,font)==first);
 }
 void preview_regressions(const std::filesystem::path& root, const char* font_path) {
     preview_fixture(root/"opacity","AB_CD\nEF.",true,true,true);
@@ -170,6 +226,42 @@ void preview_regressions(const std::filesystem::path& root, const char* font_pat
     Menu fixed; CHECK(fixed.load((root/"static").string(),&error)); fixed.open(Page::Config);
     fixed.set_variable(99,11,0);
     CHECK(frame(fixed,font)==full); fixed.update(100000); CHECK(frame(fixed,font)==full);
+    preview_fixture(root/"readability","iii_WWW_gjpqy\nijltMWgjpqy");
+    Menu readable; CHECK(readable.load((root/"readability").string(),&error)); readable.open(Page::Config);
+    readable.set_variable(99,26,8); readable.set_variable(99,29,0);
+    readable.update(90);
+    const auto prefix=frame(readable,font);
+    readable.update(1000);
+    const auto completed=frame(readable,font);
+    CHECK(prefix!=completed);
+    const int prefix_right=font.is_pretendard_jp_bold()
+        ? int((370+font.text_width(u"iii",22,false,false,0))*1.25f)+1 : 503;
+    bool stable=true;
+    int changed_x=-1, changed_y=-1;
+    int first_ink=0, second_ink=0, top=720, bottom=-1, left=1280, right=-1;
+    for (int y=0;y<720;++y) for (int x=0;x<1280;++x) {
+        const size_t at=(size_t(y)*1280+x)*4;
+        if (x<prefix_right && y<570 && !std::equal(prefix.begin()+at,prefix.begin()+at+3,completed.begin()+at)) {
+            stable=false;
+            if (changed_x<0) { changed_x=x; changed_y=y; }
+        }
+        if (completed[at]<180 || completed[at+1]<180 || completed[at+2]<180) continue;
+        top=std::min(top,y); bottom=std::max(bottom,y); left=std::min(left,x); right=std::max(right,x);
+        if (y<570) ++first_ink; else ++second_ink;
+    }
+    if (!stable || first_ink<=80 || second_ink<=80)
+        std::cerr<<"preview stability="<<stable<<" first ink="<<first_ink<<" second ink="<<second_ink
+                 <<" bounds="<<left<<','<<top<<".."<<right<<','<<bottom
+                 <<" first changed="<<changed_x<<','<<changed_y<<'\n';
+    CHECK(stable && first_ink>80 && second_ink>80);
+    CHECK(top>=532 && top<550 && bottom>=585 && bottom<598);
+    CHECK(left>=460 && right<630);
+    if (font.is_ms_gothic()) {
+        dc4scene::FontRenderer ui_font;
+        CHECK(ui_font.load(font_path,1,22,false)); CHECK(!ui_font.is_ms_gothic());
+        CHECK(frame(fixed,ui_font)==expected_preview(ui_font,u"AB CD\nEF."));
+    }
+    proportional_preview_regressions(root,font);
     preview_fixture(root/"japanese","\x83\x65\x83\x58\x83\x67\x81\x5B\x81\x42_A",false);
     Menu japanese; CHECK(japanese.load((root/"japanese").string(),&error)); japanese.open(Page::Config);
     japanese.set_variable(99,11,0);

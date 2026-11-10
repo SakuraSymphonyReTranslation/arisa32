@@ -84,7 +84,7 @@ int SceneRunner::effect_random(int range) {
 }
 
 bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
-    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.dc2pc ||
+    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.classic_dc2() ||
         (mes_.version != 0xAAB6 && mes_.version != 0xABB6)) return false;
     if (c.opcode() == dc4::Opcode::SCREEN_EFFECT) {
         start_screen_effect(c.p1, c.p2);
