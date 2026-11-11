@@ -86,7 +86,8 @@ Keep the original game files and translation patch in separate folders inside th
 | Contents | Folder |
 | --- | --- |
 | Raw / original game files without a patch | `AdvData` |
-| An Indonesian or English translation patch, if used | `id_data` |
+| An Indonesian translation patch, if used | `id_data` |
+| An English translation patch, if used | `eng_data` |
 
 For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place one translation pack in an `id_data` folder beside it. Preserve the patch's subfolder and file structure.
 
