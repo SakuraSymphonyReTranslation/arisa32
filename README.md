@@ -86,7 +86,8 @@ Pisahkan berkas game asli dan patch terjemahan di dalam folder game:
 | Isi | Folder |
 | --- | --- |
 | Berkas game raw / original tanpa patch | `AdvData` |
-| Patch bahasa Indonesia atau Inggris, jika digunakan | `id_data` |
+| Patch bahasa Indonesia, jika ingin digunakan | `id_data` |
+| Patch bahasa Inggris, jika ingin digunakan | `eng_data` |
 
 Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`, lalu tempatkan satu paket terjemahan di `id_data` di sampingnya. Pertahankan susunan subfolder dan berkas dari paket patch.
 
