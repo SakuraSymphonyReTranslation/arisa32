@@ -89,15 +89,15 @@ Keep the original game files and translation patch in separate folders inside th
 | An Indonesian translation patch, if used | `id_data` |
 | An English translation patch, if used | `eng_data` |
 
-For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place one translation pack in an `id_data` folder beside it. Preserve the patch's subfolder and file structure.
+For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place one translation pack in an `id_data` and `eng_data` folder beside it. Preserve the patch's subfolder and file structure.
 
 On Android:
 
 1. Add the `AdvData` folder to the game library.
-2. To use a patch, open the game settings and choose **Import language pack**. Select **Bahasa Indonesia** or **English** to match the patch, choose the text encoding specified by its author, then select the `id_data` folder.
+2. To use a patch, open the game settings and choose **Import language pack**. Select **Bahasa Indonesia** or **English** to match the patch, choose the text encoding specified by its author, then select the `id_data` or  `eng_data` folder.
 3. Select the language to play under **Game language**. The original version uses the Japanese option; each language has separate save data.
 
-Arisa32 detects the name `id_data` as an Indonesian pack. If that folder contains an English patch, register it through **Import language pack** with **English** selected so it is available as English.
+Arisa32 detects the name `id_data` as an Indonesian patch and and `eng_data` as English patch, If that folder contains an English patch, register it through **Import language pack** with **English** selected so it is available as English.
 
 ## Build and run on Windows
 
