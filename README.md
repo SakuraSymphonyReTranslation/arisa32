@@ -89,15 +89,15 @@ Pisahkan berkas game asli dan patch terjemahan di dalam folder game:
 | Patch bahasa Indonesia, jika ingin digunakan | `id_data` |
 | Patch bahasa Inggris, jika ingin digunakan | `eng_data` |
 
-Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`, lalu tempatkan satu paket terjemahan di `id_data` di sampingnya. Pertahankan susunan subfolder dan berkas dari paket patch.
+Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`, lalu tempatkan satu paket terjemahan di `id_data` atau `eng_data` di sampingnya. Pertahankan susunan subfolder dan berkas dari paket patch.
 
 Di Android:
 
 1. Tambahkan folder `AdvData` ke pustaka game.
-2. Untuk memakai patch, buka pengaturan game dan pilih **Impor paket bahasa**. Pilih **Bahasa Indonesia** atau **English** sesuai isi patch, pilih enkode teks sesuai petunjuk pembuat patch, lalu pilih folder `id_data`.
+2. Untuk memakai patch, buka pengaturan game dan pilih **Impor paket bahasa**. Pilih **Bahasa Indonesia** atau **English** sesuai isi patch, pilih enkode teks sesuai petunjuk pembuat patch, lalu pilih folder `id_data` untuk opsi bahasa Indonesia dan `eng_data`.
 3. Pilih bahasa yang ingin dimainkan melalui **Bahasa game**. Versi original memakai pilihan bahasa Jepang; setiap bahasa memiliki data simpan terpisah.
 
-Arisa32 mendeteksi nama `id_data` sebagai paket bahasa Indonesia. Jika folder itu berisi patch Inggris, daftarkan melalui **Impor paket bahasa** dengan pilihan **English** agar tersedia sebagai bahasa Inggris.
+Arisa32 mendeteksi nama `id_data` dan `eng_data` sebagai paket bahasa Indonesia dan bahasa Inggris. Jika folder itu berisi patch Inggris, daftarkan melalui **Impor paket bahasa** dengan pilihan **English** agar tersedia sebagai bahasa Inggris.
 
 ## Build dan jalankan di Windows
 
