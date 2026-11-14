@@ -3,6 +3,7 @@
 #include "arisa32/mem_safe.h"
 #include "arisa32/names.h"
 #include "arisa32/dc2dm_music_titles.h"
+#include "dc2pc_music.h"
 #include "dc2ty_music.h"
 #include <algorithm>
 #include <array>
@@ -874,6 +875,10 @@ struct SystemMenu::Impl {
         if (dc2ty && page == Page::Scenes && state == 2 &&
             std::find(legacy_rows.begin(),legacy_rows.end(),chip.control) != legacy_rows.end())
             state = 1;
+        // DC2PC catalogue rows keep hover artwork while pressed.
+        if (dc2pc && !dc2ty && (page == Page::Music || page == Page::Scenes) && state == 2 &&
+            std::find(legacy_rows.begin(),legacy_rows.end(),chip.control) != legacy_rows.end())
+            state = 1;
         const auto& widget = widgets[size_t(chip.control)];
         if (widget.filled_slider && chip.dst.x == widget.slider_left && chip.dst.h == 16 &&
             chip.dst.w >= widget.slider_right-widget.slider_left) {
@@ -1158,7 +1163,8 @@ struct SystemMenu::Impl {
         if (context.source->dc2pc && context.pending.opcode() == Opcode::LIST_RECT) {
             // raw55 owns the vertical catalogue scrollbar. The following
             // raw52 is its redraw rectangle, not a sprite-sheet chip.
-            if (page != Page::Scenes) { context.pending = Command{}; return; }
+            const bool music_scroll = dc2pc && !dc2ty && page == Page::Music;
+            if (page != Page::Scenes && !music_scroll) { context.pending = Command{}; return; }
             const auto& p = context.pending.words;
             const Rect bounds{sw(p[0]),sw(p[1]),sw(p[2])-sw(p[0]),sw(p[3])-sw(p[1])};
             // DC2TY hides the track beyond x=800; centring a wider thumb must not expose it.
@@ -1168,12 +1174,12 @@ struct SystemMenu::Impl {
                 return;
             }
             Widget widget{bounds,"#catalogue:scroll",true};
-            widget.slider_bank = 206;
-            widget.slider_index = 80;
+            widget.slider_bank = music_scroll ? 3 : 206;
+            widget.slider_index = music_scroll ? 25 : 80;
             widget.slider_left = widget.hit.y;
             widget.slider_right = widget.hit.y + widget.hit.h - widget.hit.w;
             widget.vertical = true;
-            widget.slider_image = sheets[8];
+            widget.slider_image = sheets[music_scroll ? 6 : 8];
             widgets.push_back(std::move(widget));
             context.pending = Command{};
             return;
@@ -1588,7 +1594,7 @@ struct SystemMenu::Impl {
                             const int month=std::stoi(date.substr(0,2)), day=std::stoi(date.substr(2));
                             if (month>=1 && month<=12 && day>=1 && day<=31) {
                                 const std::string text=std::to_string(month)+"\x8c\x8e"+std::to_string(day)+"\x93\xfa";
-                                captions.push_back({widget.hit.x+70,widget.hit.y+2,16,control,99,text,std::max(1,widget.hit.w-74)});
+                                captions.push_back({widget.hit.x+70,widget.hit.y+2,16,control,-1,text,std::max(1,widget.hit.w-74)});
                             }
                         }
                     }
@@ -1850,7 +1856,7 @@ struct SystemMenu::Impl {
         if (widget.vertical) {
             const int maximum = std::max(0,widget.slider_count-1);
             const int position = std::clamp(y-thumb_grab,widget.slider_left,widget.slider_right);
-            widgets[size_t(id)].thumb_position=position;
+            widgets[size_t(id)].thumb_position=dc2pc && !dc2ty && page==Page::Music ? -1 : position;
             const int value = std::clamp(int(std::lround(double(position-widget.slider_left)*maximum /
                               (widget.slider_right-widget.slider_left))),0,maximum);
             if (value != get(widget.slider_bank,widget.slider_index)) {
@@ -2798,6 +2804,13 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
     if(p_->dc2pc) for (const auto& widget : p_->widgets) if (widget.vertical) {
         const int count=std::max(1,widget.slider_count-1);
         const int value=std::clamp(p_->get(widget.slider_bank,widget.slider_index),0,count);
+        if (!p_->dc2ty && p_->page == Page::Music) {
+            // The native Music thumb is a 16px chip, offset four pixels from raw55's hit rectangle.
+            const int top=widget.slider_left+value*(widget.slider_right-widget.slider_left)/count;
+            if(auto* img=p_->image(widget.slider_image))
+                blit(*img,{72,216,16,16},p_->destination({widget.hit.x+4,top,16,16}),frame);
+            continue;
+        }
         // The native catalogue sheet ends with the circular thumb above its
         // arrow buttons. Keep that original artwork and centre it on raw55.
         if(auto* img=p_->image(widget.slider_image)) {
@@ -2948,6 +2961,23 @@ void SystemMenu::draw(int mx,int my,bool down,const dc4scene::FontRenderer& font
             }
             font.rasterize_line(text,point.x,point.y,frame,W,H,size);
             y+=c.size+4;
+        }
+    }
+    if (p_->dc2pc && !p_->dc2ty && p_->page == Page::Music) {
+        const int selected = p_->get(3,5);
+        if (selected >= 0 && size_t(selected) < Dc2PcMusicTitles.size()) {
+            // Native title text is clipped to (96,100)..(428,118), with a one-pixel shadow.
+            const auto dst = p_->destination({96,100,332,18});
+            dc4scene::Image title;
+            title.w = dst.w; title.h = dst.h;
+            title.rgba.assign(size_t(title.w)*title.h*4,0);
+            const float scale = float(H)/p_->profile->canvas_height;
+            const auto text = Dc2PcMusicTitles[size_t(selected)];
+            font.rasterize_line(text,5,17,&title.rgba,title.w,title.h,
+                                16,0,false,0,false,0,0,scale,false);
+            font.rasterize_line(text,4,16,&title.rgba,title.w,title.h,
+                                16,0xFFFFFF,false,0,false,0,0,scale,false);
+            blit(title,{0,0,title.w,title.h},dst,frame);
         }
     }
     if (p_->dc2ty && p_->page == Page::Music) {

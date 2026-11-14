@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-**Rilis terbaru: [v0.7.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.2)**. Rilis ini menambahkan dukungan beta D.C. II To You, termasuk menu, suara, gambar pergantian tanggal, dan save berformat PC dengan judul skenario. Sentuhan backlog dan keterbacaan teks DC2DM juga diperbaiki. Baca [catatan rilis](docs/releases/v0.7.2/id.md) untuk rincian dan batasan cross-save. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
+**Rilis terbaru: [v0.7.3](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.3)**. Rilis ini memperbaiki judul lagu dan scrollbar pada mode Music DC2PC, serta tanggal, sorotan kartu, dan konfirmasi pemutaran pada mode Scene. Konfirmasi mengikuti bahasa konten game yang dipilih, termasuk patch Indonesia. Baca [catatan rilis](docs/releases/v0.7.3/id.md) untuk rincian. Riwayat versi tersedia di [catatan perubahan](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -36,11 +36,13 @@ Arisa32 mengenali 21 judul resmi berbasis CIRCUS adv32 dari seri Da Capo dan Dal
 - `D.C. II ~Da Capo II~`
 - `D.C. II Spring Celebration ~Da Capo II Spring Celebration~`
 - `D.C. II P.C. ~Da Capo II Plus Communication~`
-- `D.C. II To You ~Da Capo II To You~`
+- `D.C. II To You ~Da Capo II To You~` (beta)
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
 
 Menurut pengujian pengguna, D.C. II Dearest Marriage sudah dapat dimainkan sampai selesai (fully playable). Dukungan mencakup save PC, impor progres, suit, Reversi, menu, pilihan, suara, dan galeri CG. Versi 0.7.1 memperbaiki transisi pemilih cerita dan minigame, mempertahankan riwayat baca saat mengimpor progres PC, serta menyesuaikan tata letak teks Pretendard JP Bold. Lihat [catatan DC2DM 0.7.1](docs/releases/v0.7.1/id.md).
+
+Pada game asli D.C. II P.C. (DC2PC) dan D.C. II To You (DC2TY), panah atas/bawah di area textbox menampilkan dialog sebelumnya atau kembali ke dialog terbaru yang sedang muncul. Kedua game ini tidak memiliki layar atau artwork backlog khusus. D.C. II Dearest Marriage (DC2DM) memiliki layar backlog tersendiri.
 
 ### Seri Da Capo pertama
 
@@ -89,15 +91,15 @@ Pisahkan berkas game asli dan patch terjemahan di dalam folder game:
 | Patch bahasa Indonesia, jika ingin digunakan | `id_data` |
 | Patch bahasa Inggris, jika ingin digunakan | `eng_data` |
 
-Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`, lalu tempatkan satu paket terjemahan di `id_data` atau `eng_data` di sampingnya. Pertahankan susunan subfolder dan berkas dari paket patch.
+Untuk versi original, cukup gunakan `AdvData`. Jika memakai patch, tetap simpan berkas asli di `AdvData`. Tempatkan paket terjemahan di folder `id_data` untuk bahasa Indonesia atau `eng_data` untuk bahasa Inggris, di samping `AdvData`. Pertahankan susunan subfolder dan berkas dari paket patch.
 
 Di Android:
 
 1. Tambahkan folder `AdvData` ke pustaka game.
-2. Untuk memakai patch, buka pengaturan game dan pilih **Impor paket bahasa**. Pilih **Bahasa Indonesia** atau **English** sesuai isi patch, pilih enkode teks sesuai petunjuk pembuat patch, lalu pilih folder `id_data` untuk opsi bahasa Indonesia dan `eng_data`.
+2. Untuk memakai patch, buka pengaturan game dan pilih **Impor paket bahasa**. Pilih **Bahasa Indonesia** atau **English** sesuai isi patch, pilih enkode teks sesuai petunjuk pembuat patch, lalu pilih folder `id_data` untuk bahasa Indonesia atau `eng_data` untuk bahasa Inggris.
 3. Pilih bahasa yang ingin dimainkan melalui **Bahasa game**. Versi original memakai pilihan bahasa Jepang; setiap bahasa memiliki data simpan terpisah.
 
-Arisa32 mendeteksi nama `id_data` dan `eng_data` sebagai paket bahasa Indonesia dan bahasa Inggris. Jika folder itu berisi patch Inggris, daftarkan melalui **Impor paket bahasa** dengan pilihan **English** agar tersedia sebagai bahasa Inggris.
+Arisa32 otomatis mengenali `id_data` sebagai paket bahasa Indonesia dan `eng_data` sebagai paket bahasa Inggris. Jika patch Inggris memakai nama folder `id_data`, daftarkan melalui **Impor paket bahasa** dengan pilihan **English** agar tersedia sebagai bahasa Inggris.
 
 ## Build dan jalankan di Windows
 
@@ -144,10 +146,10 @@ Build menghasilkan APK universal yang berisi ARM64 dan ARMv7. Di PowerShell, gun
 
 APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| APK v0.7.2 | Android minimum | Kegunaan |
+| APK v0.7.3 | Android minimum | Kegunaan |
 | --- | --- | --- |
-| `Arisa32-v0.7.2.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
-| `Arisa32-v0.7.2-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
+| `Arisa32-v0.7.3.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
+| `Arisa32-v0.7.3-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
 
 Kedua APK bersifat universal dan masing-masing berisi ARM64 serta ARMv7. `SHA256SUMS.txt` memuat checksum kedua APK.
 
@@ -247,6 +249,6 @@ python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves
 
 ## Hak cipta dan merek dagang
 
-Nama **D.C. ~Da Capo~**, **D.C. II**, **D.C. III**, **D.C.4**, **D.S. -Dal Segno-**, serta **CIRCUS / adv32** dan aset game terkait adalah kekayaan intelektual CIRCUS.
+Nama **D.C. \~Da Capo\~**, **D.C. II**, **D.C. III**, **D.C.4**, **D.S. -Dal Segno-**, serta **CIRCUS / adv32** dan aset game terkait adalah kekayaan intelektual CIRCUS.
 
 Proyek ini bertujuan untuk pendidikan, interoperabilitas, dan pelestarian. Repositori tidak menyertakan atau mendistribusikan aset game berhak cipta, termasuk skrip `.mes`, gambar `.crx`/`.crm`, dan audio `.xpcm`/`VOICE.DAT`. Pengguna harus menyediakan salinan game sah milik sendiri.

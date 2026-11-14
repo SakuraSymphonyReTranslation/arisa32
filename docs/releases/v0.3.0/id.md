@@ -25,7 +25,7 @@
 
 ### Kompatibilitas D.C.4 Plus Harmony
 
-- Perbaikan kompatibilitas menyeluruh untuk **D.C.4 ~Da Capo 4~ Plus Harmony** yang sebelumnya mengalami kendala pembacaan data.
+- Perbaikan kompatibilitas menyeluruh untuk **`D.C.4 ~Da Capo 4~ Plus Harmony`** yang sebelumnya mengalami kendala pembacaan data.
 - Dukungan pembacaan file archive berukuran lebih dari 2 GB (`VOICE.DAT` 64-bit seek) dan registrasi prefix partisi audio `LVOICE\\`.
 - Deteksi skrip rute eksklusif Plus Harmony (`dc4_asu*`) berjalan optimal.
 
@@ -52,7 +52,7 @@
 
 ### Dukungan eksperimental dan seri lain
 
-- **D.C. II ~Da Capo II~ Dearest Marriage**: Dukungan masih berstatus **eksperimental** (perbaikan parsing button chip dan navigasi menu awal).
+- **`D.C. II ~Da Capo II~ Dearest Marriage`**: Dukungan masih berstatus **eksperimental** (perbaikan parsing button chip dan navigasi menu awal).
 - **Seri Da Capo & Dal Segno Lainnya**: Katalog game telah dikenali, namun kompatibilitas penuh skrip & aset untuk seri lainnya masih dalam tahap pengujian bertahap dan belum diverifikasi secara menyeluruh.
 
 ---

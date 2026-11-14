@@ -32,6 +32,26 @@ void dialog(){
     CHECK(!fresh.hit_no(699,421)); // No invisible legacy hit rectangles.
     fresh.pointer_down(720,380);CHECK(fresh.pointer_up(720,380)==ConfirmResult::No);
 }
+void scene_replay_prompt(){
+    const auto font_path=std::filesystem::path(__FILE__).parent_path().parent_path()/
+        "android/app/src/main/assets/fonts/PretendardJP-Bold.ttf";
+    dc4scene::FontRenderer font;
+    if(!font.load(font_path.string(),0,24,false)){CHECK(false);return;}
+    ConfirmDialog actual,expected;
+    actual.set_language(dc4::Language::Indonesian);
+    expected.set_language(dc4::Language::Indonesian);
+    CHECK(actual.open(ConfirmKind::SceneReplay));
+    expected.open(u"Putar Scenario ini?");
+    const auto render=[&](const ConfirmDialog& dialog){
+        std::vector<uint8_t> frame(1280*720*4,0);
+        dialog.draw(-1,-1,false,font,&frame);
+        return frame;
+    };
+    const auto frame=render(actual);
+    CHECK(frame==render(expected));
+    expected.open(u"Putar adegan ini?");
+    CHECK(frame!=render(expected));
+}
 void saves(){
     SaveScreen s;s.set_confirm_enabled(true);s.set_navigation(true,true,true);
     s.set_slot_occupied(0,true);
@@ -124,4 +144,4 @@ void dc2dm(){
     if(fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)fs::remove_all(root,ec);
 }
 }
-int main(){dialog();saves();dc2dm();return failures?1:0;}
+int main(){dialog();scene_replay_prompt();saves();dc2dm();return failures?1:0;}

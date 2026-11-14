@@ -2,7 +2,7 @@
 
 # Arisa32 v0.7.2 - DC2TY Support, Saves in PC Format, and DC2DM Text Fixes
 
-This November 11, 2026 release adds initial support for D.C. II To You ~Da Capo II To You~ (DC2TY), including original menus, voice decoding, date-change artwork, and PC-format saves with scenario titles. The CONFIG preview and backlog in D.C. II Dearest Marriage (DC2DM) are also easier to read with both MS Gothic and Pretendard JP Bold.
+This November 11, 2026 release adds initial support for `D.C. II To You ~Da Capo II To You~` (DC2TY), including original menus, voice decoding, date-change artwork, and PC-format saves with scenario titles. The CONFIG preview and backlog in D.C. II Dearest Marriage (DC2DM) are also easier to read with both MS Gothic and Pretendard JP Bold.
 
 ### D.C. II To You
 
@@ -31,9 +31,13 @@ To transfer a slot to PC, copy `.dat` into the PC game's save folder. When movin
 - Pretendard JP Bold uses more readable sizes and proportional letter widths in the CONFIG preview and backlog. Wrapping follows glyph widths; speaker names stay within the name area and voice icons remain visible.
 - The backlog responds to quick taps and finger movement when selecting a row. Releasing a finger, scrolling, or changing cursor mode retains the selection according to the original menu behavior. Read from here resumes from the first visible row.
 
+### Reading earlier dialogue in DC2PC and DC2TY
+
+DC2PC and DC2TY do not have a separate native backlog screen or artwork. Press the up arrow in the textbox area to read earlier dialogue; the down arrow moves forward toward the latest dialogue currently displayed. This follows the original game design. DC2DM has a dedicated backlog interface.
+
 ### Support limits
 
-- DC2TY support is still initial; complete playthroughs of every route have not been verified. Native DC2TY backlog artwork is not supported yet.
+- DC2TY support is still initial; complete playthroughs of every route have not been verified.
 - In isolated emulation, the original PC executable's reader and loader accept the exported save structure and copy its full contents. Full scene restoration and continued play in the PC game have not been verified. Import rejects native configurations that cannot yet be restored: nonzero background/pan offsets, chips on plane 0, or conditional chips. See the [DC2TY save compatibility notes](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.2/docs/dc2ty-save-compatibility.md).
 - The companion stores the dialogue voice resource name for replay from the beginning. The current voice playback position is not saved yet.
 - Voice tests cover all 7,800 entries in the original archive and an Android decoder probe. Playback through the game menu to the speaker has not been directly tested in this revision. See the [DC2TY voice report](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.2/docs/dc2ty-voice-analysis.md).

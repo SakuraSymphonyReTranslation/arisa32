@@ -13,7 +13,7 @@
 
 ## Catatan rilis v0.5.5
 
-Rilis **v0.5.5** merupakan pembaruan terfokus (*targeted hotfix release*) yang secara khusus menyelesaikan masalah sinkronisasi audio dan video pada adegan pertunjukan lagu Kotori di prolog **D.C.4 ~Da Capo 4~** dan **D.C.4 ~Da Capo 4~ Plus Harmony**.
+Rilis **v0.5.5** merupakan pembaruan terfokus (*targeted hotfix release*) yang secara khusus menyelesaikan masalah sinkronisasi audio dan video pada adegan pertunjukan lagu Kotori di prolog **`D.C.4 ~Da Capo 4~`** dan **`D.C.4 ~Da Capo 4~ Plus Harmony`**.
 
 ---
 

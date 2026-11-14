@@ -2,7 +2,7 @@
 
 # Arisa32 v0.7.2 - Dukungan DC2TY, Save Format PC, dan Perbaikan Teks DC2DM
 
-Rilis 11 November 2026 ini menambahkan dukungan awal D.C. II To You ~Da Capo II To You~ (DC2TY), termasuk menu asli, decoder voice, gambar pergantian tanggal, serta save dengan judul skenario dan format PC. Preview CONFIG dan backlog D.C. II Dearest Marriage (DC2DM) juga lebih mudah dibaca dengan MS Gothic maupun Pretendard JP Bold.
+Rilis 11 November 2026 ini menambahkan dukungan awal `D.C. II To You ~Da Capo II To You~` (DC2TY), termasuk menu asli, decoder voice, gambar pergantian tanggal, serta save dengan judul skenario dan format PC. Preview CONFIG dan backlog D.C. II Dearest Marriage (DC2DM) juga lebih mudah dibaca dengan MS Gothic maupun Pretendard JP Bold.
 
 ### D.C. II To You
 
@@ -31,9 +31,13 @@ Untuk memindahkan slot ke PC, salin `.dat` ke folder save game PC. Saat memindah
 - Pretendard JP Bold memakai ukuran yang lebih terbaca dan lebar huruf proporsional pada preview CONFIG serta backlog. Pembungkusan teks mengikuti lebar huruf; nama pembicara tetap berada dalam area nama dan ikon voice tetap terlihat.
 - Backlog merespons ketukan cepat dan gerakan jari untuk memilih baris. Melepas jari, menggulir, atau mengganti mode cursor mempertahankan pilihan sesuai perilaku menu asli. Baca dari sini kembali ke baris pertama yang terlihat.
 
+### Membaca dialog sebelumnya di DC2PC dan DC2TY
+
+DC2PC dan DC2TY memang tidak memiliki layar atau artwork backlog native tersendiri. Tekan panah atas di area textbox untuk membaca dialog sebelumnya; panah bawah bergerak maju menuju dialog terbaru yang sedang tampil. Ini mengikuti desain game asli. DC2DM memiliki antarmuka backlog tersendiri.
+
 ### Batas dukungan
 
-- DC2TY masih merupakan dukungan awal; seluruh rute belum diverifikasi sampai selesai. Artwork backlog native DC2TY belum didukung.
+- DC2TY masih merupakan dukungan awal; seluruh rute belum diverifikasi sampai selesai.
 - Dalam emulasi terisolasi, reader dan loader dari executable PC asli menerima struktur save hasil ekspor serta menyalin seluruh isinya. Pemulihan adegan dan kelanjutan permainan penuh pada game PC belum diverifikasi. Impor menolak konfigurasi native yang belum dapat dipulihkan, yaitu offset latar/pan bukan nol, chip pada plane 0, atau chip bersyarat. Rincian tersedia pada [catatan kompatibilitas save DC2TY](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.2/docs/dc2ty-save-compatibility.md).
 - Companion menyimpan nama resource voice dialog untuk diputar ulang dari awal. Posisi voice yang sedang diputar belum disimpan.
 - Pengujian voice mencakup seluruh 7.800 entri arsip asli dan probe decoder Android. Pemutaran melalui menu game ke speaker belum diuji langsung pada revisi ini. Lihat [laporan voice DC2TY](https://github.com/SakuraSymphonyReTranslation/arisa32/blob/v0.7.2/docs/dc2ty-voice-analysis.md).

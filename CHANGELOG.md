@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.3 - 2026-11-14
+
+### Bahasa Indonesia
+
+- Memperbaiki Music Mode DC2PC: kotak atas menampilkan salah satu dari 74 judul lagu asli, judul bertahan saat hover/scroll/Stop, dan pegangan scrollbar putih/krem dapat diseret sampai lagu terakhir.
+- Mempertahankan sorotan kuning saat baris lagu DC2PC ditekan serta tanggal dan sorotan hijau muda saat kartu Scene Replay disorot atau ditekan, termasuk lewat sentuhan langsung.
+- Mengubah konfirmasi Scene Replay Indonesia menjadi `Putar Scenario ini?`. Bahasa dialog mengikuti konten/patch game yang dipilih; konten Jepang tetap memakai `このシーンを再生しますか？`, terpisah dari bahasa antarmuka aplikasi.
+- Mengoreksi README kedua bahasa dan catatan v0.7.2: DC2PC/DC2TY memakai panah atas/bawah pada textbox untuk membaca dialog sebelumnya atau kembali ke dialog terbaru, tanpa layar/artwork backlog tersendiri. DC2DM memiliki antarmuka backlog tersendiri.
+- Memperbaiki penulisan judul game agar tanda tilde tidak membuat teks dicoret di GitHub.
+
+### English
+
+- Fixes DC2PC Music Mode: the top box displays one of the 74 original song titles, the title persists through hover/scroll/Stop, and the white/cream scrollbar thumb can be dragged to the last song.
+- Retains the yellow highlight while a DC2PC song row is pressed, and the dates and pale green highlight while Scene Replay cards are hovered or pressed, including direct touch.
+- Changes the Indonesian Scene Replay confirmation to `Putar Scenario ini?`. The dialog follows the selected game content/patch; Japanese content retains `このシーンを再生しますか？`, independently of the app interface language.
+- Corrects both READMEs and the v0.7.2 notes: DC2PC/DC2TY use textbox up/down arrows to read earlier dialogue or return to the latest dialogue, without a separate backlog screen/artwork. DC2DM has a dedicated backlog interface.
+- Corrects game title formatting so tildes do not turn text into strikethrough on GitHub.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.3/id.md) | [English](docs/releases/v0.7.3/en.md).
+
 ## 0.7.2 - 2026-11-11
 
 ### Bahasa Indonesia

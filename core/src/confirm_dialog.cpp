@@ -170,7 +170,7 @@ bool ConfirmDialog::open(ConfirmKind kind) {
         {u"クイックセーブしますか？",u"Quick-save your progress?",u"Simpan cepat kemajuan permainan?"},
         {u"クイックロードしますか？",u"Load the quick save?",u"Muat simpanan cepat?"},
         {u"ゲームを開始しますか？",u"Start a new game?",u"Mulai permainan baru?"},
-        {u"このシーンを再生しますか？",u"Play this scene?",u"Putar adegan ini?"},
+        {u"このシーンを再生しますか？",u"Play this scene?",u"Putar Scenario ini?"},
         {u"このシーンにジャンプしますか？",u"Return to this backlog scene?",u"Kembali ke adegan dalam riwayat ini?"},
         {u"ムービーを再生しますか？",u"Play this movie?",u"Putar video ini?"},
         {u"設定を初期化しますか？",u"Reset settings to their defaults?",u"Kembalikan pengaturan awal?"},

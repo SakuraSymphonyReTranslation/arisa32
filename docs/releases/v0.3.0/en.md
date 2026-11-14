@@ -23,7 +23,7 @@
 
 ### D.C.4 Plus Harmony compatibility
 
-- Addresses data-reading issues in **D.C.4 ~Da Capo 4~ Plus Harmony**.
+- Addresses data-reading issues in **`D.C.4 ~Da Capo 4~ Plus Harmony`**.
 - Supports archives larger than 2 GB through 64-bit seeks for `VOICE.DAT`, and registers the `LVOICE\\` audio partition prefix.
 - Detects Plus Harmony's exclusive route scripts (`dc4_asu*`).
 
@@ -48,7 +48,7 @@
 
 ### Experimental support and other series
 
-- **D.C. II ~Da Capo II~ Dearest Marriage:** Support remains experimental, with work on button-chip parsing and opening menu navigation.
+- **`D.C. II ~Da Capo II~ Dearest Marriage`:** Support remains experimental, with work on button-chip parsing and opening menu navigation.
 - **Other Da Capo and Dal Segno titles:** The catalog recognizes these games, but full script and asset compatibility is still being tested and has not been comprehensively verified.
 
 ### Downloads

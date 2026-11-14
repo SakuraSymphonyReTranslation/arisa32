@@ -37,7 +37,7 @@ Posisi native yang dikonfirmasi dari reader/writer executable:
 
 Reader asli memeriksa jumlah byte yang dibaca; validasi panjang persis merupakan kebijakan importer Arisa32. Pengaturan DWORD pada header dipetakan terpisah. Flag music native bank 95 dipetakan ke bank katalog host 96 agar tidak menimpa pengaturan suara host.
 
-Tindak lanjut save menambahkan baca/tulis slot PC DC2TY: `dc2tyxx.dat` berukuran `0x2944`, dengan `.dat.arisa` untuk state tambahan Arisa32. Snapshot `.dc4sav` lama tetap dapat dibaca. Nama skenario, penomoran slot, ikon, dan salinan save terakhir mengikuti PC; detail dan batas verifikasinya ada di [dc2ty-save-compatibility.md](dc2ty-save-compatibility.md). Artwork backlog native DC2TY belum didukung oleh `LogScreen`; bagian tersebut tidak ditampilkan dalam rekaman dan tidak termasuk perubahan ini.
+Tindak lanjut save menambahkan baca/tulis slot PC DC2TY: `dc2tyxx.dat` berukuran `0x2944`, dengan `.dat.arisa` untuk state tambahan Arisa32. Snapshot `.dc4sav` lama tetap dapat dibaca. Nama skenario, penomoran slot, ikon, dan salinan save terakhir mengikuti PC; detail dan batas verifikasinya ada di [dc2ty-save-compatibility.md](dc2ty-save-compatibility.md). Pada game asli DC2TY dan DC2PC, panah atas/bawah di area textbox menampilkan dialog sebelumnya atau kembali ke dialog terbaru. Kedua game ini tidak memiliki layar atau artwork backlog tersendiri; DC2DM memiliki layar backlog khusus. Perilaku riwayat textbox tidak ditampilkan dalam rekaman dan tidak termasuk verifikasi implementasi ini.
 
 ## Verifikasi
 

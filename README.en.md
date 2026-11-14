@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.7.2](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.2)**. This release adds beta support for D.C. II To You, including menus, voices, date-change artwork, and PC-format saves with scenario titles. It also fixes DC2DM backlog touch selection and text readability. Read the [release notes](docs/releases/v0.7.2/en.md) for details and cross-save limitations. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.7.3](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.3)**. This release fixes song titles and the scrollbar in DC2PC Music mode, plus dates, card highlighting, and the replay confirmation in Scene mode. The confirmation follows the selected game content language, including the Indonesian patch. Read the [release notes](docs/releases/v0.7.3/en.md) for details. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -36,11 +36,13 @@ Arisa32 recognizes 21 official CIRCUS adv32 titles from the Da Capo and Dal Segn
 - `D.C. II ~Da Capo II~`
 - `D.C. II Spring Celebration ~Da Capo II Spring Celebration~`
 - `D.C. II P.C. ~Da Capo II Plus Communication~`
-- `D.C. II To You ~Da Capo II To You~`
+- `D.C. II To You ~Da Capo II To You~` (beta)
 - `D.C. II Fall in Love ~Da Capo II Fall in Love~`
 - `D.C. II Dearest Marriage ~Da Capo II Dearest Marriage~`
 
 According to user testing, D.C. II Dearest Marriage is fully playable through to the end. Support includes PC saves, progress import, rock-paper-scissors, Reversi, menus, choices, voices, and the CG gallery. Version 0.7.1 fixes story selector and minigame transitions, preserves read history when importing PC progress, and adjusts text layout for Pretendard JP Bold. See the [DC2DM 0.7.1 notes](docs/releases/v0.7.1/en.md).
+
+In the original D.C. II P.C. (DC2PC) and D.C. II To You (DC2TY), the up/down arrows in the textbox show earlier dialogue or return to the latest line currently displayed. Neither game has a dedicated backlog screen or artwork. D.C. II Dearest Marriage (DC2DM) has its own backlog screen.
 
 ### Original Da Capo series
 
@@ -89,15 +91,15 @@ Keep the original game files and translation patch in separate folders inside th
 | An Indonesian translation patch, if used | `id_data` |
 | An English translation patch, if used | `eng_data` |
 
-For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place one translation pack in an `id_data` and `eng_data` folder beside it. Preserve the patch's subfolder and file structure.
+For the original version, use `AdvData` on its own. To use a patch, keep the original files in `AdvData` and place the translation pack in a sibling folder: `id_data` for Indonesian or `eng_data` for English. Preserve the patch's subfolder and file structure.
 
 On Android:
 
 1. Add the `AdvData` folder to the game library.
-2. To use a patch, open the game settings and choose **Import language pack**. Select **Bahasa Indonesia** or **English** to match the patch, choose the text encoding specified by its author, then select the `id_data` or  `eng_data` folder.
+2. To use a patch, open the game settings and choose **Import language pack**. Select **Bahasa Indonesia** or **English** to match the patch, choose the text encoding specified by its author, then select the `id_data` folder for Indonesian or `eng_data` for English.
 3. Select the language to play under **Game language**. The original version uses the Japanese option; each language has separate save data.
 
-Arisa32 detects the name `id_data` as an Indonesian patch and and `eng_data` as English patch, If that folder contains an English patch, register it through **Import language pack** with **English** selected so it is available as English.
+Arisa32 automatically detects `id_data` as an Indonesian pack and `eng_data` as an English pack. If an English patch uses the folder name `id_data`, register it through **Import language pack** with **English** selected so it is available as English.
 
 ## Build and run on Windows
 
@@ -144,10 +146,10 @@ The build produces a universal APK containing ARM64 and ARMv7. In PowerShell, us
 
 Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| v0.7.2 APK | Minimum Android | Use |
+| v0.7.3 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.2.apk` | 5.0 / API 21 | Release build for normal use |
-| `Arisa32-v0.7.2-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
+| `Arisa32-v0.7.3.apk` | 5.0 / API 21 | Release build for normal use |
+| `Arisa32-v0.7.3-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
 
 Both APKs are universal, each containing ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both APKs.
 
@@ -247,6 +249,6 @@ python tests/android/run_dc2dm_save_probe.py --apk path/to/app-debug.apk --saves
 
 ## Copyright and trademarks
 
-The names **D.C. ~Da Capo~**, **D.C. II**, **D.C. III**, **D.C.4**, **D.S. -Dal Segno-**, and **CIRCUS / adv32**, along with the related game assets, are CIRCUS intellectual property.
+The names **D.C. \~Da Capo\~**, **D.C. II**, **D.C. III**, **D.C.4**, **D.S. -Dal Segno-**, and **CIRCUS / adv32**, along with the related game assets, are CIRCUS intellectual property.
 
 This project is intended for education, interoperability, and preservation. The repository does not include or distribute copyrighted game assets, including `.mes` scripts, `.crx`/`.crm` artwork, and `.xpcm`/`VOICE.DAT` audio. Users must provide their own legitimate copies of the games.

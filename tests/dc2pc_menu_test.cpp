@@ -1,4 +1,5 @@
 #include "arisa32/system_menu.h"
+#include "arisa32/crx.h"
 #include "arisa32/scene_audio.h"
 #include "arisa32/names.h"
 #include "arisa32/resource.h"
@@ -161,6 +162,304 @@ void catalogue_redraws(const char* data) {
     compare_rows();
     visited.back(); visited.activate("bgm"); visited.back(); visited.activate("scene");
     compare_rows();
+}
+void scene_visuals(const char* data) {
+    using Page=dc4ui::SystemMenuPage;
+    using Type=dc4ui::SystemMenuActionType;
+    dc4ui::SystemMenu menu;
+    std::string error;
+    if(!menu.load(data,&error)) { CHECK(false); return; }
+    menu.set_visual_effects_enabled(false);
+    for(int id=0;id<10;++id)menu.set_variable(98,id,1);
+    menu.open(Page::Extras);
+    menu.activate("scene");
+    CHECK(menu.page()==Page::Scenes);
+    std::vector<dc4ui::SystemMenu::Control> rows;
+    for(const auto& row:menu.controls())
+        if(row.enabled && row.tag.rfind("sce",0)==0)rows.push_back(row);
+    CHECK(rows.size()==10);
+    dc4scene::FontRenderer font;
+    const auto draw=[&](const char* name=nullptr,int x=-1,int y=-1,bool down=false) {
+        std::vector<uint8_t> frame;
+        menu.draw(x,y,down,font,&frame);
+        CHECK(frame.size()==1280u*720u*4u);
+        if(const char* output=name?std::getenv("DC2PC_MENU_CAPTURES"):nullptr) {
+            std::filesystem::create_directories(output);
+            std::ofstream out(std::filesystem::path(output)/(std::string(name)+".ppm"),std::ios::binary);
+            out<<"P6\n1280 720\n255\n";
+            for(size_t i=0;i<frame.size();i+=4)out.write(reinterpret_cast<const char*>(frame.data()+i),3);
+        }
+        return frame;
+    };
+    const auto date_ink=[](const std::vector<uint8_t>& frame,const dc4ui::SystemMenu::Control& row) {
+        std::vector<size_t> ink;
+        // Opaque glyph cores stay constant when antialiasing blends into a different card color.
+        for(int y=row.y+2;y<row.y+22*6/5;++y)for(int x=row.x+70*6/5;x<row.x+190*6/5;++x) {
+            const size_t pixel=size_t(y)*1280+x,at=pixel*4;
+            if(frame[at]==255 && frame[at+1]==255 && frame[at+2]==255)ink.push_back(pixel);
+        }
+        return ink;
+    };
+#ifdef _WIN32
+    const auto pretendard=std::filesystem::path(__FILE__).parent_path().parent_path()/
+        "android/app/src/main/assets/fonts/PretendardJP-Bold.ttf";
+    const std::string fonts[]={"C:/Windows/Fonts/msgothic.ttc",pretendard.string()};
+    for(const auto& path:fonts) {
+        CHECK(font.load(path,0,16,false));
+#else
+    {
+#endif
+        const auto normal=draw("scene-normal");
+        for(size_t index=0;index<rows.size();++index) {
+            const auto& row=rows[index];
+            const int x=row.x+row.w/2,y=row.y+row.h/2;
+            const auto ink=date_ink(normal,row);
+#ifdef _WIN32
+            CHECK(ink.size()>12);
+#endif
+            CHECK(menu.pointer_move(x,y).type==Type::None);
+            const auto hovered=draw(index==0?"scene-hover":nullptr,x,y);
+            CHECK(hovered!=normal);
+            CHECK(date_ink(hovered,row)==ink);
+            menu.pointer_down(x,y);
+            const auto held=draw(index==0?"scene-cursor-held":nullptr,x,y,true);
+            CHECK(held==hovered);
+            CHECK(date_ink(held,row)==ink);
+            CHECK(menu.pointer_move(-1,-1).type==Type::None);
+            CHECK(draw(nullptr,-1,-1,true)==normal);
+            CHECK(menu.pointer_up(-1,-1).type==Type::None);
+            CHECK(!menu.confirming() && draw()==normal);
+            // Direct touch enters the pressed state without a preceding hover event.
+            menu.pointer_down(x,y);
+            const auto touch=draw(index==0?"scene-touch-held":nullptr,x,y,true);
+            CHECK(touch==hovered);
+            CHECK(date_ink(touch,row)==ink);
+            CHECK(menu.pointer_up(x,y).type==Type::None);
+            CHECK(menu.confirming());
+            CHECK(menu.answer_confirmation(false).type==Type::None);
+            CHECK(!menu.confirming() && draw()==normal);
+        }
+        if(!rows.empty()) {
+            const auto language=dc4::get_language();
+            dc4::set_language(dc4::Language::Indonesian);
+            menu.activate(rows.front().tag);
+            CHECK(menu.confirming());
+            draw("scene-confirm-id");
+            menu.answer_confirmation(false);
+            dc4::set_language(language);
+        }
+    }
+}
+void music_visuals(const char* data) {
+    using Page=dc4ui::SystemMenuPage;
+    using Type=dc4ui::SystemMenuActionType;
+    dc4ui::SystemMenu menu;
+    std::string error;
+    if(!menu.load(data,&error)) { CHECK(false); return; }
+    CHECK(menu.is_dc2pc() && !menu.is_dc2ty());
+    menu.set_visual_effects_enabled(false);
+    for(int id=0;id<90;++id)menu.set_variable(96,id,1);
+    menu.open(Page::Extras);
+    CHECK(menu.activate("bgm").type!=Type::StartScene);
+    CHECK(menu.page()==Page::Music);
+    std::ifstream sheet_file(std::filesystem::path(data)/"GRP/system/music_chip.crx",std::ios::binary);
+    const std::vector<uint8_t> sheet_data((std::istreambuf_iterator<char>(sheet_file)),{});
+    std::vector<uint8_t> sheet;
+    dc4::CrxInfo sheet_info;
+    if(!dc4::crx_decode(sheet_data.data(),sheet_data.size(),&sheet,&sheet_info)) { CHECK(false); return; }
+    const auto check_row_fill=[&](const std::vector<uint8_t>& frame,const dc4ui::SystemMenu::Control& row,
+                                  bool hovered) {
+        int checked=0;
+        for(int y=0;y<row.h;++y)for(int x=80;x<row.w-20;++x) {
+            const int sx=x*296/row.w,sy=y*32/row.h;
+            if(sy<25 || sy>27)continue;
+            // The native sheet's cyan/yellow fills sit below the separately drawn text.
+            const size_t src=(size_t((hovered?104:72)+sy)*sheet_info.width+sx)*4;
+            if(src+3>=sheet.size() || sheet[src+3]!=255)continue;
+            const size_t dst=(size_t(row.y+y)*1280+row.x+x)*4;
+            for(int channel=0;channel<3;++channel)CHECK(frame[dst+channel]==sheet[src+channel]);
+            ++checked;
+        }
+        CHECK(checked>100);
+    };
+    dc4scene::FontRenderer font;
+#ifdef _WIN32
+    CHECK(font.load("C:/Windows/Fonts/msgothic.ttc",0,16,false));
+#endif
+    const auto draw=[&](const char* name=nullptr,int x=-1,int y=-1,bool down=false) {
+        std::vector<uint8_t> frame;
+        menu.draw(x,y,down,font,&frame);
+        CHECK(frame.size()==1280u*720u*4u);
+        if(const char* output=name?std::getenv("DC2PC_MENU_CAPTURES"):nullptr) {
+            std::filesystem::create_directories(output);
+            std::ofstream out(std::filesystem::path(output)/(std::string(name)+".ppm"),std::ios::binary);
+            out<<"P6\n1280 720\n255\n";
+            for(size_t i=0;i<frame.size();i+=4)out.write(reinterpret_cast<const char*>(frame.data()+i),3);
+        }
+        return frame;
+    };
+    const auto crop=[](const std::vector<uint8_t>& frame,int x,int y,int w,int h) {
+        std::vector<uint8_t> region;
+        if(frame.size()!=1280u*720u*4u)return region;
+        for(int row=y;row<y+h;++row) {
+            const size_t start=(size_t(row)*1280+x)*4;
+            region.insert(region.end(),frame.begin()+start,frame.begin()+start+w*4);
+        }
+        return region;
+    };
+    const auto header=[&](const std::vector<uint8_t>& frame) {
+        return crop(frame,160+96*6/5,100*6/5,332*6/5,18*6/5);
+    };
+    const auto click=[&](const char* tag) {
+        for(const auto& control:menu.controls())if(control.enabled && control.tag==tag) {
+            const int x=control.x+control.w/2,y=control.y+control.h/2;
+            menu.pointer_down(x,y);
+            return menu.pointer_up(x,y);
+        }
+        std::cerr<<"Missing music control: "<<tag<<'\n';
+        CHECK(false);
+        return dc4ui::SystemMenuAction{};
+    };
+    const auto initial=draw("music-initial");
+    int checked_rows=0;
+    for(const auto& row:menu.controls()) {
+        if(!row.enabled || row.tag.rfind("music",0)!=0)continue;
+        ++checked_rows;
+        const int x=row.x+row.w/2,y=row.y+row.h/2;
+        check_row_fill(initial,row,false);
+        const auto normal=crop(initial,row.x,row.y,row.w,row.h);
+        CHECK(menu.pointer_move(x,y).type==Type::None);
+        const auto hovered=draw(checked_rows==8?"music-row8-hover":nullptr,x,y);
+        check_row_fill(hovered,row,true);
+        CHECK(crop(hovered,row.x,row.y,row.w,row.h)!=normal);
+        menu.pointer_down(x,y);
+        const auto held=draw(checked_rows==8?"music-row8-held":nullptr,x,y,true);
+        check_row_fill(held,row,true);
+        CHECK(crop(held,row.x,row.y,row.w,row.h)==crop(hovered,row.x,row.y,row.w,row.h));
+        CHECK(header(held)==header(initial));
+        CHECK(menu.pointer_move(-1,-1).type==Type::None);
+        CHECK(crop(draw(nullptr,-1,-1,true),row.x,row.y,row.w,row.h)==normal);
+        CHECK(menu.pointer_up(-1,-1).type==Type::None);
+        CHECK(draw()==initial);
+    }
+    CHECK(checked_rows==14);
+    CHECK(click("music1").type==Type::PlayMusic && menu.variable(3,5)==1);
+    const auto first=header(draw("music-selected-2"));
+    CHECK(click("music13").type==Type::PlayMusic && menu.variable(3,5)==13);
+    const auto selected=header(draw("music-selected-14"));
+#ifdef _WIN32
+    CHECK(first!=header(initial) && selected!=first);
+#endif
+    for(const auto& row:menu.controls())if(row.enabled && row.tag=="music4") {
+        const int x=row.x+row.w/2,y=row.y+row.h/2;
+        CHECK(menu.pointer_move(x,y).type==Type::None);
+        CHECK(header(draw(nullptr,x,y))==selected);
+        menu.pointer_down(x,y);
+        CHECK(header(draw(nullptr,x,y,true))==selected);
+        menu.cancel_pointer();
+    }
+    menu.scroll(2);
+    CHECK(menu.variable(3,25)>0 && menu.variable(3,5)==13);
+    CHECK(header(draw("music-scrolled"))==selected);
+    CHECK(click("stop").type==Type::StopMusic);
+    CHECK(menu.variable(3,5)==13 && header(draw("music-stopped"))==selected);
+    menu.update(1000);
+    CHECK(header(draw())==selected);
+    const auto check_thumb=[&](const std::vector<uint8_t>& frame,int top) {
+        const int left=160+744*6/5,screen_top=top*6/5,size=16*6/5;
+        int checked=0;
+        for(int y=0;y<size;++y)for(int x=0;x<size;++x) {
+            // DC2PC.exe clips the Music thumb from sheet6 at (72,216), size16.
+            const size_t src=(size_t(216+y*16/size)*sheet_info.width+72+x*16/size)*4;
+            if(src+3>=sheet.size() || sheet[src+3]!=255)continue;
+            const size_t dst=(size_t(screen_top+y)*1280+left+x)*4;
+            for(int channel=0;channel<3;++channel)CHECK(frame[dst+channel]==sheet[src+channel]);
+            ++checked;
+        }
+        CHECK(checked>200);
+        CHECK(header(frame)==selected && menu.variable(3,5)==13);
+    };
+    menu.scroll(-1000);
+    CHECK(menu.variable(3,25)==0 && has(menu,"music0") && has(menu,"music13"));
+    check_thumb(draw("music-scroll-top"),160);
+    menu.scroll(15);
+    CHECK(menu.variable(3,25)==30 && has(menu,"music30") && has(menu,"music43"));
+    check_thumb(draw("music-scroll-middle"),313);
+    menu.scroll(1000);
+    CHECK(menu.variable(3,25)==60 && has(menu,"music60") && has(menu,"music73"));
+    check_thumb(draw("music-scroll-bottom"),466);
+    menu.scroll(-1000);
+    const auto music_controls=menu.controls();
+    const auto scrollbar=std::find_if(music_controls.begin(),music_controls.end(),[](const auto& control) {
+        return control.enabled && control.tag=="#catalogue:scroll";
+    });
+    CHECK(scrollbar!=music_controls.end());
+    if(scrollbar!=music_controls.end()) {
+        const auto px=[](int x){return 160+(x*6+4)/5;};
+        const auto py=[](int y){return (y*6+4)/5;};
+        const int x=px(748);
+        menu.pointer_down(x,py(168));
+        CHECK(menu.variable(3,25)==0);
+        check_thumb(draw(nullptr,x,py(168),true),160);
+        CHECK(menu.pointer_move(x,py(321)).type==Type::None);
+        CHECK(menu.variable(3,25)==30 && has(menu,"music30"));
+        check_thumb(draw("music-scroll-drag-middle",x,py(321),true),313);
+        CHECK(menu.pointer_move(x,py(474)).type==Type::None);
+        CHECK(menu.variable(3,25)==60 && has(menu,"music73"));
+        check_thumb(draw("music-scroll-drag-bottom",x,py(474),true),466);
+        CHECK(menu.pointer_up(x,py(474)).type==Type::None);
+        check_thumb(draw(),466);
+        menu.scroll(-1000);
+        CHECK(menu.variable(3,25)==0 && has(menu,"music0"));
+        check_thumb(draw(),160);
+    }
+#ifdef _WIN32
+    const auto pretendard=std::filesystem::path(__FILE__).parent_path().parent_path()/
+        "android/app/src/main/assets/fonts/PretendardJP-Bold.ttf";
+    for(int face=0;face<2;++face) {
+        if(face) {
+            CHECK(std::filesystem::is_regular_file(pretendard));
+            if(!std::filesystem::is_regular_file(pretendard))continue;
+            CHECK(font.load(pretendard.string(),0,16,false));
+        }
+        menu.set_variable(3,5,255);
+        CHECK(menu.variable(3,5)==255);
+        const auto blank=draw();
+        std::vector<uint8_t> first_header;
+        for(int row=0;row<74;++row) {
+            menu.set_variable(3,5,row);
+            CHECK(menu.variable(3,5)==row);
+            const bool evidence=row==0 || row==50 || row==63 || row==66 || row==73;
+            const std::string name=std::string("music-title-")+(face?"pretendard-":"msgothic-")+std::to_string(row);
+            const auto frame=draw(evidence?name.c_str():nullptr);
+            if(row==0)first_header=header(frame);
+            int ink=0,top=720,bottom=0;
+            for(int y=100*6/5;y<118*6/5;++y)for(int x=160+100*6/5;x<160+425*6/5;++x) {
+                const size_t at=(size_t(y)*1280+x)*4;
+                if(frame[at]<180 || frame[at+1]<180 || frame[at+2]<180)continue;
+                if(std::abs(int(frame[at])-blank[at])<30 && std::abs(int(frame[at+1])-blank[at+1])<30 &&
+                   std::abs(int(frame[at+2])-blank[at+2])<30)continue;
+                ++ink;top=std::min(top,y);bottom=std::max(bottom,y);
+            }
+            if(ink<=40 || top<=100*6/5 || bottom>=118*6/5)
+                std::cerr<<name<<" white ink: "<<ink<<", y="<<top<<".."<<bottom<<'\n';
+            CHECK(ink>40 && top>100*6/5 && bottom<118*6/5);
+            CHECK(crop(frame,160+96*6/5,96*6/5,332*6/5,4*6/5)==
+                  crop(blank,160+96*6/5,96*6/5,332*6/5,4*6/5));
+            CHECK(crop(frame,160+96*6/5,118*6/5,332*6/5,4*6/5)==
+                  crop(blank,160+96*6/5,118*6/5,332*6/5,4*6/5));
+        }
+        for(int invalid:{74,255,65535}) {
+            menu.set_variable(3,5,invalid);
+            CHECK(menu.variable(3,5)==std::min(invalid,255));
+            CHECK(header(draw())==header(blank));
+        }
+        menu.set_variable(3,5,-1);
+        CHECK(menu.variable(3,5)==0 && header(draw())==first_header);
+    }
+#endif
+    CHECK(menu.error().empty());
+    std::cout<<"DC2PC Music: 14 held rows, scrollbar thumb/drag, selected title persistence, 74 titles and clip bounds checked.\n";
 }
 void sprite_scenarios(const char* data) {
     for (const auto& script : {"fst_1216_b1_cmn", "fst_1216_b11_cmn", "fst_1216_b2_cmn", "fst_1216_c1_cmn"}) {
@@ -351,10 +650,20 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 2) dc4::configure_resources(data, argv[2]);
+    if(std::getenv("DC2PC_MUSIC_VISUALS_ONLY")) {
+        music_visuals(data);
+        return failures?1:0;
+    }
+    if(std::getenv("DC2PC_SCENE_VISUALS_ONLY")) {
+        scene_visuals(data);
+        return failures?1:0;
+    }
     native_pc_saves(data);
     legacy_quick_save(data);
     save_interactions(data);
     catalogue_redraws(data);
+    scene_visuals(data);
+    music_visuals(data);
     sprite_scenarios(data);
     using Page = dc4ui::SystemMenuPage;
     using Type = dc4ui::SystemMenuActionType;

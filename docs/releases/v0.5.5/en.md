@@ -11,7 +11,7 @@
 
 ## Release notes: v0.5.5
 
-This hotfix addresses audio/video synchronization during Kotori's song performance in the prologue of **D.C.4 ~Da Capo 4~** and **D.C.4 ~Da Capo 4~ Plus Harmony**.
+This hotfix addresses audio/video synchronization during Kotori's song performance in the prologue of **`D.C.4 ~Da Capo 4~`** and **`D.C.4 ~Da Capo 4~ Plus Harmony`**.
 
 ### Kotori prologue audio fixes
 
