@@ -5,7 +5,7 @@
 namespace dc4 {
 
 enum class CmdKind { Nop, Param2, ParamStr, Str, Text, Words4 };
-enum class MesProfileId { Modern, ClassicDC2, ClassicDM, DC2PC, DC2TY };
+enum class MesProfileId { Modern, ClassicDC2, ClassicDM, DC2PC, DC2TY, DalSegno };
 enum class OperandTransform { None, ButtonSource, StaticState, ByteAudio };
 
 // Values are shared engine service IDs. Operand kind still matters for legacy

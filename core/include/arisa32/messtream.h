@@ -12,6 +12,7 @@ struct MesCommand {
     bool dc2pc = false; // Exact MES 0x9969 profile; retain the raw opcode.
     bool dc2ty = false;
     bool dc2dm = false;
+    bool ds = false;
     CmdKind kind = CmdKind::Nop;
     uint32_t pos = 0;      // offset of the opcode byte within `code`
     uint8_t op = 0;

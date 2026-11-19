@@ -1541,10 +1541,84 @@ void sakuramusubi_text_regressions(const fs::path& root) {
     dc4::set_language(language);
 }
 
+void dalsegno_game_regressions(const fs::path& data) {
+    dc4scene::FontRenderer font;
+    font.load("C:/Windows/Fonts/msgothic.ttc", 0, 22);
+    dc4scene::SceneRunner scene(data.string());
+    scene.set_font(&font);
+    scene.set_use_system_menu(false);
+    CHECK(scene.load_sheets((data / "MES/start.mes").string()));
+    CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+    const std::vector<std::string> toolbar{":n", ":t", ":rapid", ":auto", ":qs", ":ql",
+        ":backlog", ":ds", ":dl", ":option", ":clear"};
+    CHECK(scene.buttons().size() == toolbar.size());
+    for (const auto& action : toolbar) {
+        CHECK(std::any_of(scene.buttons().begin(), scene.buttons().end(), [&](const auto& b) {
+            const auto* hit = scene.hit_test(b.x + b.w / 2, b.y + b.h / 2);
+            return b.action == action && hit && *hit == action;
+        }));
+    }
+    CHECK(scene.load_script((data / "MES/main.mes").string()));
+    CHECK(scene.variable(100, 105) == 0);
+    CHECK(scene.variable(99, 225) == 100);
+    CHECK(scene.variable(99, 7) == 80);
+    scene.advance_to_next_text();
+    CHECK(scene.last_error().empty());
+    const std::vector<std::string> title{"sce_start", "qload", "load", "extra", "config", "end"};
+    CHECK(scene.buttons().size() == title.size());
+    for (const auto& action : title)
+        CHECK(std::any_of(scene.buttons().begin(), scene.buttons().end(), [&](const auto& b) { return b.action == action; }));
+    scene.set_variable(100, 105, 1);
+    CHECK(scene.load_script((data / "MES/main.mes").string()));
+    scene.advance_to_next_text();
+    CHECK(scene.buttons().size() == title.size() + 1);
+    CHECK(std::any_of(scene.buttons().begin(), scene.buttons().end(), [](const auto& b) { return b.action == "ds"; }));
+
+    size_t sliders_checked = 0;
+    bool master_checked = false;
+    for (int tab = 0; tab < 5; ++tab) {
+        scene.set_variable(100, 54, tab);
+        CHECK(scene.load_script((data / "MES/config.mes").string()));
+        scene.advance_to_next_text();
+        CHECK(scene.last_error().empty());
+        for (const auto& b : scene.buttons()) {
+            if (!b.is_slider) continue;
+            CHECK(b.has_knob && b.knob[0].w > 0);
+            CHECK(b.slider_count > 1 && b.slider_right > b.slider_left);
+            if (b.slider_count <= 1 || b.slider_right <= b.slider_left) continue;
+            const int y = b.y + b.h / 2;
+            std::string action;
+            CHECK(scene.handle_slider_touch(0, b.x + b.w / 2, y, &action));
+            CHECK(action.empty());
+            CHECK(scene.handle_slider_touch(2, b.slider_left - 40, y, &action));
+            CHECK(scene.variable(b.slider_bank, b.slider_index) == 0);
+            scene.draw(-1);
+            const auto minimum_frame = scene.frame();
+            CHECK(scene.handle_slider_touch(2, b.slider_right + 40, y, &action));
+            CHECK(scene.variable(b.slider_bank, b.slider_index) == b.slider_count - 1);
+            scene.draw(-1);
+            CHECK(scene.frame() != minimum_frame);
+            CHECK(scene.handle_slider_touch(1, b.slider_right, y, &action));
+            CHECK(action == b.action);
+            CHECK(!scene.handle_slider_touch(2, b.slider_left, y, &action));
+            CHECK(scene.variable(b.slider_bank, b.slider_index) == b.slider_count - 1);
+            master_checked = master_checked || (b.slider_bank == 99 && b.slider_index == 225);
+            ++sliders_checked;
+        }
+    }
+    CHECK(master_checked && sliders_checked > 0);
+    std::cout << "Dal Segno title gates, toolbar hit targets and " << sliders_checked << " slider drags checked\n";
+}
+
 int main(int argc, char** argv) {
     try {
         const fs::path root = fs::current_path() / "scene-test-data" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        if (argc > 2 && std::string(argv[1]) == "--dalsegno") {
+            dalsegno_game_regressions(argv[2]);
+            std::cout << (failures ? "Dal Segno regressions FAILED\n" : "Dal Segno regressions passed\n");
+            return failures ? 1 : 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--dc4-sprites") {
             dc4_sprite_priority_regressions(root);
             dc4_implicit_sprite_pivot_regressions(root);

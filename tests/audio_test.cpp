@@ -411,12 +411,43 @@ static void dc2ty_character_voice_controls() {
     std::filesystem::remove_all(directory);
 }
 
+static void dalsegno_audio_sentinels() {
+    using namespace dc4;
+    AudioEngine audio;
+    SceneAudio scene("");
+    scene.set_engine(&audio, nullptr);
+    auto command = [](uint16_t id, uint16_t mode) {
+        MesCommand raw;
+        raw.ds = true; raw.kind = CmdKind::Words4; raw.op = 0x65;
+        raw.words[0] = id; raw.words[1] = mode;
+        return mes_engine_command(raw);
+    };
+    check(audio.play_pcm(0, std::vector<int16_t>(64, 100), 44100, 1, {true}) &&
+          audio.play_pcm(8, std::vector<int16_t>(64, 200), 44100, 1, {true}) &&
+          audio.play_pcm(2, std::vector<int16_t>(64, 300), 44100, 1, {true}) &&
+          audio.play_pcm(6, std::vector<int16_t>(64, 400), 44100, 1, {true}), "start Dal Segno audio sentinel fixtures");
+    render(audio, 7);
+    check(scene.dispatch(command(65534, 0)) && scene.last_error().empty() &&
+          !audio.voice_playing() && audio.channel_playing(2) && audio.channel_playing(6) &&
+          audio.channel_playing(0) && audio.channel_position(0) == 7,
+          "Dal Segno raw65 FFFE stops voice while retaining BGM and SE");
+    check(scene.dispatch(command(65535, 1)) && scene.last_error().empty(),
+          "Dal Segno raw65 FFFF is a valid SE stop");
+    render(audio, AudioEngine::kOutputRate / 2 + 1);
+    check(!audio.channel_playing(2) && audio.channel_playing(6) && audio.channel_playing(0),
+          "Dal Segno SE stop fades ordinary effects while retaining system SE and BGM");
+    SceneAudio headless("");
+    check(headless.dispatch(command(65534, 0)) && headless.dispatch(command(65535, 1)) &&
+          headless.last_error().empty(), "Dal Segno audio sentinels also work without playback assets");
+}
+
 int main(int argc, char** argv) {
     using namespace dc4;
     dc2dm_voice_prefetch();
     deferred_channel_adoption();
     dc2dm_retained_title_bgm();
     dc2ty_character_voice_controls();
+    dalsegno_audio_sentinels();
     AudioEngine audio;
     check(audio.play_pcm(0, {100, 200, 300, 400, 500}, 44100, 1, {true, 1, 4}), "loop PCM load");
     auto output = render(audio, 8);

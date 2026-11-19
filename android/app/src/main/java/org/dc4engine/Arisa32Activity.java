@@ -757,7 +757,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             if (cursorOverlay != null) cursorOverlay.setViewport(viewport(r-l, b-t));
         });
         addSettingsBubble();
-        showLaunchOverlay(null);
+        if (!isDalSegno()) {
+            showLaunchOverlay(null);
+        }
         setContentView(gameLayout);
         applyFullscreen();
     }
@@ -1304,7 +1306,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (slotMenuOpen) { slotTouch(touch); return; }
         final String out = dc4Touch(touch.action, touch.x, touch.y);
         if (out == null) return;
-        if (out.startsWith(":")) {
+        if ("quit".equals(out) || ":quit".equals(out) || "end".equals(out)) {
+            runOnUiThread(() -> leaveGame(true));
+        } else if (out.startsWith(":")) {
             shellAction(out);
         } else if (!out.isEmpty()) {
             notifyUser(out);
@@ -2070,7 +2074,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             LinearLayout card = panel();
             LinearLayout meta = new LinearLayout(this); meta.setGravity(Gravity.CENTER_VERTICAL);
             meta.addView(ArisaUi.eyebrow(this, "ADV32 · CIRCUS"), new LinearLayout.LayoutParams(0, -2, 1));
-            meta.addView(ArisaUi.badge(this, game.language.equals("jp") ? "JP (ORIGINAL)" : game.language.equals("en") ? "EN PATCH" : "ID PATCH")); card.addView(meta);
+            String badgeText;
+            if (GameLibrary.isNativeEnglish(game)) {
+                badgeText = game.language.equals("id") ? "ID PATCH" : "OFFICIAL ENG";
+            } else {
+                badgeText = game.language.equals("jp") ? "JP (ORIGINAL)" : game.language.equals("en") ? "EN PATCH" : "ID PATCH";
+            }
+            meta.addView(ArisaUi.badge(this, badgeText)); card.addView(meta);
             ArisaUi.gap(card, 8);
             TextView name = text(game.title, 20, TEXT); name.setTypeface(Typeface.create("sans-serif-bold", 0));
             name.setMaxLines(2); name.setEllipsize(android.text.TextUtils.TruncateAt.END); card.addView(name);
@@ -2648,7 +2658,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         else if ("dcdx".equals(presetId) && (name.contains("dcdx") || name.contains("dream x'mas") || name.contains("dream xmas"))) match = true;
         else if ("dc".equals(presetId) && (name.contains("da capo") || name.equalsIgnoreCase("dc")) && !name.contains("2") && !name.contains("3") && !name.contains("4") && !name.contains("ii") && !name.contains("iii") && !name.contains("season") && !name.contains("vacation") && !name.contains("christmas") && !name.contains("xmas") && !name.contains("communication")) match = true;
         else if ("dsif".equals(presetId) && (name.contains("dsif") || name.contains("in future"))) match = true;
-        else if ("ds".equals(presetId) && (name.contains("dal segno") || name.equalsIgnoreCase("ds")) && !name.contains("future") && !name.contains("if")) match = true;
+        else if (("ds".equals(presetId) || "dal_segno".equals(presetId)) &&
+                 (name.contains("dal segno") || name.equalsIgnoreCase("ds") || name.contains("dsao") || name.contains("[mangagamer] d.s.")) &&
+                 !name.contains("future") && !name.contains("if")) match = true;
         if (match) {
             File hit = probeDir(f);
             if (hit == null) hit = probeDir(new File(f, "AdvData"));
@@ -2736,10 +2748,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     pathsToTry.add("DSIF/AdvData");
                     pathsToTry.add("DSIF/Advdata");
                     pathsToTry.add("Games/DSIF/AdvData");
-                } else if ("ds".equals(presetId)) {
-                    pathsToTry.add("DS/AdvData");
-                    pathsToTry.add("DS/Advdata");
-                    pathsToTry.add("Games/DS/AdvData");
+                } else if ("ds".equals(presetId) || "dal_segno".equals(presetId)) {
+                    pathsToTry.addAll(GameProfileRegistry.getProfileById("dal_segno").getStandardScanPaths());
                 } else {
                     pathsToTry.add("AdvData");
                     pathsToTry.add("Advdata");
@@ -3184,6 +3194,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
 
+    private boolean isDalSegno() {
+        if (selected == null) return false;
+        if (org.dc4engine.profile.DalSegnoProfile.ID.equals(selected.id)) return true;
+        try {
+            String id = GameProfileRegistry.resolveProfile(new File(selected.path), selected.title).getId();
+            return org.dc4engine.profile.DalSegnoProfile.ID.equals(id);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private boolean isDc4DisplaySettings(GameLibrary.Entry game) {
         String id = GameProfileRegistry.resolveProfile(new File(game.path), game.title).getId();
         return "dc4".equals(id) || "dc4ph".equals(id);
@@ -3214,8 +3235,15 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }).setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
     }
     private void chooseContent(GameLibrary.Entry game) {
-        ArrayList<String> codes = new ArrayList<>(); codes.add("jp");
-        if (!game.english.isEmpty()) codes.add("en"); if (!game.indonesian.isEmpty()) codes.add("id");
+        ArrayList<String> codes = new ArrayList<>();
+        if (GameLibrary.isNativeEnglish(game)) {
+            codes.add("en");
+            if (!game.indonesian.isEmpty()) codes.add("id");
+        } else {
+            codes.add("jp");
+            if (!game.english.isEmpty()) codes.add("en");
+            if (!game.indonesian.isEmpty()) codes.add("id");
+        }
         String[] labels = new String[codes.size()]; for (int i=0;i<labels.length;i++) labels[i] = contentName(codes.get(i));
         settingsDialog = dialog().setTitle(tr("Game content language", "Bahasa konten game", "ゲーム内容の言語"))
                 .setMessage(tr("Import a translation pack to add English or Indonesian. Changing the language returns to the library; save first. Each language has its own saves.",
@@ -3602,6 +3630,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     entry.title = detected;
                 }
                 entry.path=root.getAbsolutePath();
+                if (GameLibrary.isNativeEnglish(entry)) {
+                    entry.language = "en";
+                }
                 library.entries.add(entry);
             } else if (owned && probeDir(new File(entry.path)) != null && !entry.path.equalsIgnoreCase(root.getAbsolutePath())) {
                 SaveArchive.removeTree(path);

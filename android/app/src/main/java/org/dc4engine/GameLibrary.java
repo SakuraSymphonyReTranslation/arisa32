@@ -41,7 +41,7 @@ final class GameLibrary {
             Entry e = new Entry(); e.id = id;
             e.path = p.getProperty(id + ".path", "");
             e.title = p.getProperty(id + ".title", "");
-            if (e.title.isEmpty() || e.title.startsWith("D.C.4") || e.title.contains("ダ・カーポ") || e.title.contains("フォーチュネイト") || e.title.contains("Archives")) {
+            if (e.title.isEmpty() || e.title.startsWith("D.C.4") || e.title.startsWith("D.S.") || e.title.contains("ダ・カーポ") || e.title.contains("フォーチュネイト") || e.title.contains("Archives")) {
                 File pFile = new File(e.path);
                 if (pFile.exists()) e.title = detectTitle(pFile);
                 else if (e.title.contains("Plus Harmony") || e.title.contains("プラスハーモニー")) e.title = "D.C.4 ~Da Capo 4~ Plus Harmony";
@@ -66,8 +66,9 @@ final class GameLibrary {
                 else if (e.title.contains("Dal Segno") || e.title.contains("D.S.")) e.title = "D.S. -Dal Segno-";
                 else e.title = "D.C.4 ~Da Capo 4~";
             }
-            e.language = p.getProperty(id + ".language", "jp");
-            if (!Arrays.asList("jp", "en", "id").contains(e.language)) e.language = "jp";
+            e.language = p.getProperty(id + ".language", isNativeEnglish(e) ? "en" : "jp");
+            if (isNativeEnglish(e) && ("jp".equals(e.language) || e.language.isEmpty())) e.language = "en";
+            if (!Arrays.asList("jp", "en", "id").contains(e.language)) e.language = isNativeEnglish(e) ? "en" : "jp";
             e.font = p.getProperty(id + ".font", "");
             try { e.fontSize = Math.max(18, Math.min(22, Integer.parseInt(p.getProperty(id + ".fontSize", "22")))); }
             catch (NumberFormatException ignored) { e.fontSize = 22; }
@@ -82,17 +83,11 @@ final class GameLibrary {
             e.enFingerprint = p.getProperty(id + ".enFingerprint", "");
             e.idFingerprint = p.getProperty(id + ".idFingerprint", "");
             autoDetectOverlays(e);
-            if (!e.language.equals("jp") && e.overlay().isEmpty()) e.language = "jp";
+            if (!e.language.equals("jp") && e.overlay().isEmpty() && !isNativeEnglish(e)) e.language = "jp";
             entries.add(e);
         }
     }
     static String detectTitle(File dataRoot) {
-        org.dc4engine.profile.Dc2PlusCommunicationProfile dc2pc = new org.dc4engine.profile.Dc2PlusCommunicationProfile();
-        if (dc2pc.matches(dataRoot, null)) return dc2pc.getDisplayName();
-        org.dc4engine.profile.Dc2ToYouProfile dc2ty = new org.dc4engine.profile.Dc2ToYouProfile();
-        if (dc2ty.matches(dataRoot, null)) return dc2ty.getDisplayName();
-        org.dc4engine.profile.Dc2DearestMarriageProfile dc2dm = new org.dc4engine.profile.Dc2DearestMarriageProfile();
-        if (dc2dm.matches(dataRoot, null)) return dc2dm.getDisplayName();
         if (dataRoot == null) return "CIRCUS ADV32";
         File mes = new File(dataRoot, "MES");
         File grp = new File(dataRoot, "GRP");
@@ -135,10 +130,30 @@ final class GameLibrary {
             new File(mes, "dc4_asa20190513c.mes").isFile()) {
             return "D.C.4 ~Da Capo 4~ Plus Harmony";
         }
+
+        // Modular profiles
+        org.dc4engine.profile.DalSegnoProfile ds = new org.dc4engine.profile.DalSegnoProfile();
+        if (ds.matches(dataRoot, pathStr)) return ds.getDisplayName();
+        org.dc4engine.profile.Dc2PlusCommunicationProfile dc2pc = new org.dc4engine.profile.Dc2PlusCommunicationProfile();
+        if (dc2pc.matches(dataRoot, pathStr)) return dc2pc.getDisplayName();
+        org.dc4engine.profile.Dc2ToYouProfile dc2ty = new org.dc4engine.profile.Dc2ToYouProfile();
+        if (dc2ty.matches(dataRoot, pathStr)) return dc2ty.getDisplayName();
+        org.dc4engine.profile.Dc2DearestMarriageProfile dc2dm = new org.dc4engine.profile.Dc2DearestMarriageProfile();
+        if (dc2dm.matches(dataRoot, pathStr)) return dc2dm.getDisplayName();
         File namesDat = new File(grp, "NAMES.DAT");
         if (!namesDat.isFile()) namesDat = new File(grp, "names.dat");
         if (namesDat.isFile() && namesDat.length() > 65000) {
-            return "D.C.4 ~Da Capo 4~ Plus Harmony";
+            boolean hasDc4 = false;
+            File[] mfs = mes.listFiles();
+            if (mfs != null) {
+                for (File f : mfs) {
+                    if (f.getName().toLowerCase(Locale.ROOT).startsWith("dc4_")) {
+                        hasDc4 = true;
+                        break;
+                    }
+                }
+            }
+            if (hasDc4) return "D.C.4 ~Da Capo 4~ Plus Harmony";
         }
         File[] mesFiles = mes.listFiles();
         if (mesFiles != null) {
@@ -270,6 +285,41 @@ final class GameLibrary {
                 break;
             }
         }
+
+        if (isNativeEnglish(e) && (e.font == null || e.font.isEmpty())) {
+            File ttf = new File(new File(dataDir, "GRP"), "mplus-1c-heavy.ttf");
+            if (!ttf.isFile()) ttf = new File(new File(root, "AdvData/GRP"), "mplus-1c-heavy.ttf");
+            if (!ttf.isFile()) ttf = new File(new File(root, "GRP"), "mplus-1c-heavy.ttf");
+            if (ttf.isFile()) {
+                e.font = ttf.getAbsolutePath();
+            }
+        }
+    }
+
+    static boolean isNativeEnglish(Entry e) {
+        if (e == null) return false;
+        if (e.path != null) {
+            String p = e.path.toLowerCase(Locale.ROOT);
+            if (p.contains("plus harmony") || p.contains("dc4") || p.contains("da capo") ||
+                p.contains("sweet harmony") || p.contains("dc3") || p.contains("dc2")) {
+                return false;
+            }
+        }
+        if (e.title != null) {
+            String t = e.title.toLowerCase(Locale.ROOT);
+            if (t.contains("da capo") || t.contains("d.c.")) return false;
+            if (t.contains("dal segno") || t.contains("d.s.")) return true;
+        }
+        if (e.path != null) {
+            String p = e.path.toLowerCase(Locale.ROOT);
+            if (p.contains("dal segno") || p.contains("dsao") || p.contains("[mangagamer] d.s.")) return true;
+            File dir = new File(e.path);
+            File parent = dir.getParentFile();
+            if (new File(dir, "DSAO.exe").isFile() || (parent != null && new File(parent, "DSAO.exe").isFile())) return true;
+            File grp = new File(dir, "GRP");
+            if (grp.isDirectory() && new File(grp, "mplus-1c-heavy.ttf").isFile()) return true;
+        }
+        return false;
     }
 
     private static boolean hasMesScripts(File dir, boolean overlay) {

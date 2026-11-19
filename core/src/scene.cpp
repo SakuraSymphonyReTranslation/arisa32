@@ -945,7 +945,8 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
         pending_movie_is_effect_ = false;
         return true;
     }
-    if (c.kind == K::ParamStr && c.opcode() == dc4::Opcode::INPUT_SKIP_TARGET && (c.p1 == 2 || c.p1 == 3)) {
+    if (((c.kind == K::ParamStr && (c.p1 == 2 || c.p1 == 3)) || (c.kind == K::Str && c.ds)) &&
+        c.opcode() == dc4::Opcode::INPUT_SKIP_TARGET) {
         input_skip_label_ = c.str;
         return true;
     }
@@ -1021,9 +1022,15 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
         }
         return true;
     }
-    if (c.dc2dm && c.kind == K::Param2) {
+    if (c.kind == K::Param2) {
         if (c.opcode() == dc4::Opcode::CLEAR_LAYOUT) {
-            buttons_.resize(std::min(buttons_.size(), dc2dm_toolbar_count_));
+            if (c.dc2dm) {
+                buttons_.resize(std::min(buttons_.size(), dc2dm_toolbar_count_));
+            } else if ((mes_.version & 0xFFFF) == 0x9F9A) {
+                buttons_.clear();
+                scene_chips_.clear();
+                captured_slider_ = -1;
+            }
             pending_button_ = UiButton{};
             pending_has_button_ = false;
             return true;
@@ -1038,7 +1045,9 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     const bool is_chip_prop = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::CHIP || c.opcode() == dc4::Opcode::LEGACY_CHIP || c.opcode() == dc4::Opcode::MOVIE));
     const bool is_button_rect = (c.kind == K::Words4 && (c.opcode() == dc4::Opcode::CONTROL || c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::TRANSFER));
     const bool is_button_target = (c.kind == K::Str && pending_has_button_ &&
-                                   (c.opcode() == dc4::Opcode::LOAD_SHEET || c.opcode() == dc4::Opcode::LEGACY_JUMP || c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET));
+                                   (c.opcode() == dc4::Opcode::LOAD_SHEET || c.opcode() == dc4::Opcode::LEGACY_JUMP ||
+                                    c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET ||
+                                    c.opcode() == dc4::Opcode::LABEL));
 
     if (pending_scene_blit_ && !is_chip_prop) {
         pending_scene_blit_ = false;
@@ -1076,6 +1085,35 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
             pending_scene_chip_.h -= pending_scene_chip_.src_y;
         }
         int state = (c.words[3] == 99 || c.words[3] == 9) ? 0 : c.words[3];
+        const bool is_ds_chip = (mes_.version & 0xFFFF) == 0x9F9A;
+        if (is_ds_chip && !buttons_.empty()) {
+            if (c.words[3] == 5) {
+                auto& btn = buttons_.back();
+                btn.is_slider = true;
+                btn.slider_left = pending_scene_chip_.dst_x;
+                btn.slider_right = pending_scene_chip_.dst_y;
+                btn.slider_count = pending_scene_chip_.src_x;
+                btn.slider_bank = pending_scene_chip_.src_y;
+                btn.slider_index = c.words[0];
+                pending_scene_blit_ = false;
+                return true;
+            }
+            if (c.words[3] == 6 && buttons_.back().is_slider) {
+                buttons_.back().knob[0] = pending_scene_chip_;
+                buttons_.back().has_knob = true;
+                pending_scene_blit_ = false;
+                return true;
+            }
+            if (c.words[3] == 8 && buttons_.back().is_slider) {
+                buttons_.back().knob[1] = pending_scene_chip_;
+                pending_scene_blit_ = false;
+                return true;
+            }
+            if (c.words[3] == 10 && buttons_.back().is_slider) {
+                pending_scene_blit_ = false;
+                return true;
+            }
+        }
         if (pending_chip_is_button_) {
             if (!buttons_.empty() && state >= 0 && state < 3) {
                 buttons_.back().state[state] = pending_scene_chip_;
@@ -1658,6 +1696,25 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     ui_bar_top_ = dc2pc_ui_ ? 458 : dc2dm_ui_ ? 520 : 690;
     layout_ = MesWinLayout{};
     set_latin_mode(latin_mode_);
+    if ((ui.version & 0xFFFF) == 0x9F9A) {
+        layout_.bg_x = 0;
+        layout_.bg_y = 567;
+        layout_.bg_w = 1280;
+        layout_.bg_h = 153;
+        layout_.bg_src_x = 0;
+        layout_.bg_src_y = 0;
+        layout_.text_x = 300;
+        layout_.text_w = 800;
+        layout_.text_baseline = 618;
+        layout_.name_x = 300;
+        layout_.name_baseline = 567;
+        layout_.name_font = 20;
+        layout_.font_size = 22;
+        layout_.line_spacing = 32;
+        layout_.max_lines = 3;
+        layout_.gear_w = layout_.gear_h = 0;
+        ui_bar_top_ = 540;
+    }
     if (dc2dm_ui_) {
         layout_.bg_x = 0; layout_.bg_y = 416;
         layout_.bg_w = 952; layout_.bg_h = 155;
@@ -1781,7 +1838,8 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         if (c.kind == K::Words4 &&
             (c.opcode() == dc4::Opcode::CONTROL || c.opcode() == dc4::Opcode::JUMP)) {
             // Hit rect: only widgets in the bottom bar band are always on.
-            saw_rect = int16_t(c.words[1]) >= 690 && int16_t(c.words[1]) < kScreenH;
+            const int min_y = ((ui.version & 0xFFFF) == 0x9F9A) ? 540 : 690;
+            saw_rect = int16_t(c.words[1]) >= min_y && int16_t(c.words[1]) < kScreenH;
             if (saw_rect) {
                 UiButton b;
                 b.x = c.words[0];
@@ -1796,7 +1854,8 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         if (c.kind == K::Str &&
             (c.opcode() == dc4::Opcode::JUMP || c.opcode() == dc4::Opcode::LOAD_SHEET ||
              c.opcode() == dc4::Opcode::LEGACY_JUMP ||
-             c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET)) {
+             c.opcode() == dc4::Opcode::LEGACY_BUTTON_TARGET ||
+             c.opcode() == dc4::Opcode::INPUT_SKIP_TARGET)) {
             if (saw_rect && !buttons_.empty() && buttons_.back().action.empty())
                 buttons_.back().action = c.str;
             continue;
@@ -1820,7 +1879,8 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
             pending.h = c.words[1];
             pending.sheet = c.words[2];
             int state = c.words[3] == 99 ? 0 : c.words[3] == 1 ? 1 : c.words[3] == 2 ? 2 : -1;
-            if (pending.dst_y >= 690 && pending.dst_y < kScreenH) {
+            const int min_y = ((ui.version & 0xFFFF) == 0x9F9A) ? 540 : 690;
+            if (pending.dst_y >= min_y && pending.dst_y < kScreenH) {
                 if (from_widget && state >= 0) {
                     if (!buttons_.empty())
                         buttons_.back().state[state] = pending;
@@ -3265,6 +3325,20 @@ void SceneRunner::compose_scene() {
     // Retained 0x7A chip blits (the script-driven date HUD). The native draws
     // them top-left anchored at dst + the 0x88 offset, 1:1 from the sheet.
     for (const UiChip& ch : scene_chips_) blit_chip(ch, 255);
+    if ((mes_.version & 0xFFFF) == 0x9F9A) {
+        for (size_t i = 0; i < buttons_.size(); ++i) {
+            const auto& b = buttons_[i];
+            if (!b.is_slider || !b.has_knob) continue;
+            const int count = std::max(b.slider_count - 1, 1);
+            const int val = std::clamp(vm_.read_variable(b.slider_bank, b.slider_index), 0, count);
+            const bool active = (captured_slider_ == int(i)) ||
+                                (pointer_down_ && pointer_x_ >= b.x && pointer_x_ < b.x + b.w &&
+                                 pointer_y_ >= b.y && pointer_y_ < b.y + b.h);
+            UiChip knob_chip = (active && b.knob[1].w > 0) ? b.knob[1] : b.knob[0];
+            knob_chip.dst_x = b.slider_left + val * (b.slider_right - b.slider_left) / count - knob_chip.w / 2;
+            blit_chip(knob_chip, 255);
+        }
+    }
     // COMU phone chat overlays the scene, under the message window.
     draw_sakura();
     if (comu_visible_) draw_comu();
@@ -4093,7 +4167,7 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
         float(available_height) / text_img.h : 1.0f;
     blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.text_x - 2) * scale)),
          int(std::lround(y * scale)), text_img, scale * fit, 255);
-    if (wait_marker_ && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
+    if (wait_marker_ && (mes_.version & 0xFFFF) != 0x9F9A && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
         UiChip gear{layout_.text_x - 2 + int(std::lround((last_x + 4) * fit)),
             y + int(std::lround((text_top + last_y) * fit)) - (dc2dm_ui_ ? 14 : 23),
             layout_.gear_x + (dc2dm_ui_ ? (wait_frame_ % 6) * 24 : (wait_frame_ % 4) * 33), layout_.gear_y,
@@ -4275,6 +4349,13 @@ void SceneRunner::draw_choices() {
 }
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
+    if ((mes_.version & 0xFFFF) == 0x9F9A) {
+        for (const auto& b : buttons_) {
+            if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h && !b.action.empty())
+                return &b.action;
+        }
+        return nullptr;
+    }
     if (sidebar_visible_) {
         for (const auto& b : sidebar_buttons_)
             if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h)
@@ -4344,4 +4425,70 @@ void SceneRunner::dump_sprites() const {
     }
 }
 
+
+bool SceneRunner::handle_slider_touch(int action, int x, int y, std::string* triggered_action) {
+    if ((mes_.version & 0xFFFF) != 0x9F9A) return false;
+    if (action == 0) { // ACTION_DOWN
+        for (size_t i = 0; i < buttons_.size(); ++i) {
+            auto& b = buttons_[i];
+            if (!b.is_slider) continue;
+            if (x >= b.x && x < b.x + b.w && y >= b.y - 12 && y < b.y + b.h + 12) {
+                captured_slider_ = int(i);
+                const int max_val = std::max(b.slider_count - 1, 1);
+                const int val = std::clamp(int(std::lround(double(x - b.slider_left) * max_val /
+                                           (b.slider_right - b.slider_left))), 0, max_val);
+                vm_.write_variable(b.slider_bank, b.slider_index, val);
+                if (b.slider_bank == 3 && b.slider_index == 41)
+                    vm_.write_variable(94, vm_.read_variable(100, 55), val);
+                sync_audio_from_slider(b.slider_bank, b.slider_index, val);
+                scene_dirty_ = true;
+                return true;
+            }
+        }
+    } else if (action == 2) { // ACTION_MOVE
+        if (captured_slider_ >= 0 && size_t(captured_slider_) < buttons_.size()) {
+            auto& b = buttons_[size_t(captured_slider_)];
+            const int max_val = std::max(b.slider_count - 1, 1);
+            const int val = std::clamp(int(std::lround(double(x - b.slider_left) * max_val /
+                                       (b.slider_right - b.slider_left))), 0, max_val);
+            if (val != vm_.read_variable(b.slider_bank, b.slider_index)) {
+                vm_.write_variable(b.slider_bank, b.slider_index, val);
+                if (b.slider_bank == 3 && b.slider_index == 41)
+                    vm_.write_variable(94, vm_.read_variable(100, 55), val);
+                sync_audio_from_slider(b.slider_bank, b.slider_index, val);
+                scene_dirty_ = true;
+            }
+            return true;
+        }
+    } else if (action == 1) { // ACTION_UP
+        if (captured_slider_ >= 0 && size_t(captured_slider_) < buttons_.size()) {
+            auto& b = buttons_[size_t(captured_slider_)];
+            const int max_val = std::max(b.slider_count - 1, 1);
+            const int val = std::clamp(int(std::lround(double(x - b.slider_left) * max_val /
+                                       (b.slider_right - b.slider_left))), 0, max_val);
+            vm_.write_variable(b.slider_bank, b.slider_index, val);
+            if (b.slider_bank == 3 && b.slider_index == 41)
+                vm_.write_variable(94, vm_.read_variable(100, 55), val);
+            sync_audio_from_slider(b.slider_bank, b.slider_index, val);
+            if (triggered_action && !b.action.empty()) {
+                *triggered_action = b.action;
+            }
+            captured_slider_ = -1;
+            scene_dirty_ = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+void SceneRunner::sync_audio_from_slider(int bank, int index, int val) {
+    if (!audio_) return;
+    if (bank == 99) {
+        if (index == 225) audio_->set_master_volume(val);
+        else if (index == 7) audio_->set_user_volume(dc4::AudioGroup::Bgm, val);
+        else if (index == 8) audio_->set_user_volume(dc4::AudioGroup::Se, val);
+        else if (index == 9) audio_->set_user_volume(dc4::AudioGroup::Voice, val);
+        else if (index == 207) audio_->set_movie_volume(val);
+    }
+}
 }  // namespace dc4scene

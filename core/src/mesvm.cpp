@@ -128,11 +128,10 @@ bool MesVm::bind(const MesFile& mes) {
         if (command.opcode() == Opcode::END)
             continue;
         if (command.kind == CmdKind::Str || command.kind == CmdKind::ParamStr) {
-            const Opcode opcode = command.opcode();
-            const bool named_label = command.classic_dc2() ? opcode == Opcode::LEGACY_LABEL_OR_VOICE
-                                                   : opcode == Opcode::LABEL ||
-                                                         opcode == Opcode::LEGACY_LABEL_OR_VOICE ||
-                                                         opcode == Opcode::LEGACY_LABEL_DM;
+            const Opcode opcode = mes_engine_command(command).opcode();
+            const bool named_label = opcode == Opcode::LABEL ||
+                                     opcode == Opcode::LEGACY_LABEL_OR_VOICE ||
+                                     opcode == Opcode::LEGACY_LABEL_DM;
             if (named_label || (!command.str.empty() && command.str[0] == ':')) {
                 labels_.emplace(command.str, command.pos);
                 std::string lower = to_lower(command.str);
@@ -377,7 +376,8 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
     }
     const bool dc4 = mes_ && mes_->dialect == MesDialect::Modern &&
         (mes_->version == 0xAAB6 || mes_->version == 0xABB6);
-    if (!dc2pc && !dc2dm && !dc4 && bank == 100 && index >= 100 && index <= 119) {
+    const bool is_ds = mes_ && (mes_->version & 0xFFFF) == 0x9F9A;
+    if (!dc2pc && !dc2dm && !dc4 && !is_ds && bank == 100 && index >= 100 && index <= 119) {
         const auto found = variables_.find({bank, index});
         if (found == variables_.end()) return 1;
         return found->second;
@@ -399,6 +399,45 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
         const int32_t selected = read_variable(99, 218);
         return selected >= 0 && selected < 20
             ? read_variable(93, uint16_t(selected)) : 0;
+    }
+    if (is_ds) {
+        const auto found = variables_.find({bank, index});
+        if (found != variables_.end()) return found->second;
+        if (bank == 99) {
+            switch (index) {
+            case 225: return 100; // Master Volume
+            case 7:   return 80;  // BGM Volume
+            case 8:   return 80;  // SFX Volume
+            case 9:   return 100; // Voice Volume
+            case 207: return 100; // Movie Volume
+            case 206: return 50;  // BGM Volume during voice-over
+            case 26:  return 8;   // Text speed
+            case 27:  return 8;   // Auto speed
+            case 29:  return 12;  // Auto wait
+            case 194: return 6;   // Mouse gesture
+            case 203: return 1;   // Master enabled
+            case 14:  return 1;   // BGM enabled
+            case 15:  return 1;   // SFX enabled
+            case 5:   return 1;   // Voice enabled
+            case 200: return 1;   // Movie enabled
+            case 190: return 1;   // Duck music for voice
+            case 10:  return 1;   // Effects
+            case 12:  return 5;   // Effect speed
+            case 28:  return 1;   // Wait for voice
+            case 209: return 1;   // Stop auto at choice
+            case 210: return 1;   // Stop skip at choice
+            case 213: return 1;
+            default:  return 0;
+            }
+        }
+        if (bank == 100 && index == 49) return 80; // Window opacity
+        if (bank == 94 && index <= 50) return 100; // Character volume
+        if (bank == 95 && index <= 50) return 1;   // Character enabled
+        if (bank == 3 && index == 41) {
+            int char_id = read_variable(100, 55);
+            return read_variable(94, uint16_t(char_id));
+        }
+        return 0;
     }
     const auto found = variables_.find({bank, index});
     return found == variables_.end() ? 0 : found->second;
@@ -431,6 +470,17 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
     }
     if (bank == 93) {
         if (index < 20) variables_[{bank, index}] = value;
+        return;
+    }
+    const bool is_ds = mes_ && (mes_->version & 0xFFFF) == 0x9F9A;
+    if (is_ds && bank == 3 && index == 41) {
+        variables_[{bank, index}] = value;
+        int char_id = read_variable(100, 55);
+        write_variable(94, uint16_t(char_id), value);
+        return;
+    }
+    if (is_ds && (bank == 94 || bank == 95)) {
+        variables_[{bank, index}] = value;
         return;
     }
     if (bank == 94 || bank == 95) {

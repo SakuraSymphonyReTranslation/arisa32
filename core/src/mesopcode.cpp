@@ -157,6 +157,83 @@ const auto dc2ty = [] {
     p.name = "dc2ty";
     return p;
 }();
+const auto dalsegno = [] {
+    auto p = make_profile(MesProfileId::DalSegno, "dal-segno", 3, 0x39, 0x41, 0x5F, 0x63);
+    for (auto& op : p.opcodes)
+        op.operation = Opcode::UNKNOWN;
+    const struct {
+        uint8_t raw;
+        Opcode operation;
+    } aliases[] = {
+        {0x00, Opcode::END},
+        {0x02, Opcode::SCOPE_MARKER},
+        {0x05, Opcode::BGM_VOLUME},
+        {0x08, Opcode::CLEAR_CHOICES},
+        {0x09, Opcode::WAIT_INPUT},
+        {0x0A, Opcode::WAIT_INPUT},
+        {0x0B, Opcode::RETURN},
+        {0x0E, Opcode::TRANSITION},
+        {0x10, Opcode::STOP_BGM},
+        {0x12, Opcode::WAIT},
+        {0x13, Opcode::WAIT_INPUT},
+        {0x18, Opcode::END_CONTROL},
+        {0x1A, Opcode::CHECKPOINT},
+        {0x1C, Opcode::SYSTEM_SERVICE},
+        {0x1E, Opcode::SCOPE},
+        {0x22, Opcode::CLEAR_LAYOUT},
+
+        {0x3A, Opcode::LOAD_SLOT},
+        {0x3B, Opcode::LOAD_SHEET},
+        {0x3D, Opcode::CHARACTER_LAYER},
+        {0x3E, Opcode::FACE_LAYER},
+
+        {0x42, Opcode::BACKGROUND},
+        {0x43, Opcode::LABEL},
+        {0x44, Opcode::VOICE},
+        {0x45, Opcode::VOICE_ALT},
+        {0x46, Opcode::VOICE_EXTRA},
+        {0x47, Opcode::TRANSFER},
+        {0x48, Opcode::TRANSFER_ALT},
+        {0x4A, Opcode::MOVIE},
+        {0x4C, Opcode::JUMP},
+        {0x51, Opcode::ENTRY},
+        {0x53, Opcode::CHOICE},
+        {0x54, Opcode::CAPTION},
+        {0x56, Opcode::SPEAKER},
+        {0x5C, Opcode::VOICE_EXTRA},
+
+        {0x5F, Opcode::TEXT},
+        {0x60, Opcode::SPEAKER},
+        {0x61, Opcode::DIALOGUE},
+        {0x62, Opcode::TEXT},
+
+        {0x64, Opcode::PLAY_BGM},
+        {0x65, Opcode::PLAY_SE},
+        {0x66, Opcode::CONTROL},
+        {0x67, Opcode::CHIP_POSITION},
+        {0x69, Opcode::CONTROL},
+        {0x6A, Opcode::CHIP},
+        {0x6D, Opcode::CHIP_POSITION},
+        {0x75, Opcode::ASSIGN},
+        {0x76, Opcode::COPY},
+        {0x77, Opcode::SUM},
+        {0x78, Opcode::ADD},
+        {0x79, Opcode::COMPARE},
+        {0x7A, Opcode::CONTROL_CAPTION},
+        {0x7B, Opcode::CHIP_ORIGIN},
+        {0x7C, Opcode::SPRITE_TRANSFORM},
+        {0x7E, Opcode::SPRITE_EFFECT},
+        {0x80, Opcode::SPRITE_SLIDE},
+        {0x8E, Opcode::SPRITE_SLIDE},
+        {0x90, Opcode::CAMERA_DURATION},
+        {0x91, Opcode::CAMERA},
+        {0x95, Opcode::PLAY_EFFECT},
+        {0x96, Opcode::CAMERA_DURATION},
+    };
+    for (const auto& alias : aliases)
+        p.opcodes[alias.raw].operation = alias.operation;
+    return p;
+}();
 } // namespace
 
 const MesOpcodeProfile& mes_opcode_profile(MesDialect dialect, uint32_t version) {
@@ -167,6 +244,7 @@ const MesOpcodeProfile& mes_opcode_profile(MesDialect dialect, uint32_t version)
     case MesDialect::ClassicDM:
         return marriage;
     default:
+        if ((version & 0xFFFF) == 0x9F9A) return dalsegno;
         return modern;
     }
 }

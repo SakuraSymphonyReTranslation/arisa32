@@ -15,6 +15,7 @@ bool MesStream::next(MesCommand* out) {
     out->dc2pc = profile_.id == MesProfileId::DC2PC;
     out->dc2ty = profile_.id == MesProfileId::DC2TY;
     out->dc2dm = profile_.id == MesProfileId::ClassicDM;
+    out->ds = profile_.id == MesProfileId::DalSegno;
     out->pos = uint32_t(pos_);
     out->op = code_[pos_];
     out->kind = profile_.opcodes[out->op].kind;
@@ -44,10 +45,11 @@ bool MesStream::next(MesCommand* out) {
 }
 
 MesCommand mes_engine_command(const MesCommand& raw) {
-    if (!raw.classic_dc2() && !raw.dc2dm) return raw;
+    if (!raw.classic_dc2() && !raw.dc2dm && !raw.ds) return raw;
     MesCommand c = raw;
     c.raw_op = raw.op;
-    const auto& profile = raw.dc2dm ? mes_opcode_profile(MesDialect::ClassicDM, 0x9D72)
+    const auto& profile = raw.ds ? mes_opcode_profile(MesDialect::Modern, 0x009F9A)
+                                  : raw.dc2dm ? mes_opcode_profile(MesDialect::ClassicDM, 0x9D72)
                                   : mes_opcode_profile(MesDialect::ClassicDC2, raw.dc2ty ? 0x5F69 : 0x9969);
     const auto& opcode = profile.opcodes[raw.op];
     c.op = opcode_byte(Opcode::UNKNOWN);

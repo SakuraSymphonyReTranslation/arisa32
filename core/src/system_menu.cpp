@@ -281,6 +281,7 @@ struct Script {
     bool dc2pc = false;
     bool dc2ty = false;
     bool dc2dm = false;
+    uint32_t version = 0;
     std::vector<Command> code;
     std::map<std::string, size_t> labels;
 };
@@ -603,8 +604,13 @@ struct SystemMenu::Impl {
         dc4scene::Image result;
         std::vector<uint8_t> bytes;
         dc4::CrxInfo info;
-        if (read_bytes(resolve(data + "/GRP", name + ".crx"), &bytes) &&
-            dc4::crx_decode(bytes.data(), bytes.size(), &result.rgba, &info)) {
+        std::string path = resolve(data + "/GRP", name + ".crx");
+        if (!read_bytes(path, &bytes)) {
+            if (name == "system/titlechip01") path = resolve(data + "/GRP", "system/titlechip.crx");
+            else if (name == "system/exchip") path = resolve(data + "/GRP", "system/extrachip.crx");
+            read_bytes(path, &bytes);
+        }
+        if (!bytes.empty() && dc4::crx_decode(bytes.data(), bytes.size(), &result.rgba, &info)) {
             result.w = info.width; result.h = info.height; result.name = name;
         }
         return &images.emplace(name, std::move(result)).first->second;
@@ -617,6 +623,7 @@ struct SystemMenu::Impl {
         dc4::MesFile mes;
         if (!mes.load_file(resolve(data + "/MES", name + ".mes"), &last_error)) return nullptr;
         Script result;
+        result.version = mes.version;
         result.dc2pc = mes.dialect == dc4::MesDialect::ClassicDC2 && mes.version == 0x9969;
         result.dc2ty = mes.dialect == dc4::MesDialect::ClassicDC2 && mes.version == 0x5F69;
         result.dc2pc = result.dc2pc || result.dc2ty;
@@ -1916,6 +1923,10 @@ bool SystemMenu::load(const std::string& data_dir,std::string* error) {
     p_->dc2dm = false;
     p_->profile = &ModernMenu;
     auto* main = p_->script("main");
+    if (main && (main->version & 0xFFFF) == 0x9F9A) {
+        if (error) *error = "Dal Segno uses scripted in-game menu flow";
+        return false;
+    }
     if (main && main->dc2dm) {
         p_->dc2dm = true;
         p_->profile = &DC2DMMenu;

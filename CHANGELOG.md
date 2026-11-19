@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.4 - 2026-11-19
+
+### Bahasa Indonesia
+
+- Memvalidasi delapan ending dan unlock dari skrip D.C.4/D.C.4 Plus Harmony secara terpisah dari flag slot impor agar D.C. tidak terbuka terlalu dini.
+- Menganalisis dan memigrasikan profil lama secara otomatis dengan backup, mempertahankan progres yang terkonfirmasi, dan menerima fingerprint snapshot save Arisa32 lama. Ending tanpa bukti pada profil yang terkena bug lama perlu diselesaikan kembali.
+- Menambahkan profil dan pembacaan skrip Dal Segno MangaGamer dengan terjemahan English resmi, startup menuju title, kelanjutan perpindahan skrip, slider CONFIG, penanganan END, serta penyesuaian textbox dan toolbar.
+- Memperbaiki pemetaan perintah berhenti voice/SE Dal Segno dan mempertahankan mute volume karakter bernilai nol pada audio bersama.
+- Dal Segno masih experimental: sprite karakter belum muncul, respons tombol lambat, EXTRA dan beberapa tombol/fungsi menu belum bekerja. Seluruh rute dan baca/tulis save native belum diverifikasi.
+
+### English
+
+- Validates the eight endings and authored unlocks in D.C.4/D.C.4 Plus Harmony separately from imported slot flags, preventing premature D.C. access.
+- Automatically analyzes and migrates legacy profiles with a backup, preserves confirmed progress, and accepts older Arisa32 snapshot fingerprints. Endings without evidence in profiles affected by the old bug need to be completed again.
+- Adds a profile and script handling for MangaGamer Dal Segno with its official English translation, title startup, script-transfer advancement, CONFIG sliders, END handling, and textbox/toolbar adjustments.
+- Fixes Dal Segno voice/SE stop-command mapping and preserves zero character-volume mute in shared audio.
+- Dal Segno remains experimental: character sprites are missing, button responses are slow, and EXTRA and some buttons/menu functions do not work yet. Full routes and native save read/write remain unverified.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.4/id.md) | [English](docs/releases/v0.7.4/en.md).
+
 ## 0.7.3 - 2026-11-14
 
 ### Bahasa Indonesia

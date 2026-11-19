@@ -4,6 +4,7 @@ import java.io.File;
 import java.util.*;
 
 public final class GameProfileRegistry {
+    private static final DalSegnoProfile DAL_SEGNO_PROFILE = new DalSegnoProfile();
     private static final Dc4Profile DC4_PROFILE = new Dc4Profile();
     private static final Dc2PlusCommunicationProfile DC2PC_PROFILE = new Dc2PlusCommunicationProfile();
     private static final Dc2ToYouProfile DC2TY_PROFILE = new Dc2ToYouProfile();
@@ -12,6 +13,7 @@ public final class GameProfileRegistry {
     private static final GenericCircusProfile GENERIC_PROFILE = new GenericCircusProfile();
 
     private static final List<GameProfile> PROFILES = Collections.unmodifiableList(Arrays.asList(
+        DAL_SEGNO_PROFILE,
         DC2PC_PROFILE,
         DC2TY_PROFILE,
         DC2DM_PROFILE,
@@ -54,6 +56,7 @@ public final class GameProfileRegistry {
 
     public static List<String> getAllStandardScanPaths() {
         LinkedHashSet<String> set = new LinkedHashSet<>();
+        set.addAll(DAL_SEGNO_PROFILE.getStandardScanPaths());
         set.addAll(DC4PH_PROFILE.getStandardScanPaths());
         set.addAll(DC4_PROFILE.getStandardScanPaths());
         set.addAll(DC2PC_PROFILE.getStandardScanPaths());

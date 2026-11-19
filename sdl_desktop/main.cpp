@@ -257,6 +257,11 @@ bool play_voice(dc4::AudioEngine& audio, dc4::VoiceArchive& archive, const std::
 bool load_font(dc4scene::FontRenderer* font, const std::string& requested, const std::string& data) {
     if (!requested.empty()) return font->load(requested, 0, 21.0f);
     if (const char* env = std::getenv("DC4_FONT")) if (font->load(env, 0, 21.0f)) return true;
+    if (!data.empty()) {
+        const fs::path bundled = fs::path(data) / "GRP" / "mplus-1c-heavy.ttf";
+        std::error_code ec;
+        if (fs::is_regular_file(bundled, ec) && font->load(bundled.string(), 0, 21.0f)) return true;
+    }
     const char* windir = std::getenv("WINDIR");
     const fs::path fonts = fs::path(windir ? windir : "C:/Windows") / "Fonts";
     dc4::MesFile main_script;

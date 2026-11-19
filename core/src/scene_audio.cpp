@@ -105,33 +105,48 @@ void SceneAudio::prepare_system_voice() {
         audio_->set_channel_user_volume(channel, 100);
 }
 void SceneAudio::apply_character_volume(const std::string& name) {
+    static const char* ds_actors[] = {"hm", "hd", "io", "ne", "am", "me", "ym", "pr"};
     static const char* modern_actors[] = {"asa","nin","sor","hyr","sii","miu","tiy","sgn","kan","izu","ktr","che"};
     static const char* ty_actors[] = {"otm","yme","kko","anz","akn","mhr","myk","yki",
                                     "mik","myu","skr","sgn","wtr","kmk","mki","hrm"};
     const std::string normal = lower(name);
-    if (dc2ty_ && (normal.rfind("sys", 0) == 0 || normal.find("/sys") != std::string::npos)) {
+    if (normal.rfind("sys", 0) == 0 || normal.find("/sys") != std::string::npos || normal.find("\\sys") != std::string::npos) {
         prepare_system_voice();
         return;
     }
     std::string actor;
+    voice_character_ = 15;
     size_t last_underscore = name.find_last_of('_');
-    if (last_underscore != std::string::npos && last_underscore + 4 <= name.size()) {
-        actor = lower(name.substr(last_underscore + 1, 3));
+    if (last_underscore != std::string::npos && last_underscore + 1 < name.size()) {
+        std::string tag = lower(name.substr(last_underscore + 1));
+        // Recognize Dal Segno 2-letter actor tags: hm, hd, io, ne, am, me, ym, pr
+        if (tag.size() >= 3 && std::isalpha((unsigned char)tag[0]) && std::isalpha((unsigned char)tag[1]) && std::isdigit((unsigned char)tag[2])) {
+            std::string tag2 = tag.substr(0, 2);
+            for (size_t i = 0; i < 8; ++i) {
+                if (tag2 == ds_actors[i]) {
+                    actor = tag2;
+                    voice_character_ = i;
+                    break;
+                }
+            }
+        }
+        if (actor.empty() && tag.size() >= 3) {
+            actor = tag.substr(0, 3);
+        }
     }
     if (!dc2ty_) {
         // DC4's ASU/ASA and HYR/HIY aliases share their respective actor control.
         if (actor == "asu") actor = "asa";
         if (actor == "hiy") actor = "hyr";
     }
-    voice_character_ = 15;
-    const auto actors = dc2ty_ ? ty_actors : modern_actors;
-    const size_t actor_count = dc2ty_ ? 16 : 12;
-    for (size_t i = 0; i < actor_count; ++i) if (actor == actors[i]) voice_character_ = i;
+    if (voice_character_ >= 15 && !actor.empty()) {
+        const auto actors = dc2ty_ ? ty_actors : modern_actors;
+        const size_t actor_count = dc2ty_ ? 16 : 12;
+        for (size_t i = 0; i < actor_count; ++i) if (actor == actors[i]) voice_character_ = i;
+    }
     if (audio_) {
-        int vol = character_volume_[voice_character_];
-        if (!dc2ty_ && vol <= 0) vol = 100;
         for (int channel = 8; channel < 12; ++channel)
-            audio_->set_channel_user_volume(channel, vol);
+            audio_->set_channel_user_volume(channel, character_volume_[voice_character_]);
     }
 }
 void SceneAudio::stop_for_movie() {

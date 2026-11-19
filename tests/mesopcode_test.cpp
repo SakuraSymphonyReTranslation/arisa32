@@ -232,6 +232,65 @@ void dc2dm_menu_and_story() {
     CHECK(dc4::mes_engine_command(raw).op == 0x57);
 }
 } // namespace
+void dal_segno_profile() {
+    const auto& profile = dc4::mes_opcode_profile(dc4::MesDialect::Modern, 0x009F9A);
+    CHECK(profile.id == dc4::MesProfileId::DalSegno);
+    CHECK(profile.header_size == 3);
+    CHECK(profile.opcodes[0].kind == dc4::CmdKind::Nop);
+    CHECK(profile.opcodes[0x01].kind == dc4::CmdKind::Param2);
+    CHECK(profile.opcodes[0x38].kind == dc4::CmdKind::Param2);
+    CHECK(profile.opcodes[0x39].kind == dc4::CmdKind::ParamStr);
+    CHECK(profile.opcodes[0x40].kind == dc4::CmdKind::ParamStr);
+    CHECK(profile.opcodes[0x41].kind == dc4::CmdKind::Str);
+    CHECK(profile.opcodes[0x5E].kind == dc4::CmdKind::Str);
+    CHECK(profile.opcodes[0x5F].kind == dc4::CmdKind::Text);
+    CHECK(profile.opcodes[0x60].kind == dc4::CmdKind::Text);
+    CHECK(profile.opcodes[0x61].kind == dc4::CmdKind::Text);
+    CHECK(profile.opcodes[0x62].kind == dc4::CmdKind::Text);
+    CHECK(profile.opcodes[0x63].kind == dc4::CmdKind::Words4);
+
+    dc4::MesCommand raw;
+    raw.ds = true;
+    raw.kind = dc4::CmdKind::Text;
+    raw.op = 0x60;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::SPEAKER);
+    raw.op = 0x61;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::DIALOGUE);
+    raw.op = 0x62;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::TEXT);
+    raw.kind = dc4::CmdKind::Str;
+    raw.op = 0x56;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::SPEAKER);
+    raw.op = 0x42;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::BACKGROUND);
+    raw.op = 0x43;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::LABEL);
+    raw.op = 0x44;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::VOICE);
+    raw.op = 0x47;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::TRANSFER);
+    raw.op = 0x4C;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::JUMP);
+
+    raw.kind = dc4::CmdKind::ParamStr;
+    raw.op = 0x3A;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::LOAD_SLOT);
+
+    raw.kind = dc4::CmdKind::Words4;
+    raw.op = 0x64;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::PLAY_BGM);
+    raw.op = 0x65;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::PLAY_SE);
+    raw.op = 0x66;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::CONTROL);
+    raw.op = 0x6A;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::CHIP);
+    raw.op = 0x75;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::ASSIGN);
+    raw.op = 0x79;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::COMPARE);
+}
+
 int main() {
     decode_all(dc4::MesDialect::Modern, 0xAAB6);
     decode_all(dc4::MesDialect::ClassicDC2, 0x9869);
@@ -240,6 +299,7 @@ int main() {
     decode_all(dc4::MesDialect::ClassicDM, 0x9D72);
     dc2ty_header_and_services();
     dc2dm_menu_and_story();
+    dal_segno_profile();
     dc4::MesCommand raw;
     raw.dc2pc = true;
     raw.kind = dc4::CmdKind::Text;

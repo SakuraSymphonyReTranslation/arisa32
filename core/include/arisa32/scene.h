@@ -232,6 +232,14 @@ struct UiButton {
     int x = 0, y = 0, w = 0, h = 0;
     std::string action;
     UiChip state[3];
+    bool is_slider = false;
+    int slider_bank = -1;
+    int slider_index = 0;
+    int slider_count = 0;
+    int slider_left = 0;
+    int slider_right = 0;
+    bool has_knob = false;
+    UiChip knob[2];
 };
 
 // Message-window layout, measured against a 1:1 (1280x720) real screenshot.
@@ -329,6 +337,8 @@ public:
         return ok;
     }
     int choice_at(int x, int y) const;
+    bool handle_slider_touch(int action, int x, int y, std::string* triggered_action = nullptr);
+    void sync_audio_from_slider(int bank, int index, int val);
     std::u16string visible_text() const;
     size_t visible_text_length() const;
     void set_pointer(int x, int y, bool down) { pointer_x_ = x; pointer_y_ = y; pointer_down_ = down; }
@@ -395,9 +405,10 @@ public:
     const BstSprite& sprite(size_t i) const { return sprites_[i]; }
     const std::vector<UiButton>& buttons() const { return buttons_; }
 
+    bool load_grp_crx(const std::string& rel, Image* out, std::string* err) const;
+
 private:
     bool mes_exists(const std::string& name) const;
-    bool load_grp_crx(const std::string& rel, Image* out, std::string* err) const;
     void load_slot(int slot, const std::string& raw);
     void load_bst(int idx, const std::string& name, int slot);
     bool dispatch_dc2dm_message_face(const dc4::MesCommand& command);
@@ -679,6 +690,7 @@ private:
     int window_opacity_ = 50;
     bool latin_mode_ = false;
     bool use_system_menu_ = true;
+    int captured_slider_ = -1;
 };
 
 }  // namespace dc4scene

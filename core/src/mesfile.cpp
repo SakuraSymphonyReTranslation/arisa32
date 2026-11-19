@@ -20,11 +20,12 @@ static uint16_t rd_u16(const uint8_t* p) {
 
 static bool is_valid_modern_stream(const uint8_t* code, size_t len) {
     if (len < 4) return false;
+    const uint32_t ver = code[0] | (uint32_t(code[1]) << 8) | (uint32_t(code[2]) << 16);
+    const auto& profile = mes_opcode_profile(MesDialect::Modern, ver);
     size_t p = 3;
     size_t valid_cmds = 0;
     while (p < len) {
         uint8_t op = code[p];
-        const auto& profile = mes_opcode_profile(MesDialect::Modern);
         const size_t command_size = mes_command_size(code, len, p, profile.opcodes[op].kind);
         if (!command_size) return false;
         p += command_size;

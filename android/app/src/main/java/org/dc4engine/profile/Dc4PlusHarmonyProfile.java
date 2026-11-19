@@ -55,7 +55,24 @@ public final class Dc4PlusHarmonyProfile implements GameProfile {
             File namesDat = new File(grp, "NAMES.DAT");
             if (!namesDat.isFile()) namesDat = new File(grp, "names.dat");
             if (namesDat.isFile() && namesDat.length() > 65000) {
-                return true;
+                if (new File(dataRoot, "DSAO.exe").isFile() ||
+                    (parent != null && new File(parent, "DSAO.exe").isFile())) {
+                    return false;
+                }
+                boolean hasDs = false;
+                if (mes.isDirectory()) {
+                    File[] mfs = mes.listFiles();
+                    if (mfs != null) {
+                        for (File f : mfs) {
+                            String fn = f.getName().toLowerCase(Locale.ROOT);
+                            if (fn.startsWith("ds_") || fn.startsWith("ds0")) {
+                                hasDs = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!hasDs) return true;
             }
         }
         return p.contains("plus harmony") || p.contains("dc4ph") || p.contains("dc4_ph") || p.contains("プラスハーモニー");

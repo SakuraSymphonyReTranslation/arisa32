@@ -630,7 +630,7 @@ void return_to_title_now(Engine* e) {
         e->menu_open = false;
         e->in_game = true;
         static const char* kOpeningCandidates[] = {
-            "dc4_kyo20190204a1.mes", "dc4_start.mes", "gotitle.mes",
+            "dc4_kyo20190204a1.mes", "dc4_start.mes",
             "title_00.mes", "title_01.mes", "title_main.mes", "title.mes", "main.mes", "start.mes"
         };
         std::string opening_script;
@@ -640,10 +640,15 @@ void return_to_title_now(Engine* e) {
             if (test) { fclose(test); opening_script = cand; break; }
         }
         if (opening_script.empty()) opening_script = "start.mes";
+        if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A) {
+            opening_script = "main.mes";
+        }
         e->scene->load_script(e->data_dir + "/MES/" + opening_script);
         if (opening_script == "main.mes") {
-            if (e->scene->has_label("start_main")) e->scene->jump_to_label("start_main");
-            else if (e->scene->has_label("main")) e->scene->jump_to_label("main");
+            if ((e->scene->save_format_version() & 0xFFFF) != 0x9F9A) {
+                if (e->scene->has_label("start_main")) e->scene->jump_to_label("start_main");
+                else if (e->scene->has_label("main")) e->scene->jump_to_label("main");
+            }
         }
         advance_scene(e);
         return;
@@ -977,6 +982,7 @@ void tick_engine(Engine* e) {
                 std::string p = e->data_dir + "/MES/" + target + ".mes";
                 if (e->scene->load_script(p)) {
                     e->in_game = true;
+                    advance_scene(e);
                     begin_line(e);
                     return;
                 }
@@ -987,6 +993,7 @@ void tick_engine(Engine* e) {
                 e->scene->load_script(p);
             }
             e->in_game = true;
+            advance_scene(e);
             begin_line(e);
         }
     }
@@ -1172,13 +1179,15 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene->set_observer([e](const dc4::MesCommand& c,const std::string& script){e->menu.observe(c,script);});
 
     e->scene->load_sheets(e->data_dir + "/MES/start.mes");
-    e->scene->load_ui_script(e->data_dir + "/MES/" + e->menu.scene_ui_script());
+    const std::string ui_script = (e->scene->save_format_version() & 0xFFFF) == 0x9F9A
+        ? "start.mes"
+        : e->menu.scene_ui_script();
+    e->scene->load_ui_script(e->data_dir + "/MES/" + ui_script);
     e->scene->show_message_window("SYSTEM/MESWIN.CRX");
 
     static const char* kOpeningCandidates[] = {
         "dc4_kyo20190204a1.mes",
         "dc4_start.mes",
-        "gotitle.mes",
         "title_00.mes",
         "title_01.mes",
         "title_main.mes",
@@ -1197,6 +1206,9 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         }
     }
     if (opening_script.empty()) opening_script = "start.mes";
+    if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A) {
+        opening_script = "main.mes";
+    }
 
     if (!e->scene->load_script(e->data_dir + "/MES/" + opening_script)) {
         LOGE("scene initialization failed (%s): %s", e->data_dir.c_str(), e->scene->last_error().c_str());
@@ -1229,10 +1241,12 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         e->menu_open = false;
         e->in_game = true;
         if (opening_script == "main.mes") {
-            if (e->scene->has_label("start_main")) {
-                e->scene->jump_to_label("start_main");
-            } else if (e->scene->has_label("main")) {
-                e->scene->jump_to_label("main");
+            if ((e->scene->save_format_version() & 0xFFFF) != 0x9F9A) {
+                if (e->scene->has_label("start_main")) {
+                    e->scene->jump_to_label("start_main");
+                } else if (e->scene->has_label("main")) {
+                    e->scene->jump_to_label("main");
+                }
             }
         }
         advance_scene(e);
@@ -1463,6 +1477,19 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
         return env->NewStringUTF("");
     }
     e->scene->set_pointer(x, y, action == 0 || (action == 2 && e->pointer_down));
+    std::string slider_action;
+    if (e->scene->handle_slider_touch(action, x, y, &slider_action)) {
+        if (!slider_action.empty()) {
+            if (e->scene->has_label(slider_action)) {
+                e->scene->jump_to_label(slider_action);
+                advance_scene(e);
+            }
+        }
+        e->pressed_action.clear();
+        e->pressed_widget = false;
+        e->pressed_choice = -1;
+        return env->NewStringUTF("");
+    }
     if (action == 0) {
         e->pointer_down = true;
         e->pressed_choice = e->scene->choice_at(x, y);
@@ -1520,14 +1547,14 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
                 e->pressed_choice = -1;
                 return env->NewStringUTF(tag->c_str());
             } else if (!tag->empty() && (*tag)[0] != ':') {
-                if (e->scene->has_label(*tag)) {
-                    e->scene->jump_to_label(*tag);
-                    advance_scene(e);
-                } else if (*tag == "end" || *tag == "quit") {
+                if (*tag == "end" || *tag == "quit") {
                     e->pressed_action.clear();
                     e->pressed_widget = false;
                     e->pressed_choice = -1;
                     return env->NewStringUTF("quit");
+                } else if (e->scene->has_label(*tag)) {
+                    e->scene->jump_to_label(*tag);
+                    advance_scene(e);
                 } else {
                     std::string p = e->data_dir + "/MES/" + *tag + ".mes";
                     if (e->scene->load_script(p)) {
@@ -1537,7 +1564,11 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
             } else message = "Not available on Android: " + *tag;
         }
     } else if (x >= 0 && x < dc4scene::kScreenW && y >= 0 && y < dc4scene::kScreenH) {
-        if (!Java_org_dc4engine_Dc4Activity_dc4Advance(env, thiz)) message = stopped_message(e);
+        if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A && e->scene->current_line().empty() && !e->scene->buttons().empty()) {
+            // Dal Segno title menu: do not advance into attract movie on background taps
+        } else {
+            if (!Java_org_dc4engine_Dc4Activity_dc4Advance(env, thiz)) message = stopped_message(e);
+        }
     }
     e->pressed_action.clear();
     e->pressed_widget = false;

@@ -17,7 +17,7 @@ inline std::string save_lower(std::string value) {
     return value;
 }
 inline std::string native_save_prefix(uint32_t version) {
-    return version==0x5F69 ? "dc2ty" : version==0x9969 ? "DC2PC" : version==0x9D72 ? "DC2DM" : version==0xAAB6 ? "DC4" : version==0xABB6 ? "DC4PHDL" : "";
+    return version==0x5F69 ? "dc2ty" : version==0x9969 ? "DC2PC" : version==0x9D72 ? "DC2DM" : version==0xAAB6 ? "DC4" : version==0xABB6 ? "DC4PHDL" : (version & 0xFFFF)==0x9F9A ? "DSAO" : "";
 }
 // DC2PC/TY have quick 00, latest-copy 01, then three regular rows on page 1
 // and five rows per later page, with an eight-record page stride.

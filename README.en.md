@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-**Latest release: [v0.7.3](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.3)**. This release fixes song titles and the scrollbar in DC2PC Music mode, plus dates, card highlighting, and the replay confirmation in Scene mode. The confirmation follows the selected game content language, including the Indonesian patch. Read the [release notes](docs/releases/v0.7.3/en.md) for details. Version history is available in the [changelog](CHANGELOG.md).
+**Latest release: [v0.7.4](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.4)**. This release validates D.C.4 and D.C.4 Plus Harmony progress and automatically migrates legacy profiles so D.C. access follows confirmed endings. It also adds experimental compatibility for MangaGamer Dal Segno with its official English translation. Read the [release notes](docs/releases/v0.7.4/en.md) for details and test limits. Version history is available in the [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -57,6 +57,8 @@ In the original D.C. II P.C. (DC2PC) and D.C. II To You (DC2TY), the up/down arr
 
 - `D.S. -Dal Segno-`
 - `D.S. i.F. -Dal Segno- in Future`
+
+Compatibility for the MangaGamer edition of D.S. -Dal Segno- with its official English translation remains experimental. Startup, CONFIG sliders, and textbox layout have received fixes, but user testing reports missing character sprites, slow button responses, an unavailable EXTRA menu, and several buttons and menu functions that do not work yet. The game is not fully playable; see the [Dal Segno report](docs/dalsegno-validation.md).
 
 Standard, Limited, Deluxe, and Download editions are grouped under their main title. Games that use another engine, such as D.C.4 Fortunate Departures, are not supported.
 
@@ -146,10 +148,10 @@ The build produces a universal APK containing ARM64 and ARMv7. In PowerShell, us
 
 Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| v0.7.3 APK | Minimum Android | Use |
+| v0.7.4 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.3.apk` | 5.0 / API 21 | Release build for normal use |
-| `Arisa32-v0.7.3-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
+| `Arisa32-v0.7.4.apk` | 5.0 / API 21 | Release build for normal use |
+| `Arisa32-v0.7.4-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
 
 Both APKs are universal, each containing ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both APKs.
 
