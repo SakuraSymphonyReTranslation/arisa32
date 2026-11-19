@@ -1160,6 +1160,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         save_profile(e);
     }
     if (!dc2dm_read_history) load_read_lines();
+    if (e->menu.profile_requires_save()) save_profile(e);
 
     e->scene.reset(new dc4scene::SceneRunner(e->data_dir));
     e->scene->set_use_system_menu(menu_ok);

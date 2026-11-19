@@ -59,7 +59,7 @@ bool system_read_only(uint16_t index) {
 // Stable byte-order-independent FNV-1a identity, not a security/authenticity
 // primitive. Include labels as well as bytecode: checkpoint metadata belongs
 // to the script even though named jumps are indexed from the bytecode itself.
-uint64_t script_fingerprint(const MesFile& mes) {
+uint64_t script_fingerprint(const MesFile& mes, bool legacy_version = false) {
     uint64_t hash = 14695981039346656037ULL;
     const auto byte = [&](uint8_t value) {
         hash = (hash ^ value) * 1099511628211ULL;
@@ -67,7 +67,13 @@ uint64_t script_fingerprint(const MesFile& mes) {
     const auto integer = [&](uint64_t value, int width) {
         for (int i = 0; i < width; ++i) byte(uint8_t(value >> (i * 8)));
     };
-    integer(mes.version, 4);
+    uint32_t version = mes.version;
+    if (legacy_version) {
+        const size_t header = mes_opcode_profile(mes.dialect, mes.version).header_size;
+        for (size_t i = header; i < 4 && i < mes.code.size(); ++i)
+            version |= uint32_t(mes.code[i]) << (i * 8);
+    }
+    integer(version, 4);
     integer(mes.code.size(), 8);
     for (uint8_t value : mes.code) byte(value);
     integer(mes.labels.size(), 8);
@@ -96,6 +102,7 @@ void MesVm::reset() {
     mes_ = nullptr;
     labels_.clear();
     variables_.clear();
+    dc4_progress_awards_ = 0;
     choices_.clear();
     entry_label_.clear();
     error_.clear();
@@ -185,7 +192,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     if (!mes_ || !stream_) return reject("bind a MES script before restoring its VM");
     if (snapshot.version != MesVmSnapshot::kVersion)
         return reject("unsupported MES VM snapshot version");
-    if (snapshot.script_fingerprint != script_fingerprint(*mes_))
+    if (snapshot.script_fingerprint != script_fingerprint(*mes_) &&
+        snapshot.script_fingerprint != script_fingerprint(*mes_, true))
         return reject("MES VM snapshot belongs to a different or modified script");
     const uint32_t header_size = uint32_t(mes_opcode_profile(mes_->dialect, mes_->version).header_size);
     if (snapshot.pc < header_size || snapshot.pc > mes_->code.size())
@@ -250,6 +258,7 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     ended_ = snapshot.ended;
     transferring_ = snapshot.transferring;
     waiting_for_choice_ = snapshot.waiting_for_choice;
+    dc4_progress_awards_ = 0;
     error_.clear();
     if (err) err->clear();
     return true;
@@ -514,6 +523,10 @@ bool MesVm::execute_assignment(const MesCommand& command) {
         return fail("unsupported assignment operator", command.pos);
     }
     write_variable(command.words[0], command.words[1], value);
+    if (mes_ && (mes_->version == 0xAAB6 || mes_->version == 0xABB6) &&
+        command.words[0] == 100 && command.words[1] >= 100 && command.words[1] < 120 &&
+        command.words[2] == 1 && command.words[3] == 0 && read_variable(9, 7) == 0)
+        dc4_progress_awards_ |= uint32_t(1) << (command.words[1] - 100);
     return true;
 }
 

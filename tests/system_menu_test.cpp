@@ -585,6 +585,89 @@ void assets(const std::string& data){
     m.scroll(36);CHECK(m.error().empty());shot("music-last-page");
     m.activate("selmovie");shot("movies");CHECK(m.activate("movie01").type==Type::None);CHECK(m.confirming());shot("confirm-movie");CHECK(m.answer_confirmation(true).asset=="DC4_OP1.MPG");
 }
+void award_progress(Menu& menu,dc4scene::SceneRunner& scene,const std::string& data,
+                    const std::filesystem::path& scratch,int flag,bool replay=false){
+    dc4::MesFile main;std::string error;CHECK(main.load_file(data+"/MES/main.mes",&error));
+    const std::vector<uint8_t> code={0,0,0,0,0xB6,uint8_t(main.version>>8),0,0x82,100,0,uint8_t(flag),0,1,0,0,0,0};
+    const auto path=scratch/"award.mes";write_bytes(path,code);
+    CHECK(scene.load_script(path.string()));menu.initialize_scene(scene,replay);
+    scene.advance_to_next_text();
+}
+
+void automatic_progression(const std::string& data,const std::filesystem::path& scratch){
+    std::filesystem::create_directories(scratch);std::string error;
+    const auto path=(scratch/"automatic.dat").string();
+    for(bool sparse:{false,true}){
+        {std::ofstream out(path);out<<"DC4ENGINE_PROFILE 1\n";
+            for(int i=100;i<(sparse?109:120);++i)out<<"v 100 "<<i<<" 1\n";
+            out<<"v 99 7 46\nc \"bg/dc4_ev_asa07b\"\ns \"dc4_sen20181213c\"\n";}
+        Menu menu;CHECK(menu.load(data,&error));CHECK(menu.load_profile(path,&error));
+        CHECK(menu.profile_requires_save());CHECK(!has(menu,"dc"));
+        for(int i=100;i<109;++i)CHECK(menu.variable(100,i)==0);
+        CHECK(menu.variable(99,7)==46 && menu.cg_seen("bg/dc4_ev_asa07b") && menu.scene_seen("dc4_sen20181213c"));
+        CHECK(menu.save_profile(path,&error));CHECK(!menu.profile_requires_save());
+        CHECK(std::filesystem::exists(path+".v1-backup"));
+        Menu restarted;CHECK(restarted.load(data,&error));CHECK(restarted.load_profile(path,&error));
+        CHECK(!has(restarted,"dc") && !restarted.profile_requires_save());
+        dc4scene::SceneRunner scene(data);CHECK(scene.load_script(data+"/MES/main.mes"));
+        for(int i=100;i<120;++i)scene.set_variable(100,uint16_t(i),1);
+        CHECK(!restarted.sync_progress(scene));CHECK(!has(restarted,"dc"));
+        restarted.restore_scene_progress(scene);CHECK(scene.variable(100,101)==0);
+        award_progress(restarted,scene,data,scratch,101,true);
+        CHECK(!restarted.sync_progress(scene));CHECK(restarted.variable(100,101)==0);
+        for(int i=101;i<=108;++i){
+            award_progress(restarted,scene,data,scratch,i);CHECK(restarted.sync_progress(scene));
+            CHECK(restarted.variable(100,i)==1);CHECK(!has(restarted,"dc"));
+            CHECK(restarted.save_profile(path,&error));
+            Menu saved;CHECK(saved.load(data,&error));CHECK(saved.load_profile(path,&error));
+            for(int flag=101;flag<=108;++flag)CHECK(saved.variable(100,flag)==int(flag<=i));
+            restarted=std::move(saved);
+        }
+        award_progress(restarted,scene,data,scratch,100);CHECK(restarted.sync_progress(scene));
+        restarted.open(Page::Title);CHECK(has(restarted,"dc"));
+        CHECK(restarted.save_profile(path,&error));
+        Menu complete;CHECK(complete.load(data,&error));CHECK(complete.load_profile(path,&error));CHECK(has(complete,"dc"));
+        {std::ofstream out(scratch/"polluted.dat");out<<"DC4ENGINE_PROFILE 1\n";for(int i=100;i<120;++i)out<<"v 100 "<<i<<" 1\n";}
+        CHECK(complete.load_profile((scratch/"polluted.dat").string(),&error));CHECK(has(complete,"dc"));
+    }
+    for(const auto& text:{"DC4ENGINE_PROFILE 2\nv 100 100 1\n",
+                         "DC4ENGINE_PROFILE 2\ne 256 0\n",
+                         "DC4ENGINE_PROFILE 2\ne 1 0\ne 2 0\n",
+                         "DC4ENGINE_PROFILE 2\ne 255 1048576\n",
+                         "DC4ENGINE_PROFILE 1\nv 100 101 2\n",
+                         "DC4ENGINE_PROFILE 1\nv 100 101 1\nv 100 101 0\n"}){
+        {std::ofstream out(path);out<<text;}
+        Menu menu;CHECK(menu.load(data,&error));menu.set_variable(100,101,1);
+        CHECK(!menu.load_profile(path,&error));CHECK(menu.variable(100,101)==1 && !has(menu,"dc"));
+    }
+    {std::ofstream out(path);out<<"DC4ENGINE_PROFILE 2\ne 0 0\n";for(int i=100;i<120;++i)out<<"v 100 "<<i<<" 1\n";}
+    Menu mismatch;CHECK(mismatch.load(data,&error));CHECK(mismatch.load_profile(path,&error));
+    CHECK(mismatch.profile_requires_save() && !has(mismatch,"dc") && mismatch.variable(100,101)==0);
+    {std::ofstream out(path);out<<"DC4ENGINE_PROFILE 1\n";
+        for(int i=100;i<=108;++i)out<<"v 100 "<<i<<" 1\n";
+        for(const char* name:{"dc4_nin20190503b","dc4_sor20190504a","dc4_hiy20190430b","dc4_sii20190507c",
+                "dc4_miu20190331c","dc4_tiy20190405d","dc4_asu20190506b"})out<<"s \""<<name<<"\"\n";
+        dc4::MesFile main;CHECK(main.load_file(data+"/MES/main.mes",&error));
+        out<<"s \""<<(main.version==0xABB6?"dc4_asa20190513c":"dc4_asa20200406a")<<"\"\n";}
+    Menu legacy_complete;CHECK(legacy_complete.load(data,&error));CHECK(legacy_complete.load_profile(path,&error));
+    CHECK(has(legacy_complete,"dc"));CHECK(legacy_complete.save_profile(path,&error));
+    Menu migrated_complete;CHECK(migrated_complete.load(data,&error));CHECK(migrated_complete.load_profile(path,&error));
+    CHECK(has(migrated_complete,"dc"));
+    {std::ofstream out(path);out<<"DC4ENGINE_PROFILE 1\n";for(int i=100;i<120;++i)out<<"v 100 "<<i<<" 1\n";
+        out<<"s \"dc4_nin20190503d\"\ns \"dc4_hiy20190430c\"\ns \"dc4_sor20190504a\"\n";}
+    Menu recovered;CHECK(recovered.load(data,&error));CHECK(recovered.load_profile(path,&error));
+    dc4::MesFile recovery_main;CHECK(recovery_main.load_file(data+"/MES/main.mes",&error));
+    const bool harmony=recovery_main.version==0xABB6;
+    for(int i=101;i<=108;++i)CHECK(recovered.variable(100,i)==int(harmony && (i==101 || i==103)));
+    CHECK(!has(recovered,"dc") && recovered.variable(100,112)==0 && recovered.variable(100,110)==int(harmony));
+    CHECK(recovered.save_profile(path,&error));
+    Menu recovery_restart;CHECK(recovery_restart.load(data,&error));CHECK(recovery_restart.load_profile(path,&error));
+    CHECK(recovery_restart.variable(100,101)==int(harmony) && recovery_restart.variable(100,103)==int(harmony) && !has(recovery_restart,"dc"));
+    std::vector<uint8_t> invalid_native(0x4B80);invalid_native[0xD8+101]=2;write_bytes(scratch/"invalid-system.dat",invalid_native);
+    CHECK(!migrated_complete.load_system_dat((scratch/"invalid-system.dat").string(),&error));CHECK(has(migrated_complete,"dc"));
+    std::cout<<"Automatic profile migration, verified ending awards, replay and imported flag guards checked: "<<data<<'\n';
+}
+
 void progression(const std::string& data,const std::filesystem::path& scratch){
     std::filesystem::create_directories(scratch);
     Menu menu;std::string error;CHECK(menu.load(data,&error));
@@ -611,7 +694,7 @@ void progression(const std::string& data,const std::filesystem::path& scratch){
     CHECK(!has(two,"dc") && two.variable(100,101)==1 && two.variable(100,103)==1);
     for(int i:{102,104,105,106,107,108})CHECK(two.variable(100,i)==0);
     const auto stale_path=(scratch/"stale-dc.dat").string();
-    {std::ofstream stale(stale_path,std::ios::binary);stale<<"DC4ENGINE_PROFILE 1\nv 100 100 1\nv 100 101 1\nv 100 103 1\n";}
+    {std::ofstream stale(stale_path,std::ios::binary);stale<<"DC4ENGINE_PROFILE 1\nv 100 100 1\nv 100 101 1\nv 100 103 1\ns \"dc4_nin20190503b\"\ns \"dc4_hiy20190430b\"\n";}
     Menu stale;CHECK(stale.load(data,&error));CHECK(stale.load_profile(stale_path,&error));
     CHECK(stale.variable(100,100)==0 && !has(stale,"dc"));
     CHECK(stale.activate("dc").type==Type::None && !stale.confirming());
@@ -694,13 +777,14 @@ void progression(const std::string& data,const std::filesystem::path& scratch){
     Menu partial;CHECK(partial.load(data,&error));
     dc4scene::SceneRunner story(data);CHECK(story.load_script(data+"/MES/main.mes"));
     partial.initialize_scene(story,false);
-    story.set_variable(100,101,1);CHECK(partial.sync_progress(story));
+    award_progress(partial,story,data,scratch,101);CHECK(partial.sync_progress(story));
     CHECK(partial.save_profile(path,&error));
     Menu resumed;CHECK(resumed.load(data,&error));CHECK(resumed.load_profile(path,&error));
     CHECK(resumed.variable(100,101)==1);CHECK(resumed.variable(100,102)==0);CHECK(!has(resumed,"dc"));
     story.set_variable(100,101,0);resumed.restore_scene_progress(story);
     CHECK(story.variable(100,101)==1);CHECK(story.variable(100,112)==0);
     std::cout<<"Fresh/completed progression, profile restart, settings reset and PC import checked: "<<data<<'\n';
+    automatic_progression(data,scratch/"automatic");
 }
 void ambient_menu(const std::string& data,const std::filesystem::path& scratch){
     Menu menu; std::string error;

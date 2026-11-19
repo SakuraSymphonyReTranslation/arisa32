@@ -365,6 +365,7 @@ public:
     bool restore_pc_save(const std::vector<uint8_t>& bytes, std::string* error = nullptr);
     int variable(uint16_t bank, uint16_t index) const { return vm_.read_variable(bank, index); }
     uint32_t script_position() const { return vm_.pos(); }
+    uint32_t dc4_progress_awards() const { return vm_.dc4_progress_awards(); }
     void set_variable(uint16_t bank, uint16_t index, int value) {
         vm_.write_variable(bank, index, value);
         if (dc2dm_ui_ && bank == 9 && index == 7 && value != 0) sidebar_visible_ = false;

@@ -453,6 +453,9 @@ struct SystemMenu::Impl {
     std::vector<Chip> music_underlay;
     std::vector<Widget> music_underlay_widgets;
     bool dc4_profile = false;
+    uint8_t dc4_endings = 0;
+    uint32_t dc4_unverified_progress = 0;
+    bool dc4_profile_requires_save = false;
     dc4scene::SakuraSystem sakura;
     std::string sakura_sheet;
     dc4scene::FairyLightSystem fairy_lights;
@@ -547,17 +550,27 @@ struct SystemMenu::Impl {
         if (!dc2ty && b == 99 && i == 20) return latest;
         if (b == 99 && i == 21) return quick;
         if (b == 99 && i == 22) return automatic;
+        if (dc4_profile && b == 100 && i >= 101 && i <= 108)
+            return (dc4_endings >> (i - 101)) & 1;
         auto at = vars.find({b,i});
         if (at == vars.end()) {
             if (b == 94) return 100;
             if (b == 95) return 1;
             return 0;
         }
-        // Old profiles may contain a D.C. unlock without the eight ending flags.
-        if (dc4_profile && b == 100 && i == 100 && at->second)
-            for (int ending = 101; ending <= 108; ++ending)
-                if (get(100, ending) <= 0) return 0;
+        if (dc4_profile && b == 100) {
+            if ((i == 100 || i == 109) && dc4_endings != 255) return 0;
+            if (i == 112 && (dc4_endings & 15) != 15) return 0;
+        }
         return at->second;
+    }
+    void normalize_dc4_progress() {
+        if (!dc4_profile) return;
+        for (int i = 100; i < 120; ++i) {
+            const int value=get(100,i);
+            dc4_profile_requires_save=vars[{100,i}]!=value||dc4_profile_requires_save;
+            vars[{100,i}]=value;
+        }
     }
     void put(int b, int i, int value) {
         if (dc2dm && b==10 && i>=0 && i<=20) b=100;
@@ -3141,7 +3154,14 @@ std::string SystemMenu::title_music() const {
 std::string SystemMenu::scene_ui_script() const { return p_->dc2pc || p_->dc2dm ? "start.mes" : "win_size.mes"; }
 bool SystemMenu::is_dc2dm() const { return p_->dc2dm; }
 int SystemMenu::variable(int b,int i)const{return p_->get(b,i);}
-void SystemMenu::set_variable(int b,int i,int value){p_->put(b,i,value);p_->rebuild();}
+void SystemMenu::set_variable(int b,int i,int value){
+    p_->put(b,i,value);
+    if(p_->dc4_profile && b==100 && i>=101 && i<=108) {
+        const uint8_t bit=uint8_t(1u<<(i-101));
+        p_->dc4_endings=value>0?uint8_t(p_->dc4_endings|bit):uint8_t(p_->dc4_endings&~bit);
+    }
+    p_->rebuild();
+}
 void SystemMenu::initialize_scene(dc4scene::SceneRunner& scene,bool replay) const {
     for(int bank:{97,98,100}) {
         const int count=bank==97?int(p_->cg_names.size()):bank==98?int(p_->scene_names.size()):150;
@@ -3173,13 +3193,24 @@ void SystemMenu::restore_scene_progress(dc4scene::SceneRunner& scene) const {
         scene.set_variable(100,uint16_t(i),p_->get(100,i));
 }
 bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
+    if(p_->dc4_profile) {
+        std::ifstream previous(path,std::ios::binary);std::string header;std::getline(previous,header);previous.close();
+        if(!header.empty() && header.back()=='\r')header.pop_back();
+        if(header=="DC4ENGINE_PROFILE 1") {
+            const std::string backup=path+".v1-backup";std::error_code ec;
+            if(!std::filesystem::exists(backup,ec) && !std::filesystem::copy_file(path,backup,ec)){
+                if(error)*error="Cannot back up legacy emulator profile";return false;
+            }
+        }
+    }
     const std::string temporary=path+".tmp";
     std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
     if(!out){if(error)*error="Cannot create emulator profile";return false;}
-    out<<"DC4ENGINE_PROFILE 1\n";
+    out<<"DC4ENGINE_PROFILE "<<(p_->dc4_profile?2:1)<<'\n';
+    if(p_->dc4_profile)out<<"e "<<unsigned(p_->dc4_endings)<<' '<<p_->dc4_unverified_progress<<'\n';
     for(const auto& pair:p_->vars) {
         int b=pair.first.first,i=pair.first.second;
-        const int value=b==100 && i==100?p_->get(b,i):pair.second;
+        const int value=p_->dc4_profile && b==100 && i>=100 && i<120?p_->get(b,i):pair.second;
         if(b==93||b==94||b==95||b==99||b==100)out<<"v "<<b<<' '<<i<<' '<<value<<'\n';
     }
     for(const auto& s:p_->seen_cg)out<<"c "<<std::quoted(s)<<'\n';
@@ -3193,8 +3224,9 @@ bool SystemMenu::save_profile(const std::string& path,std::string* error)const {
 #else
     std::error_code ec;std::filesystem::rename(temporary,path,ec);replaced=!ec;
 #endif
-    if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}if(error)error->clear();return true;
+    if(!replaced){if(error)*error="Cannot replace emulator profile";return false;}p_->dc4_profile_requires_save=false;if(error)error->clear();return true;
 }
+bool SystemMenu::profile_requires_save()const{return p_->dc4_profile_requires_save;}
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
     if (p_->dc2ty) {
         std::vector<uint8_t> bytes;
@@ -3327,6 +3359,15 @@ bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
         if (error) *error = "system.dat too small";
         return false;
     }
+    if (p_->dc4_profile) {
+        for (int i = 100; i < 120; ++i)
+            if (data[0xD8+i] > 1) {
+                if (error) *error = "Invalid DC4 native completion flag";
+                return false;
+            }
+        for (int i = 101; i <= 108; ++i)
+            if (data[0xD8+i]) p_->dc4_endings |= uint8_t(1u << (i-101));
+    }
     // Bank 100: offset 0x00D8, size 150
     if (data.size() >= 0x00D8 + 150) {
         for (int i = 0; i < 150; ++i) {
@@ -3378,6 +3419,7 @@ bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
         if (p_->vars.find({94, i}) == p_->vars.end()) p_->vars[{94, i}] = 100;
         if (p_->vars.find({95, i}) == p_->vars.end() || p_->vars[{95, i}] == 0) p_->vars[{95, i}] = 1;
     }
+    p_->normalize_dc4_progress();
     p_->progress_vars();
     p_->rebuild();
     if (error) error->clear();
@@ -3390,13 +3432,19 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     if(!size_error && bytes>32*1024*1024){if(error)*error="Emulator profile exceeds byte limit";return false;}
     std::ifstream in(path,std::ios::binary);if(!in){if(error)*error="Cannot open emulator profile";return false;}
     std::string header;std::getline(in,header);
-    if(header!="DC4ENGINE_PROFILE 1"){
+    if(!header.empty() && header.back()=='\r')header.pop_back();
+    const bool verified_profile=header=="DC4ENGINE_PROFILE 2";
+    if(header!="DC4ENGINE_PROFILE 1" && !verified_profile){
         in.close();
         if (load_system_dat(path, error)) return true;
         if(error)*error="Unsupported emulator profile";
         return false;
     }
     auto vars=p_->vars;std::set<std::string> cg=p_->seen_cg,music=p_->seen_music,scene=p_->seen_scene;std::set<int> playlist=p_->playlist;
+    std::map<int,int> imported_progress;
+    std::set<std::string> imported_scenes;
+    uint32_t imported_endings=0,unverified_progress=0;
+    bool ending_record=false;
     std::string line;size_t lines=0;
     while(std::getline(in,line)) {
         if(++lines>120000||line.size()>4096){if(error)*error="Emulator profile exceeds limits";return false;}
@@ -3405,11 +3453,68 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
             int b,i,value;
             if(!(row>>b>>i>>value)||b<93||b>100||i<0||i>4095||std::abs(int64_t(value))>1000000){if(error)*error="Invalid profile variable";return false;}
             const bool progress=b==100 && i>=p_->profile->progress_first && i<p_->profile->progress_end;
+            if(p_->dc4_profile && b==100 && i>=100 && i<120) {
+                if(value<0 || value>1 || imported_progress.count(i)){if(error)*error="Invalid DC4 completion flag";return false;}
+                imported_progress[i]=value;
+                continue;
+            }
             vars[{b,i}]=progress?std::max(vars[{b,i}],value):value;
         }
-        else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));}
+        else if(type=='c'||type=='m'||type=='s'){std::string s;if(!(row>>std::quoted(s))||!safe_name(s)){if(error)*error="Invalid profile asset";return false;}(type=='c'?cg:type=='m'?music:scene).insert(key(s));if(type=='s')imported_scenes.insert(key(s));}
         else if(type=='p'){int id;if(!(row>>id)||id<0||id>1000){if(error)*error="Invalid playlist entry";return false;}playlist.insert(id);}
+        else if(type=='e'){
+            if(!verified_profile || ending_record || !(row>>imported_endings>>unverified_progress) || imported_endings>255 || unverified_progress>0xFFFFF){if(error)*error="Invalid ending verification record";return false;}
+            std::string extra;if(row>>extra){if(error)*error="Invalid ending verification record";return false;}
+            ending_record=true;
+        }
         else if(type){if(error)*error="Unknown profile record";return false;}
+    }
+    if(!in.eof()){if(error)*error="Cannot read complete emulator profile";return false;}
+    if(verified_profile && !ending_record){if(error)*error="Missing ending verification record";return false;}
+    if(p_->dc4_profile) {
+        if(!verified_profile) {
+            bool polluted=imported_progress[111]>0;
+            for(int i=113;i<120;++i)polluted=imported_progress[i]>0||polluted;
+            uint32_t candidates=0;
+            for(int i=100;i<120;++i)if(imported_progress[i]>0)candidates|=1u<<(i-100);
+            imported_endings=(candidates>>1)&255;
+            const char* endings[]={"dc4_nin20190503b","dc4_sor20190504a","dc4_hiy20190430b","dc4_sii20190507c",
+                "dc4_miu20190331c","dc4_tiy20190405d","dc4_asa20200406a","dc4_asu20190506b"};
+            if(dc4::asset_exists(resolve(p_->data,"MES/dc4_asa20190513c.mes")))endings[6]="dc4_asa20190513c";
+            for(int i=0;i<8;++i) {
+                if(!(imported_endings&(1u<<i)) || imported_scenes.count(endings[i]))continue;
+                if(((candidates>>1)&255)==255)polluted=true;
+                imported_endings&=~(1u<<i);
+                unverified_progress|=1u<<(i+1);
+                imported_progress[101+i]=0;
+            }
+            if(polluted) {
+                imported_endings=0;
+                for(int i=0;i<8;++i) {
+                    if(!(candidates&(1u<<(i+1))))continue;
+                    const auto* source=p_->script(endings[i]);
+                    if(!source)continue;
+                    bool awarded=false;
+                    for(const auto& command:source->code) {
+                        if(command.opcode()==Opcode::ASSIGN && command.words[0]==100 && command.words[1]==101+i &&
+                            command.words[2]==1 && command.words[3]==0)awarded=true;
+                        if(awarded && command.opcode()==Opcode::TRANSFER) {
+                            const auto target=key(command.str);
+                            if(target!="ed" && target!="sce_end" && imported_scenes.count(target))imported_endings|=1u<<i;
+                            break;
+                        }
+                    }
+                }
+                unverified_progress=candidates&~(imported_endings<<1);
+                imported_progress.clear();
+                if(imported_endings && (candidates&(1u<<10)))imported_progress[110]=1;
+                if((imported_endings&15)==15 && (candidates&(1u<<12)))imported_progress[112]=1;
+            }
+        }
+        for(const auto& entry:imported_progress)
+            vars[{100,entry.first}]=std::max(vars[{100,entry.first}],entry.second);
+        p_->dc4_endings|=uint8_t(imported_endings);
+        p_->dc4_unverified_progress|=unverified_progress;
     }
     for (int i = 0; i < 51; ++i) {
         if (vars.find({94, i}) == vars.end()) vars[{94, i}] = 100;
@@ -3420,6 +3525,8 @@ bool SystemMenu::load_profile(const std::string& path,std::string* error) {
     }
     p_->vars=std::move(vars);p_->seen_cg=std::move(cg);p_->seen_music=std::move(music);p_->seen_scene=std::move(scene);p_->playlist=std::move(playlist);
     p_->profile_loaded = true;
+    p_->dc4_profile_requires_save=p_->dc4_profile && !verified_profile;
+    p_->normalize_dc4_progress();
     p_->progress_vars();p_->rebuild();if(error)error->clear();return true;
 }
 void SystemMenu::mark_cg_seen(const std::string& asset){if(safe_name(key(asset))&&p_->seen_cg.insert(key(asset)).second)p_->progress_vars();}
@@ -3441,9 +3548,21 @@ void SystemMenu::observe(const Command& command,const std::string& script){
 }
 bool SystemMenu::sync_progress(const dc4scene::SceneRunner& scene){
     bool changed=false;
+    const uint32_t awards=scene.dc4_progress_awards();
+    if(p_->dc4_profile) {
+        const uint8_t endings=p_->dc4_endings|uint8_t((awards>>1)&255);
+        changed=endings!=p_->dc4_endings;
+        p_->dc4_endings=endings;
+        changed=(p_->dc4_unverified_progress&awards)!=0||changed;
+        p_->dc4_unverified_progress&=~awards;
+    }
     for(size_t i=0;i<p_->cg_names.size();++i)if(scene.variable(97,uint16_t(i))>0)changed=p_->seen_cg.insert(key(p_->cg_names[i])).second||changed;
     for(size_t i=0;i<p_->scene_names.size();++i)if(scene.variable(98,uint16_t(i))>0)changed=p_->seen_scene.insert(key(p_->scene_names[i])).second||changed;
-    for(int i=p_->profile->progress_first;i<p_->profile->progress_end;++i){int value=scene.variable(100,uint16_t(i));if(value>p_->vars[{100,i}]){p_->put(100,i,value);changed=true;}}
+    for(int i=p_->profile->progress_first;i<p_->profile->progress_end;++i){
+        if(p_->dc4_profile && i>=100 && i<120 && !(awards&(1u<<(i-100))))continue;
+        int value=scene.variable(100,uint16_t(i));if(value>p_->vars[{100,i}]){p_->put(100,i,value);changed=true;}
+    }
+    p_->normalize_dc4_progress();
     if(changed)p_->progress_vars();return changed;
 }
 void SystemMenu::set_music_position(int percent){p_->put(99,189,std::clamp(percent,0,100));}

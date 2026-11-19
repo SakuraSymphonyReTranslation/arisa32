@@ -46,6 +46,32 @@ std::vector<std::string> messages(dc4::MesVm& vm) {
     return output;
 }
 
+void ending_awards() {
+    for(uint32_t version:{0xAAB6u,0xABB6u,0u}) {
+        Script script;script.file.version=version;
+        for(int i=100;i<120;++i)script.words(0x82,100,uint16_t(i),1,0);
+        script.end();
+        dc4::MesVm vm(script.file);
+        for(int i=100;i<120;++i)vm.write_variable(100,uint16_t(i),1);
+        CHECK(vm.dc4_progress_awards()==0);
+        dc4::MesVmSnapshot before;CHECK(vm.capture_snapshot(&before));
+        messages(vm);CHECK(vm.dc4_progress_awards()==(version?0xFFFFFu:0));
+        Script next;next.end();CHECK(vm.bind(next.file));
+        CHECK(vm.dc4_progress_awards()==(version?0xFFFFFu:0));
+        vm.reset();CHECK(vm.dc4_progress_awards()==0);
+        CHECK(vm.bind(script.file));vm.write_variable(9,7,1);messages(vm);
+        CHECK(vm.dc4_progress_awards()==0);
+        CHECK(vm.bind(script.file));CHECK(vm.restore_snapshot(before));messages(vm);
+        const uint32_t earned=vm.dc4_progress_awards();
+        auto invalid=before;invalid.version=99;CHECK(!vm.restore_snapshot(invalid));
+        CHECK(vm.dc4_progress_awards()==earned);
+        CHECK(vm.restore_snapshot(before));CHECK(vm.dc4_progress_awards()==0);
+    }
+    Script arithmetic;arithmetic.file.version=0xABB6;
+    arithmetic.words(0x82,100,101,1,1);arithmetic.words(0x83,100,102,100,101);arithmetic.end();
+    dc4::MesVm vm(arithmetic.file);messages(vm);CHECK(vm.dc4_progress_awards()==0);
+}
+
 void variable_arithmetic() {
     Script script;
     script.words(0x82, 3, 5, 255, 0);
@@ -268,6 +294,7 @@ void malformed_scripts() {
 
 void snapshots() {
     Script script;
+    script.file.version = 0xAAB6;
     script.words(0x82, 3, 5, 42, 0);
     script.message("first");
     script.pair(0x09, 1, 0);
@@ -306,6 +333,22 @@ void snapshots() {
     CHECK(vm.capture_snapshot(&waiting));
     CHECK(waiting.waiting_for_choice && waiting.choices.size() == 2);
 
+    auto legacy_file = script.file;
+    legacy_file.version = uint32_t(legacy_file.code[0]) |
+        uint32_t(legacy_file.code[1]) << 8 | uint32_t(legacy_file.code[2]) << 16 |
+        uint32_t(legacy_file.code[3]) << 24;
+    dc4::MesVm legacy_vm(legacy_file);
+    dc4::MesVmSnapshot legacy;
+    CHECK(legacy_vm.capture_snapshot(&legacy));
+    auto legacy_waiting = waiting;
+    legacy_waiting.script_fingerprint = legacy.script_fingerprint;
+    CHECK(legacy_waiting.script_fingerprint != waiting.script_fingerprint);
+    CHECK(vm.restore_snapshot(legacy_waiting, &error));
+    CHECK(vm.pos() == waiting.pc && vm.waiting_for_choice());
+    dc4::MesVmSnapshot normalized;
+    CHECK(vm.capture_snapshot(&normalized));
+    CHECK(normalized.script_fingerprint == waiting.script_fingerprint);
+
     // Corrupt/incompatible input must not replace any part of live state.
     const auto reject_unchanged = [&](const dc4::MesVmSnapshot& invalid) {
         CHECK(!vm.restore_snapshot(invalid, &error));
@@ -320,6 +363,9 @@ void snapshots() {
     invalid.version = dc4::MesVmSnapshot::kVersion + 1;
     reject_unchanged(invalid);
     invalid = waiting;
+    invalid.script_fingerprint ^= 1;
+    reject_unchanged(invalid);
+    invalid = legacy_waiting;
     invalid.script_fingerprint ^= 1;
     reject_unchanged(invalid);
     invalid = waiting;
@@ -354,14 +400,17 @@ void snapshots() {
     copy.code[4] ^= 1;
     CHECK(other.bind(copy));
     CHECK(!other.restore_snapshot(waiting));
+    CHECK(!other.restore_snapshot(legacy_waiting));
     copy = script.file;
     copy.version ^= 1;
     CHECK(other.bind(copy));
     CHECK(!other.restore_snapshot(waiting));
+    CHECK(!other.restore_snapshot(legacy_waiting));
     copy = script.file;
     copy.labels.push_back({3, 0, 1});
     CHECK(other.bind(copy));
     CHECK(!other.restore_snapshot(waiting));
+    CHECK(!other.restore_snapshot(legacy_waiting));
 
     CHECK(vm.choose(0));
     CHECK(messages(vm) == (std::vector<std::string>{"left"}));
@@ -518,6 +567,7 @@ void chapter_corpus_smoke(const std::string& mes_dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    ending_awards();
     variable_arithmetic();
     dc2ty_variables_and_snapshot();
     conditional_scopes();

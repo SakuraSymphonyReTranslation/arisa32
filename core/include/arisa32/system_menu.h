@@ -95,6 +95,7 @@ public:
     bool load_profile(const std::string& path, std::string* error = nullptr);
     bool load_system_dat(const std::string& path, std::string* error = nullptr);
     bool save_profile(const std::string& path, std::string* error = nullptr) const;
+    bool profile_requires_save() const;
     void mark_cg_seen(const std::string& asset);
     void mark_music_seen(const std::string& asset);
     void mark_scene_seen(const std::string& script, const std::string& label = {});

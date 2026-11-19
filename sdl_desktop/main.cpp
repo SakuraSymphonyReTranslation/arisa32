@@ -723,6 +723,8 @@ int run(const Options& o) {
             else fprintf(stderr,"Profile: %s\n",err.c_str());
         } catch(const std::exception& e) { fprintf(stderr,"Profile: %s\n",e.what()); }
     };
+    profile_dirty=system_menu.profile_requires_save()||profile_dirty;
+    flush_profile();
     system_menu.bind_confirmations(global_confirm);
     system_menu.bind_confirmations(save_screen.confirm_dialog());
     system_menu.set_confirmation_changed_callback([&] { profile_dirty=true; flush_profile(); });

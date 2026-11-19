@@ -65,6 +65,7 @@ public:
     // System bank 99 holds host state; absent services read as zero.
     int32_t read_variable(uint16_t bank, uint16_t index) const;
     void write_variable(uint16_t bank, uint16_t index, int32_t value);
+    uint32_t dc4_progress_awards() const { return dc4_progress_awards_; }
 
     // Capture requires a bound, non-faulted VM. Restore requires the matching
     // script already bound; reset()+bind() first when loading an unrelated
@@ -93,6 +94,7 @@ private:
     bool transferring_ = false;
     bool ended_ = false;
     bool pending_button_action_ = false;
+    uint32_t dc4_progress_awards_ = 0;
 };
 
 }  // namespace dc4

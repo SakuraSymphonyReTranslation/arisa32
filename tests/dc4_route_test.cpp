@@ -231,6 +231,9 @@ void progression_branches(Scripts& scripts) {
         dc4::MesVm vm(ending);
         vm.seek_to_pc(flag_instruction(ending, 0x82, uint16_t(101 + last)));
         run_to_transfer(vm);
+        require(vm.dc4_progress_awards()==(1u<<(last+1)),"authored ending did not record its completion");
+        require(vm.bind(scripts.get("ed")),vm.error());
+        require(vm.dc4_progress_awards()==(1u<<(last+1)),"ending proof was lost on transfer");
         for (int i = 0; i < 8; ++i)
             require(vm.read_variable(100, uint16_t(101+i)) == int(i==last),
                     "ending awarded an unrelated completion");

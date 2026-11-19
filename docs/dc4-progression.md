@@ -65,21 +65,131 @@ The VM change applies to modern MES versions AAB6 and ABB6. Menu and restore
 policy use the existing DC4 scenario-catalogue identification. Other menu
 profiles keep their compatibility behavior.
 
-## Existing profiles
+## Automatic profile analysis (2026-11-19)
+
+DC4 and Plus Harmony now write `DC4ENGINE_PROFILE 2`. Its required `e` record
+stores eight confirmed heroine endings and the old progression bits that could
+not be verified. Raw slot variables cannot add confirmed endings. The VM records
+an award when it executes a modern script's bank-100 assignment of one, outside
+scene replay. The record survives script transfers; reset and successful snapshot
+restoration clear transient awards. Failed restoration leaves them unchanged.
+The global profile preserves endings already earned before an older slot is loaded.
+
+Legacy Android profiles are analyzed individually:
+
+- A clean ending flag needs its corresponding ending chapter in the profile's
+  scene history. Missing evidence leaves that flag unverified.
+- Flags 111 and 113-119 are not awarded by either installed game. Active values
+  identify the old default-unlock pollution. An all-eight-ending claim without
+  the required chapter history is also treated as polluted.
+- For a polluted profile, the menu parses each installed ending script and finds
+  its first transfer after the authored ending award. A recorded visit to a unique
+  continuation can recover that ending. The shared `ED` and replay `SCE_END`
+  destinations cannot identify which ending was completed.
+- Plus Harmony has recoverable continuations for Nino, Hiyori, Shiina, Miu,
+  Chiyoko and the second Arisu/Arisa ending. Original DC4 transfers straight to
+  shared credits, so its polluted profiles usually lack this recovery evidence.
+- Clean completed legacy profiles with all required chapter history, and validated
+  original PC `system.dat` imports, retain their completion. Older unverified
+  imports cannot overwrite confirmed progress.
+
+This cannot reconstruct information the old emulator never recorded. In an
+ambiguous polluted profile, an unverified ending must be completed again before
+it counts toward D.C. The unresolved bits remain in the profile rather than being
+discarded. Seeing the start of an ending chapter alone does not recover a polluted
+flag. A current prologue slot is also not evidence that global endings are absent.
+
+D.C. requires all eight confirmed endings and its authored unlock flag. The map
+requires the first four confirmed endings. Rendering, activation, confirmation,
+scene initialization, slot restoration and serialization use the validated values.
+The VM also records the authored D.C./map awards, so copied slot flags cannot
+reintroduce them through progress synchronization.
+
+Android saves a migrated/repaired profile after loading the existing read history;
+desktop flushes it at startup. Before replacing a version-1 profile, the engine
+keeps `system-profile.dat.v1-backup` (desktop: `profile.dc4profile.v1-backup`).
+Story slots, their companions, gallery/music/scene history and settings are retained.
+When sharing new saves, include their version-2 global profile to retain confirmed
+ending history.
+
+Regression coverage includes both installed datasets, clean partial/completed
+legacy profiles, all-one and sparse polluted profiles, recovery from post-ending
+continuations, replay, direct variable injection, save/restart, repeated imports,
+malformed verification records, CRLF profiles and invalid native completion bytes.
+Each actual ending script also verifies its runtime award and transfer persistence.
+The two original imported prologue saves load with their old fingerprints and stay
+locked after automatic profile migration and restoration of global progress.
+
+### Device verification of automatic migration
+
+The rebuilt arm64 APK was installed on the connected iQOO Z9x with `adb install -r`.
+The installed package was pulled back and its SHA-256 matched the build output:
+`3329c26c03193f583b61389d747b7f02687963675e9c9c2115507b4720f4b6ab`.
+It retains version 0.7.3/code 21 and the existing signing certificate.
+
+The user had imported another save set before installation. Its current profile
+had ones throughout 100-119, with unique Nino and Hiyori ending continuations.
+Launching Plus Harmony migrated it automatically to `DC4ENGINE_PROFILE 2`,
+with `e 5 1048565`: Nino/Hiyori confirmed, unresolved old bits retained, D.C.
+and map locked. No profile was pushed or manually edited on the phone. The title
+showed CONFIG followed by END, with no D.C. entry. Force-stopping, relaunching
+and launching the game again produced the same locked title and identical profile.
+
+Before installation, all 321 save-directory files were backed up. After startup,
+320 original files were byte-identical; only `system-profile.dat` changed, and
+the engine added its version-1 backup. That backup matches the original hash:
+`eab00864409eb9489e06a71e021ca2f5d9e52202cc598c609a17ecedc17aedd3`.
+The migrated profile and its restart copy both have SHA-256
+`d9e578a35ac5e2c26dfc1e1898832802254295f449d0ed6992c6857f20423a57`.
+
+All 64 native slots from this backup loaded through the rebuilt production core.
+Restoring validated global progress and syncing each slot kept Nino/Hiyori
+confirmed and D.C. locked, without changing its script, instruction position,
+current dialogue or bank-0..9 variables. This supplements the two original
+prologue imports rather than assuming every imported save has the same progress.
+
+`mesvm_test`, `scene_test`, `save_host_test`, `dc4_route_test` and
+`system_menu_test` passed. Both installed datasets exercised actual ending
+awards, transfers, profile migration and unlock guards. The desktop frontend
+and Android release build also succeeded. This is not a complete phone
+playthrough of all heroine routes.
+
+Selected phone evidence: [locked title after restart](dc4-automatic-title.png).
+The full backup, hash comparison and intermediate captures are in the task's
+Windows Temp directory, `arisa32-dc4ph-save-d882d91259b8460abe77a2584721c085`.
+
+- Functionality PASS: incomplete/imported profiles remain locked; confirmed
+  completed profiles and authored runtime awards pass the two-game regression suite.
+- Persistence PASS: phone migration and restart retain confirmed progress;
+  the old profile has an identical automatic backup.
+- Save preservation PASS: 320 other files are unchanged; all 64 native slots
+  retain their story state when validated global progress is applied.
+- Build and source PASS: desktop and Android builds succeed; the installed APK
+  matches the build hash. The requested guard uses existing scripts and artwork.
+
+## Historical manual repairs
 
 The user's 2026-11-06 clarification establishes that only Nino and Hiyori are
 complete on the phone, with Arisu in progress. The earlier claim in this document
 that the phone profile was 100% complete was incorrect. Native PC `system.dat`
 completion flags remain supported.
 
-Profiles with all eight fabricated ending flags cannot be reliably distinguished
-from genuinely completed profiles. The engine does not guess which endings to
-erase. The phone's profile contained ones throughout 100-119, matching the old
+Before automatic profile analysis was implemented, repair required the user's
+clarification because all-eight flags alone could not distinguish fabricated
+progress from completed endings. The phone's profile contained ones throughout
+100-119, matching the old
 default-unlock bug. Its targeted repair follows the user's stated progress:
 preserve 101 (Nino), 103 (Hiyori) and 110 (ending credits/Extra); clear 100,
 102, 104-109 and 112. Flag 109 is awarded at the end of the D.C. scenario, and
 112 requires all four initial heroines. Unrelated flags, seen assets, read lines
 and story slots are preserved. The full save directory is backed up first.
+
+On 2026-11-19 the user supplied a different, imported Plus Harmony save set
+whose story slots are still in the prologue. Its global profile also contained
+the old all-one flags 100-119. At the user's request, that profile was repaired
+by clearing this range, with its complete save directory backed up first.
+The actual phone title screen then showed D.C. locked. Details and preservation
+checks are in [dc4ph-legacy-save-compatibility.md](dc4ph-legacy-save-compatibility.md).
 
 ## Regression coverage
 
