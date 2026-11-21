@@ -21,8 +21,8 @@ struct MesChoice {
 // Engine-owned save data, deliberately independent of original adv32 saves.
 // Serialize fields explicitly; this C++ object's memory layout is not a format.
 struct MesVmSnapshot {
-    static constexpr uint32_t kVersion = 1;
-    uint32_t version = kVersion;
+    static constexpr uint32_t kVersion = 2;
+    uint32_t version = 1;
     uint64_t script_fingerprint = 0;
     uint32_t pc = 3;
     std::map<std::pair<uint16_t, uint16_t>, int32_t> variables;
@@ -31,6 +31,7 @@ struct MesVmSnapshot {
     bool ended = false;
     bool transferring = false;
     bool waiting_for_choice = false;
+    std::string family_name = "Takamura", given_name = "Atsuya";
 };
 
 class MesVm {
@@ -65,6 +66,10 @@ public:
     // System bank 99 holds host state; absent services read as zero.
     int32_t read_variable(uint16_t bank, uint16_t index) const;
     void write_variable(uint16_t bank, uint16_t index, int32_t value);
+    void reset_dalsegno_settings();
+    bool set_personal_names(const std::string& family, const std::string& given);
+    const std::string& family_name() const { return family_name_; }
+    const std::string& given_name() const { return given_name_; }
     uint32_t dc4_progress_awards() const { return dc4_progress_awards_; }
 
     // Capture requires a bound, non-faulted VM. Restore requires the matching
@@ -95,6 +100,7 @@ private:
     bool ended_ = false;
     bool pending_button_action_ = false;
     uint32_t dc4_progress_awards_ = 0;
+    std::string family_name_ = "Takamura", given_name_ = "Atsuya";
 };
 
 }  // namespace dc4

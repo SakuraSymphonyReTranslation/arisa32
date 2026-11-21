@@ -112,6 +112,9 @@ final class GameLibrary {
         String pathStr = dataRoot.getAbsolutePath().toLowerCase(Locale.ROOT);
         File parent = dataRoot.getParentFile();
         if (parent != null) pathStr += " " + parent.getName().toLowerCase(Locale.ROOT);
+        org.dc4engine.profile.DalSegnoProfile nativeDs = new org.dc4engine.profile.DalSegnoProfile();
+        if (org.dc4engine.profile.DalSegnoProfile.isInFuture(dataRoot, null)) return "D.S. i.F. -Dal Segno- in Future";
+        if (nativeDs.matches(dataRoot, null)) return nativeDs.getDisplayName();
 
         // 1. Content check for Plus Harmony (separate game from standard D.C.4)
         File exe1 = parent != null ? new File(parent, "DC4PHDL.exe") : null;

@@ -1,5 +1,8 @@
 # Dal Segno continuation validation
 
+Latest continuation: [21 November 2026 progress and remaining work](dalsegno-progress-2026-11-21.md).
+The results below describe the earlier 19 November session.
+
 Validation date: 2026-11-19. Active checkout: `E:\Games\Adv32roid`, branch
 `main`, based on `c3eb9b625ced963c11d870173e6f7bb3d0b0b061`.
 Dal Segno uses MES version `0x009F9A` and `MesProfileId::DalSegno`.

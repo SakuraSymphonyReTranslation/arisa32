@@ -29,6 +29,13 @@ public final class DalSegnoProfile implements GameProfile {
     @Override
     public boolean matches(File dataRoot, String pathLower) {
         if (dataRoot == null && pathLower == null) return false;
+        if (isInFuture(dataRoot, pathLower)) return false;
+        if (hasNativeScenario(dataRoot)) return true;
+        if (dataRoot != null) {
+            File mes = GameDataFiles.child(dataRoot, "MES");
+            if (!mes.isDirectory()) mes = GameDataFiles.child(GameDataFiles.child(dataRoot, "AdvData"), "MES");
+            if (GameDataFiles.child(mes, "main.mes").isFile()) return false;
+        }
         String p = pathLower != null ? pathLower : "";
         if (dataRoot != null) {
             String abs = dataRoot.getAbsolutePath().toLowerCase(Locale.ROOT);
@@ -83,39 +90,21 @@ public final class DalSegnoProfile implements GameProfile {
 
             // 1. Executable checks for Dal Segno
             if (parent != null && (new File(parent, "DSAO.exe").isFile() ||
-                                   new File(parent, "DSAO_directX_check.exe").isFile() ||
-                                   new File(parent, "DS.exe").isFile())) {
+                                   new File(parent, "DSAO_directX_check.exe").isFile())) {
                 return true;
             }
             if (new File(dataRoot, "DSAO.exe").isFile() ||
-                new File(dataRoot, "DSAO_directX_check.exe").isFile() ||
-                new File(dataRoot, "DS.exe").isFile()) {
+                new File(dataRoot, "DSAO_directX_check.exe").isFile()) {
                 return true;
             }
 
             // 2. MES scripts check (ds_*.mes or Dal Segno bytecode version 0x009F9A)
             if (mes.isDirectory()) {
-                File main = new File(mes, "main.mes");
-                if (main.isFile()) {
-                    try (RandomAccessFile in = new RandomAccessFile(main, "r")) {
-                        long count = Integer.toUnsignedLong(Integer.reverseBytes(in.readInt()));
-                        long te6 = 4 + count * 6;
-                        if (te6 + 3 <= in.length()) {
-                            in.seek(te6);
-                            int b0 = in.readUnsignedByte();
-                            int b1 = in.readUnsignedByte();
-                            int b2 = in.readUnsignedByte();
-                            if (b0 == 0x9A && b1 == 0x9F && b2 == 0x00) {
-                                return true;
-                            }
-                        }
-                    } catch (IOException ignored) {}
-                }
                 File[] mesFiles = mes.listFiles();
                 if (mesFiles != null) {
                     for (File mf : mesFiles) {
                         String mn = mf.getName().toLowerCase(Locale.ROOT);
-                        if (mn.startsWith("ds_") || mn.startsWith("ds0")) {
+                        if (mf.isFile() && mn.equals("ds_1129b_cm.mes")) {
                             return true;
                         }
                     }
@@ -159,12 +148,13 @@ public final class DalSegnoProfile implements GameProfile {
 
     @Override
     public int extractSlotNumber(String name) {
-        return NativeSaveFiles.slot(name, "DSAO", 3);
+        int slot = NativeSaveFiles.slot(name, "DSAO", 3);
+        return slot <= 97 ? slot : -1;
     }
 
     @Override
     public File resolveSlotSaveFile(File dir, int index) {
-        return NativeSaveFiles.resolve(dir, "DSAO", 3, index + 1);
+        return index >= 0 && index < 97 ? NativeSaveFiles.resolve(dir, "DSAO", 3, index + 1) : null;
     }
 
     @Override
@@ -179,17 +169,17 @@ public final class DalSegnoProfile implements GameProfile {
 
     @Override
     public File resolveAutoSaveFile(File dir) {
-        return dir == null ? null : Dc2PlusCommunicationProfile.child(dir, "DSAO00.dat");
+        return dir == null ? null : GameDataFiles.child(dir, "DSAO01.dat");
     }
 
     @Override
     public File[] resolveSaveFiles(File dir, int count) {
-        return NativeSaveFiles.resolveAll(dir, "DSAO", 3, count);
+        return Arrays.copyOf(NativeSaveFiles.resolveAll(dir, "DSAO", 3, Math.min(count, 97)), count + 1);
     }
 
     @Override
     public File saveTarget(File dir, int slot) {
-        return NativeSaveFiles.target(dir, "DSAO", 3, slot + 1);
+        return slot >= 0 && slot < 97 ? NativeSaveFiles.target(dir, "DSAO", 3, slot + 1) : null;
     }
 
     @Override
@@ -202,16 +192,6 @@ public final class DalSegnoProfile implements GameProfile {
         if (scriptName == null || scriptName.isEmpty()) return "";
         String sLower = scriptName.toLowerCase(Locale.ROOT);
         if (sLower.endsWith(".mes")) sLower = sLower.substring(0, sLower.length() - 4);
-        if (sLower.startsWith("ds_1129")) return "Prologue: Arrival at Kazana";
-        if (sLower.startsWith("ds_1130")) return "Prologue: Kazana Academy";
-        if (sLower.endsWith("_am")) return "Ame Route";
-        if (sLower.endsWith("_hm")) return "Himari Route";
-        if (sLower.endsWith("_hd")) return "Hazuki Route";
-        if (sLower.endsWith("_io")) return "Io Route";
-        if (sLower.endsWith("_ne")) return "Noeri Route";
-        if (sLower.endsWith("_me")) return "Mei Route";
-        if (sLower.endsWith("_cm")) return "Common Route";
-        if (sLower.equals("ed") || sLower.equals("med") || sLower.equals("ted")) return "Ending Roll";
         if (exeTitles != null) {
             String jp = exeTitles.get(sLower);
             if (jp != null && !jp.isEmpty()) {
@@ -223,6 +203,41 @@ public final class DalSegnoProfile implements GameProfile {
             }
         }
         return scriptName;
+    }
+
+    public static boolean isInFuture(File root, String titleOrPath) {
+        String query = titleOrPath == null ? "" : titleOrPath.toLowerCase(Locale.ROOT);
+        if (root != null) query += " " + root.getAbsolutePath().toLowerCase(Locale.ROOT);
+        if (query.contains("dsif") || query.contains("in future") || query.contains("d.s. i.f.") || query.contains("d.s.i.f.")) return true;
+        if (root == null) return false;
+        File data = GameDataFiles.child(root, "MES").isDirectory() ? root : GameDataFiles.child(root, "AdvData");
+        for (File directory : new File[]{data, data.getParentFile(), GameDataFiles.child(data, "MES")}) {
+            File[] entries = directory == null ? null : directory.listFiles();
+            if (entries == null) continue;
+            for (File entry : entries) {
+                String name = entry.getName().toLowerCase(Locale.ROOT);
+                if (entry.isFile() && (name.startsWith("dsif") || name.startsWith("ds_if")) && (name.endsWith(".exe") || name.endsWith(".mes"))) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasNativeScenario(File root) {
+        if (root == null) return false;
+        File mes = GameDataFiles.child(root, "MES");
+        if (!mes.isDirectory()) mes = GameDataFiles.child(GameDataFiles.child(root, "AdvData"), "MES");
+        return hasNativeVersion(GameDataFiles.child(mes, "main.mes")) &&
+            hasNativeVersion(GameDataFiles.child(mes, "DS_1129B_CM.mes"));
+    }
+
+    private static boolean hasNativeVersion(File script) {
+        try (RandomAccessFile in = new RandomAccessFile(script, "r")) {
+            long count = Integer.toUnsignedLong(Integer.reverseBytes(in.readInt()));
+            long versionOffset = 4 + count * 6;
+            if (count > 0x100000 || versionOffset + 3 > in.length()) return false;
+            in.seek(versionOffset);
+            return in.readUnsignedByte() == 0x9A && in.readUnsignedByte() == 0x9F && in.readUnsignedByte() == 0;
+        } catch (IOException ignored) { return false; }
     }
 
     @Override

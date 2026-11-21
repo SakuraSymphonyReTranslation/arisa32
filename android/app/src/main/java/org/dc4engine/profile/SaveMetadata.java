@@ -15,8 +15,9 @@ public final class SaveMetadata {
             int header = Integer.reverseBytes(in.readInt());
             boolean dm = in.length() == 0x3FE0 && header == 0x3FE1;
             boolean ty = in.length() == 0x2944 && header == 1;
-            if (dm || ty) {
-                in.seek(ty ? 0x1389 : 0x28D9);
+            boolean ds = in.length() == 0x11AF8;
+            if (dm || ty || ds) {
+                in.seek(ds ? 0x4566 : ty ? 0x1389 : 0x28D9);
                 int month = in.readUnsignedByte(), day = in.readUnsignedByte();
                 int hour = in.readUnsignedByte(), minute = in.readUnsignedByte();
                 int year = in.readUnsignedByte(), second = ty ? 0 : in.readUnsignedByte();

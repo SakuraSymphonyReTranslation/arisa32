@@ -276,6 +276,14 @@ void dal_segno_profile() {
     raw.op = 0x3A;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::LOAD_SLOT);
 
+    raw.kind = dc4::CmdKind::Param2;
+    raw.op = 0x0B;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::WAIT_INPUT);
+    raw.op = 0x12;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::UNKNOWN);
+    raw.op = 0x13;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::WAIT);
+
     raw.kind = dc4::CmdKind::Words4;
     raw.op = 0x64;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::PLAY_BGM);
@@ -283,6 +291,10 @@ void dal_segno_profile() {
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::PLAY_SE);
     raw.op = 0x66;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::CONTROL);
+    raw.op = 0x67;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::BUTTON_POSITION);
+    raw.op = 0x6D;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::CHIP_POSITION);
     raw.op = 0x6A;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::CHIP);
     raw.op = 0x75;

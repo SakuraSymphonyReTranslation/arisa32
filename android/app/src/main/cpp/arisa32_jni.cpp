@@ -143,7 +143,10 @@ void save_profile(Engine* e) {
     if (e->scene && e->scene->minigame_active()) e->menu.sync_progress(*e->scene);
     std::error_code ec;
     std::filesystem::create_directories(e->save_dir, ec);
-    e->menu.save_profile(e->save_dir + "/system-profile.dat");
+    if (e->scene && (e->scene->save_format_version() & 0xFFFF)==0x9F9A) {
+        std::string error;
+        if (!e->scene->save_dalsegno_profile(e->save_dir,&error)) LOGE("Dal Segno profile: %s",error.c_str());
+    } else e->menu.save_profile(e->save_dir + "/system-profile.dat");
     std::ofstream out(e->save_dir + "/read-lines.txt", std::ios::binary);
     for (const auto& key : e->read_lines) out << key << '\n';
 }
@@ -353,6 +356,7 @@ bool over_widget(Engine* e, int x, int y) {
 }
 
 std::string stopped_message(Engine* e) {
+    if (e->scene->quit_requested()) return "quit";
     if(e->scene->last_error().empty() && !e->scene->next_script().empty()) return {};
     return e->scene->last_error().empty() ? "End of scenario" : "Scene stopped: " + e->scene->last_error();
 }
@@ -964,6 +968,7 @@ void tick_engine(Engine* e) {
     if (!e->in_game) return;
     e->scene->update(elapsed);
     if (e->scene->script_ready()) advance_scene(e);
+    if (e->scene->quit_requested()) return;
     if (e->scene->scene_ended() && e->scene->last_error().empty()) {
         auto target = e->scene->next_script();
         std::transform(target.begin(),target.end(),target.begin(),[](unsigned char c){return char(std::tolower(c));});
@@ -1035,6 +1040,14 @@ Java_org_dc4engine_Arisa32Activity_dc4ConfigureDisplay(JNIEnv*, jobject, jint fo
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_dir) {
     if (g_engine) return JNI_TRUE;
+    const auto requested_data = jstr_to_std(env, data_dir);
+    dc4::MesFile requested_main;
+    if (dc4::is_dalsegno_in_future_game(requested_data) ||
+        (requested_main.load_file(requested_data + "/MES/main.mes") &&
+         (requested_main.version & 0xFFFF) == 0x9F9A && !dc4::is_dalsegno_game(requested_data))) {
+        LOGE("game requires a separate profile; cannot initialize it as Dal Segno: %s", requested_data.c_str());
+        return JNI_FALSE;
+    }
     // Emulate Japanese system environment (Locale Emulator)
     std::setlocale(LC_ALL, "ja_JP.UTF-8");
     setenv("LANG", "ja_JP.UTF-8", 1);
@@ -1163,7 +1176,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     };
     const bool dc2dm_read_history = e->menu.is_dc2dm();
     if (dc2dm_read_history) load_read_lines();
-    if (!e->save_dir.empty() && (imported_pc_progress || !std::filesystem::exists(e->save_dir + "/system-profile.dat"))) {
+    if (menu_ok && !e->save_dir.empty() && (imported_pc_progress || !std::filesystem::exists(e->save_dir + "/system-profile.dat"))) {
         save_profile(e);
     }
     if (!dc2dm_read_history) load_read_lines();
@@ -1216,6 +1229,19 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         return JNI_FALSE;
     }
     e->scene->set_auto_save_path(dc4::auto_save_target(e->save_dir,e->scene->save_format_version()).string());
+    if ((e->scene->save_format_version() & 0xFFFF)==0x9F9A) {
+        const auto parent=std::filesystem::path(e->data_dir).parent_path().string();
+        for (const auto& directory:{parent,e->data_dir,e->save_dir}) {
+            for (const auto& suffix:{"/savedata/system.dat","/system.dat"}) {
+                const auto path=dc4::resolve_asset(directory+suffix);
+                if (std::filesystem::is_regular_file(path) && !e->scene->load_dalsegno_system(path,&err)) LOGE("Dal Segno system: %s",err.c_str());
+            }
+        }
+        for (const auto& directory:{e->data_dir,e->save_dir}) {
+            const auto path=directory+"/system-profile.dat";
+            if (std::filesystem::is_regular_file(path) && !e->scene->load_dalsegno_profile(path,&err)) LOGE("Dal Segno profile: %s",err.c_str());
+        }
+    }
     if (menu_ok) {
         apply_config(e);
         const auto startup = e->menu.startup_movie();
@@ -1260,12 +1286,22 @@ Java_org_dc4engine_Dc4Activity_dc4Quit(JNIEnv* env, jobject) {
     destroy_engine(env);
 }
 
+static bool resume_dalsegno_config(Engine* e) {
+    if (!e || !e->scene || !e->scene->resume_dalsegno_config()) return false;
+    begin_line(e); e->tick = Clock::now();
+    return true;
+}
 JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Dc4Activity_dc4OpenMenu(JNIEnv* env,jobject,jstring name) {
     Engine* e = g_engine;
     if (!e) return env->NewStringUTF("Engine is not running");
     if (e->presentation.active()) return env->NewStringUTF("");
     const auto page = jstr_to_std(env,name);
+    if (e->scene && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A && page == "config") {
+        if (!e->scene->open_dalsegno_config()) return env->NewStringUTF(e->scene->last_error().c_str());
+        begin_line(e);
+        return env->NewStringUTF("");
+    }
     if (page == "back" && e->confirm.active()) {
         answer_confirm(e, false);
         return env->NewStringUTF("");
@@ -1477,14 +1513,20 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
         return env->NewStringUTF("");
     }
     e->scene->set_pointer(x, y, action == 0 || (action == 2 && e->pointer_down));
+    if (action == 0) e->pointer_down = true;
     std::string slider_action;
     if (e->scene->handle_slider_touch(action, x, y, &slider_action)) {
+        if (action == 1 || action == 3) {
+            e->pointer_down = false;
+            e->scene->set_pointer(-1, -1, false);
+        }
         if (!slider_action.empty()) {
             if (e->scene->has_label(slider_action)) {
                 e->scene->jump_to_label(slider_action);
                 advance_scene(e);
             }
         }
+        if (action==1 && (e->scene->save_format_version() & 0xFFFF)==0x9F9A) save_profile(e);
         e->pressed_action.clear();
         e->pressed_widget = false;
         e->pressed_choice = -1;
@@ -1525,7 +1567,9 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
             if (*tag == ":disabled") {
                 // Consume disabled toolbar taps without advancing the scene or
                 // reporting an unsupported shell action.
-            } else if (*tag == ":voice" || *tag == ":torisetu") {
+            } else if (e->scene->handle_dalsegno_action(*tag)) {
+                begin_line(e);
+            } else if (*tag == ":voice" || *tag == ":torisetu" || *tag == ":t") {
                 message = e->scene->replay_voice() ? ":voice" : "No voice on this line";
             } else if (*tag == ":sidebar") {
                 e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
@@ -1540,21 +1584,24 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
                        *tag == ":aaqsave" || *tag == ":aaskip" || *tag == ":qsave" ||
                        *tag == ":full" || *tag == ":menu" || *tag == ":change" ||
                        *tag == ":sidebarclose" || *tag == ":sidebarwin" ||
-                       *tag == ":up" || *tag == ":down" || *tag == ":aalog") {
+                       *tag == ":up" || *tag == ":down" || *tag == ":aalog" ||
+                       *tag == ":aawin_size" || *tag == ":namegiven" || *tag == ":namefamily" || *tag == ":nameedit") {
                 // Shell-level actions (auto/skip/backlog/save UI) dispatch in Java.
                 e->pressed_action.clear();
                 e->pressed_widget = false;
                 e->pressed_choice = -1;
                 return env->NewStringUTF(tag->c_str());
             } else if (!tag->empty() && (*tag)[0] != ':') {
-                if (*tag == "end" || *tag == "quit") {
+                if ((*tag == "end" || *tag == "quit") &&
+                        (e->scene->save_format_version() & 0xFFFF) != 0x9F9A) {
                     e->pressed_action.clear();
                     e->pressed_widget = false;
                     e->pressed_choice = -1;
                     return env->NewStringUTF("quit");
+                } else if (*tag == e->scene->dalsegno_back_action() && resume_dalsegno_config(e)) {
                 } else if (e->scene->has_label(*tag)) {
-                    e->scene->jump_to_label(*tag);
-                    advance_scene(e);
+                    const std::string target = *tag;
+                    if (e->scene->jump_to_label(target) && !advance_scene(e)) message = stopped_message(e);
                 } else {
                     std::string p = e->data_dir + "/MES/" + *tag + ".mes";
                     if (e->scene->load_script(p)) {
@@ -1573,6 +1620,10 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
     e->pressed_action.clear();
     e->pressed_widget = false;
     e->pressed_choice = -1;
+    if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A) {
+        e->scene->set_pointer(-1, -1, false);
+        save_profile(e);
+    }
     return env->NewStringUTF(message.c_str());
 }
 
@@ -1588,6 +1639,7 @@ Java_org_dc4engine_Dc4Activity_dc4SetPaused(JNIEnv* env, jobject, jboolean pause
     e->pressed_choice = -1;
     e->scene->set_pointer(-1, -1, false);
     e->scene->minigame_pointer(3, -1, -1);
+    e->scene->handle_slider_touch(3, -1, -1);
     e->menu.cancel_pointer(); e->menu_down = false;
     e->save_screen.cancel_pointer(); e->save_down = false;
     if(paused){answer_confirm(e,false);e->menu.answer_confirmation(false);e->save_screen.cancel_confirm();}
@@ -1654,7 +1706,7 @@ Java_org_dc4engine_Dc4Activity_dc4Status(JNIEnv* env, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene) return env->NewStringUTF("0;0;0;0;1;0;1");
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "%zu;%d;%d;%d;%d;%d;%d;%d;%d",
+    std::snprintf(buf, sizeof(buf), "%zu;%d;%d;%d;%d;%d;%d;%d;%d;%d",
                   e->line_serial,
                   e->scene->waiting_for_choice() ? 1 : 0,
                   e->scene->voice_playing() ? 1 : 0,
@@ -1663,7 +1715,8 @@ Java_org_dc4engine_Dc4Activity_dc4Status(JNIEnv* env, jobject) {
                   e->scene->message_visible() ? 1 : 0,
                   e->scene->scene_ended() ? 1 : 0,
                   e->scene->reviewing_dialogue() ? 1 : 0,
-                  e->scene->sidebar_visible() ? 1 : 0);
+                  e->scene->sidebar_visible() ? 1 : 0,
+                  e->scene->quit_requested() ? 1 : 0);
     return env->NewStringUTF(buf);
 }
 
@@ -2148,6 +2201,17 @@ Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, 
         e->tick=Clock::now(); return env->NewStringUTF("close");
     }
     if (backlog) { e->tick=Clock::now(); return env->NewStringUTF("close"); }
+    const auto ds_back = e->scene->dalsegno_back_action();
+    if (!ds_back.empty()) {
+        if (resume_dalsegno_config(e)) return env->NewStringUTF("");
+        if (e->scene->handle_dalsegno_action(ds_back)) { save_profile(e); return env->NewStringUTF(""); }
+        if (ds_back == ":nameedit") return env->NewStringUTF(":nameedit");
+        e->pointer_down = false;
+        e->scene->handle_slider_touch(3, -1, -1);
+        e->scene->set_pointer(-1, -1, false);
+        if (e->scene->jump_to_label(ds_back)) advance_scene(e);
+        return env->NewStringUTF("");
+    }
     if (e->menu_open) {
         const auto before = e->menu.page();
         const auto result = menu_action(e,e->menu.back());
@@ -2163,6 +2227,42 @@ Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, 
         e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
     }
     return env->NewStringUTF("");
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4NamePending(JNIEnv*, jobject) {
+    Engine* e = g_engine;
+    return e && e->scene && !e->paused && e->scene->dalsegno_name_pending() && !e->scene->dalsegno_name_confirming();
+}
+JNIEXPORT jobjectArray JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4NameValues(JNIEnv* env, jobject) {
+    Engine* e = g_engine;
+    if (!e || !e->scene || !e->scene->dalsegno_name_pending()) return nullptr;
+    jclass string_class = env->FindClass("java/lang/String");
+    jobjectArray result = env->NewObjectArray(2, string_class, nullptr);
+    env->DeleteLocalRef(string_class);
+    int index = 0;
+    for (const auto* value : {&e->scene->dalsegno_family_name(), &e->scene->dalsegno_given_name()}) {
+        const auto text = dc4scene::sjis_to_utf16(*value);
+        jstring field = env->NewString(reinterpret_cast<const jchar*>(text.data()), jsize(text.size()));
+        env->SetObjectArrayElement(result, index++, field); env->DeleteLocalRef(field);
+    }
+    return result;
+}
+JNIEXPORT jboolean JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4SetName(JNIEnv* env, jobject, jbyteArray family, jbyteArray given, jboolean confirm) {
+    Engine* e = g_engine;
+    if (!e || !e->scene || !family || !given) return false;
+    const auto bytes = [env](jbyteArray array) {
+        const jsize size = env->GetArrayLength(array);
+        if (size < 1 || size > 19) return std::string{};
+        std::string result(size, '\0');
+        env->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte*>(result.data()));
+        return result;
+    };
+    if (!e->scene->set_dalsegno_name(bytes(family), bytes(given))) return false;
+    const bool accepted=!confirm || e->scene->handle_dalsegno_action(":nameconfirm");
+    if (accepted) save_profile(e);
+    return accepted;
 }
 JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, jint x, jint y) {

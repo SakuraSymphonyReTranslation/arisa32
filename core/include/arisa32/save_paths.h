@@ -49,7 +49,7 @@ inline int save_slot_number(const std::string& filename, uint32_t version) {
         if(logical<4)return -1;
         logical-=3;
     } else if(native)logical-=2;
-    return logical>=0 && logical<=100 ? logical : -1;
+    return logical>=0 && logical<=((version & 0xFFFF)==0x9F9A ? 97 : 100) ? logical : -1;
 }
 inline std::filesystem::path save_target(const std::filesystem::path& directory, uint32_t version, int logical) {
     const auto prefix=native_save_prefix(version);
@@ -96,7 +96,8 @@ inline std::filesystem::path latest_save(const std::filesystem::path& directory,
         const int slot=save_slot_number(filename,version);
         if(slot<1 && !(version==0x9969 && save_lower(filename)=="dc2pc01.dat") &&
            !(version==0x5F69 && save_lower(filename)=="dc2ty01.dat") &&
-           !(version==0x9D72 && save_lower(filename)=="dc2dm03.dat"))continue;
+           !(version==0x9D72 && save_lower(filename)=="dc2dm03.dat") &&
+           !((version & 0xFFFF)==0x9F9A && save_lower(filename)=="dsao00.dat"))continue;
         if(slot<1) {native[0]=i->path();continue;}
         (save_lower(i->path().extension().string())==".dat"?native:legacy)[slot]=i->path();
     }
@@ -111,11 +112,12 @@ inline std::filesystem::path latest_save(const std::filesystem::path& directory,
     return result;
 }
 inline std::filesystem::path auto_save_target(const std::filesystem::path& directory, uint32_t version) {
-    if(version==0x9D72) {
+    if(version==0x9D72 || (version & 0xFFFF)==0x9F9A) {
+        const std::string name=(version & 0xFFFF)==0x9F9A ? "DSAO01.dat" : "DC2DM02.dat";
         std::error_code ec;
         for(std::filesystem::directory_iterator i(directory,ec),end;!ec&&i!=end;i.increment(ec))
-            if(i->is_regular_file(ec)&&save_lower(i->path().filename().string())=="dc2dm02.dat")return i->path();
-        return directory/"DC2DM02.dat";
+            if(i->is_regular_file(ec)&&save_lower(i->path().filename().string())==save_lower(name))return i->path();
+        return directory/name;
     }
     return directory/"autosave.dc4sav";
 }

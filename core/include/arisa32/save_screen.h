@@ -51,6 +51,8 @@ public:
     bool dc2pc() const { return dc2pc_; }
     bool dc2ty() const { return dc2ty_; }
     bool dc2dm() const { return dc2dm_; }
+    bool dalsegno() const { return dalsegno_; }
+    int slot_count() const { return dalsegno_ ? 97 : kSlotCount; }
     int selected_icon() const { return selected_icon_; }
     bool choosing_icon() const { return choosing_icon_; }
     void set_special_slots(const SaveSlot& quick, const SaveSlot& latest, const SaveSlot& automatic = {}) {
@@ -102,6 +104,8 @@ private:
                    const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     void draw_dc2dm(const std::vector<SaveSlot>& slots, int x, int y, bool down,
                    const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
+    void draw_dalsegno(const std::vector<SaveSlot>& slots, int x, int y, bool down,
+                      const dc4scene::FontRenderer& font, std::vector<uint8_t>* frame) const;
     int dc2pc_slot_index(int visible) const;
     int dc2dm_slot_index(int visible) const;
     int icon_hit(int x, int y) const;
@@ -110,7 +114,7 @@ private:
     SaveMode mode_ = SaveMode::Save;
     int page_ = 0;
     bool loaded_ = false;
-    bool dc2pc_ = false, dc2ty_ = false, dc2dm_ = false, choosing_icon_ = false;
+    bool dc2pc_ = false, dc2ty_ = false, dc2dm_ = false, dalsegno_ = false, choosing_icon_ = false;
     int selected_icon_ = -1, pressed_icon_ = -1;
     SaveSlot quick_slot_, latest_slot_, auto_slot_;
     bool latest_ = false, automatic_ = false, quick_ = false;

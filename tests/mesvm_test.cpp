@@ -326,7 +326,7 @@ void snapshots() {
     CHECK(vm.next(&command) && command.str == "first");
     CHECK(vm.capture_snapshot(&running, &error));
     CHECK(error.empty());
-    CHECK(running.version == dc4::MesVmSnapshot::kVersion);
+    CHECK(running.version == 1);
     CHECK(running.variables.at({uint16_t(3), uint16_t(5)}) == 42);
     CHECK(messages(vm).empty());
     CHECK(vm.waiting_for_choice());

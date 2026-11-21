@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 
 #include "arisa32/crm.h"
@@ -184,6 +185,8 @@ bool LogScreen::load(const std::string& data_dir) {
     back_={};chip_={};
     dc4::MesFile main;
     dc2dm_=main.load_file(data_dir+"/MES/main.mes") && main.dialect==dc4::MesDialect::ClassicDM;
+    dalsegno_ = dc4::is_dalsegno_game(data_dir);
+    if ((main.version & 0xFFFF) == 0x9F9A && !dalsegno_) return false;
     dc2dm_text_rgb_ = 0xC8A0DC;
     dc2dm_selected_rgb_ = 0xFFFFFF;
     dc2dm_selected_reverse_ = 0;
@@ -203,8 +206,8 @@ bool LogScreen::load(const std::string& data_dir) {
             }
         }
     }
-    if (!read_crx(data_dir, dc2dm_ ? "LOG_BACK.CRX" : "BKLOGBACK.CRX", &back_)) return false;
-    if (!read_crx(data_dir, dc2dm_ ? "LOG_CHIP.CRX" : "BKLOGCHIP.CRX", &chip_)) {back_={};return false;}
+    if (!read_crx(data_dir, dalsegno_ ? "LOGBACK.CRX" : dc2dm_ ? "LOG_BACK.CRX" : "BKLOGBACK.CRX", &back_)) return false;
+    if (!read_crx(data_dir, dalsegno_ ? "LOGCHIP.CRX" : dc2dm_ ? "LOG_CHIP.CRX" : "BKLOGCHIP.CRX", &chip_)) {back_={};return false;}
     face_names_.clear();
     for (const auto& entry : kFaceNames)
         face_names_.push_back(dc4scene::sjis_to_utf16(entry.sjis));
@@ -324,6 +327,7 @@ void LogScreen::draw(const std::vector<LogRow>& rows, int scroll, bool thumbnail
                      int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
                      std::vector<uint8_t>* frame) {
     if (!loaded() || !frame || frame->size()!=size_t(dc4scene::kScreenW)*dc4scene::kScreenH*4) return;
+    if(dalsegno_) {draw_dalsegno(rows,scroll,mouse_x,mouse_y,font,frame);return;}
     if(dc2dm_) {draw_dc2dm(rows,scroll,mouse_x,mouse_y,font,frame);return;}
     // Opaque full-screen background: title, rules, track and arrows are baked in.
     blit(back_, 0, 0, back_.w, back_.h, 0, 0, frame);
@@ -404,12 +408,13 @@ void LogScreen::draw(const std::vector<LogRow>& rows, int scroll, bool thumbnail
 }
 
 bool LogScreen::back_hit(int x, int y) const {
+    if (dalsegno_) return x >= 1200 && x < 1270 && y >= 635 && y < 710;
     if (dc2dm_) return dm_hit(x, y, 936, 504, 84, 68);
     return x >= 1100 && x < 1216 && y >= 672 && y < 712;
 }
 
 bool LogScreen::checkbox_hit(int x, int y) const {
-    if(dc2dm_)return false;
+    if(dc2dm_ || dalsegno_)return false;
     return x >= 327 && x < 666 && y >= 38 && y < 76;
 }
 
@@ -425,6 +430,7 @@ static int row_at(int x, int y, int scroll, size_t row_count, int dy0, int dy1) 
 }
 
 int LogScreen::jump_hit(int x, int y, int scroll, size_t row_count) const {
+    if(dalsegno_) return dalsegno_row_hit(x,y,scroll,row_count,false);
     if(dc2dm_) {
         return row_count && dm_hit(x, y, 28, 66, 160, 48)
             ? std::clamp(scroll, 0, last_scroll(row_count)) : -1;
@@ -433,6 +439,7 @@ int LogScreen::jump_hit(int x, int y, int scroll, size_t row_count) const {
 }
 
 int LogScreen::voice_hit(int x, int y, int scroll, size_t row_count) const {
+    if(dalsegno_) return dalsegno_row_hit(x,y,scroll,row_count,true);
     if(dc2dm_) {
         return dm_row_at(x, y, scroll, row_count);
     }
@@ -446,6 +453,7 @@ int LogScreen::thumb_y(size_t row_count, int scroll) {
 }
 
 bool LogScreen::thumb_hit(int x, int y, int scroll, size_t row_count) const {
+    if (dalsegno_) return row_count > 5 && x >= 1108 && x < 1152 && y >= 78 && y < 697;
     if (dc2dm_) return row_count > 4 && dm_hit(x, y, 944, 114, 40, 330);
     if (row_count <= kVisibleRows || x < 1222 || x >= 1266) return false;
     const int ty = thumb_y(row_count, scroll);
@@ -453,6 +461,7 @@ bool LogScreen::thumb_hit(int x, int y, int scroll, size_t row_count) const {
 }
 
 int LogScreen::thumb_scroll(int y, size_t row_count) const {
+    if (dalsegno_) return std::clamp(int(std::lround((y - 93) * last_scroll(row_count) / 588.0)), 0, last_scroll(row_count));
     if (row_count <= kVisibleRows) return 0;
     if (dc2dm_) return std::clamp((y * 4 / 5 - 114) * (int(row_count) - 1) / 330, 0, last_scroll(row_count));
     const int offset = (y - kTopY) * int(row_count) / 582;
@@ -478,6 +487,51 @@ void LogScreen::select_at(int x, int y, int scroll, size_t row_count) {
     const int row = dm_row_at(x, y, scroll, row_count);
     if (row >= 0)
         dc2dm_selected_reverse_ = std::min(visible_rows(), int(row_count) - scroll) - 1 - (row - scroll);
+}
+
+int LogScreen::dalsegno_row_hit(int x, int y, int scroll, size_t count, bool voice) const {
+    if (x < (voice ? 208 : 0) || x >= (voice ? 272 : 148)) return -1;
+    for (int slot = 0; slot < 5 && scroll + slot < int(count); ++slot) {
+        const int top = 75 + slot * 125;
+        if (scroll + slot >= 0 && y >= top + 32 && y < top + 82) return scroll + slot;
+    }
+    return -1;
+}
+
+void LogScreen::draw_dalsegno(const std::vector<LogRow>& rows, int scroll,
+                              int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
+                              std::vector<uint8_t>* frame) {
+    scroll = std::clamp(scroll,0,last_scroll(rows.size()));
+    blit(back_,0,0,back_.w,back_.h,0,0,frame);
+    for (int slot = 0; slot < 5 && scroll + slot < int(rows.size()); ++slot) {
+        const auto& row = rows[size_t(scroll + slot)];
+        const int top = 75 + slot * 125;
+        draw_text(font,row.name,150,top + 26,frame,22);
+        std::u16string line;
+        int baseline = top + 34;
+        const auto flush = [&] {draw_text(font,line,310,baseline,frame,22); line.clear(); baseline += 28;};
+        for (char16_t ch : row.text) {
+            if (ch == u'\r') continue;
+            if (ch == u'\n') {flush(); if (baseline > top + 105) break; continue;}
+            line += ch;
+            if (font.text_width(line,22) > 735) {
+                size_t split = line.find_last_of(u' ');
+                if (split == std::u16string::npos || split == 0) split = line.size()-1;
+                const auto tail = line.substr(split + (line[split] == u' ' ? 1 : 0));
+                line.resize(split); flush(); line = tail;
+                if (baseline > top + 105) {line.clear();break;}
+            }
+        }
+        if (!line.empty()) flush();
+        const bool jump = jump_hit(mouse_x,mouse_y,scroll,rows.size()) == scroll + slot;
+        blit(chip_,0,jump ? 48 : 0,145,48,0,top + 32,frame);
+        if (!row.voice.empty()) blit(chip_,148,0,64,50,208,top + 32,frame);
+    }
+    blit(chip_,back_hit(mouse_x,mouse_y) ? 48 : 0,103,45,37,1215,654,frame);
+    if (rows.size() > 5) {
+        const int center = 93 + int(588.0 * scroll / last_scroll(rows.size()));
+        blit(chip_,216,thumb_hit(mouse_x,mouse_y,scroll,rows.size()) ? 32 : 0,30,30,1115,center-15,frame);
+    }
 }
 
 void LogScreen::select_top(int scroll, size_t row_count) {

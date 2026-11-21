@@ -35,7 +35,7 @@ final class FloatingNavigationChecks {
     }
 
     int run() throws Exception {
-        for (String profile : new String[]{"dc4", "dc4ph", "dc2pc", "dc2dm"}) verify(profile);
+        for (String profile : new String[]{"dc4", "dc4ph", "dc2pc", "dc2dm", "dal_segno"}) verify(profile);
         settings();
         ui(() -> { navigation.dispose(); activity.finish(); });
         return checks;
@@ -60,7 +60,8 @@ final class FloatingNavigationChecks {
             set("gameLayout", layout); set("navigation", null);
             activity.setContentView(root);
             createControls();
-            check((back != null) == (profile.equals("dc2pc") || profile.equals("dc2dm")), "profile button policy " + profile);
+            check((back != null) == (profile.equals("dc2pc") || profile.equals("dc2dm") || profile.equals("dal_segno")), "profile button policy " + profile);
+            if(profile.equals("dal_segno")) check(back.getContentDescription().toString().contains("Upper menu"), "Dal Segno upper menu label");
         });
         host.waitForIdleSync();
         ui(() -> {

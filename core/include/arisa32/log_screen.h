@@ -58,8 +58,8 @@ public:
     bool thumb_hit(int x, int y, int scroll, size_t row_count) const;
     static int thumb_y(size_t row_count, int scroll);
     int scroll_button(int x, int y, int scroll, size_t row_count) const;
-    int visible_rows() const { return kVisibleRows; }
-    int row_pitch() const { return dc2dm_ ? 166 : kRowPitch; }
+    int visible_rows() const { return dalsegno_ ? 5 : kVisibleRows; }
+    int row_pitch() const { return dalsegno_ ? 125 : dc2dm_ ? 166 : kRowPitch; }
     int last_scroll(size_t row_count) const {
         return std::max(0, int(row_count) - visible_rows());
     }
@@ -80,6 +80,10 @@ public:
                                                 const dc4scene::FontRenderer* font = nullptr);
 
 private:
+    void draw_dalsegno(const std::vector<LogRow>& rows, int scroll,
+                       int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
+                       std::vector<uint8_t>* frame);
+    int dalsegno_row_hit(int x, int y, int scroll, size_t count, bool voice) const;
     void draw_dc2dm(const std::vector<LogRow>& rows, int scroll,
                     int mouse_x, int mouse_y, const dc4scene::FontRenderer& font,
                     std::vector<uint8_t>* frame);
@@ -96,6 +100,7 @@ private:
     std::vector<std::pair<std::u16string, int>> alias_names_;
     bool latin_mode_ = false;
     bool dc2dm_ = false;
+    bool dalsegno_ = false;
     uint32_t dc2dm_text_rgb_ = 0xC8A0DC;
     uint32_t dc2dm_selected_rgb_ = 0xFFFFFF;
     int dc2dm_selected_reverse_ = 0;

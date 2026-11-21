@@ -699,14 +699,17 @@ int run(const Options& o) {
     if (!load_font(&font, o.font, data)) {
         fprintf(stderr, "A Japanese font is required. Install MS Gothic or pass --font FILE.\n"); return 1;
     }
-    if (!system_menu.load(data, &err)) { fprintf(stderr, "System menus: %s\n", err.c_str()); return 1; }
+    const bool scripted_dalsegno = dc4::is_dalsegno_game(data);
+    if (!system_menu.load(data, &err) && !scripted_dalsegno) {
+        fprintf(stderr, "System menus: %s\n", err.c_str()); return 1;
+    }
     auto active_save_version = [&]() -> uint32_t {
         if (system_menu.is_dc2ty()) return 0x5F69;
         return scene ? scene->save_format_version() : 0;
     };
     const fs::path profile_dir = save_directory(data);
     const bool profile_allowed = engine_save_directory_allowed(profile_dir,data);
-    if (profile_allowed && fs::is_regular_file(profile_dir / "profile.dc4profile"))
+    if (system_menu.loaded() && profile_allowed && fs::is_regular_file(profile_dir / "profile.dc4profile"))
         if (!system_menu.load_profile((profile_dir / "profile.dc4profile").string(), &err))
             fprintf(stderr,"Profile: %s\n",err.c_str());
     if (system_menu.is_dc2ty()) {
@@ -721,7 +724,7 @@ int run(const Options& o) {
         }
     }
     auto flush_profile = [&]() {
-        if (!profile_dirty || !o.shot.empty() || !profile_allowed) return;
+        if (!system_menu.loaded() || !profile_dirty || !o.shot.empty() || !profile_allowed) return;
         try {
             fs::create_directories(profile_dir);
             if (system_menu.save_profile((profile_dir / "profile.dc4profile").string(),&err)) profile_dirty=false;
@@ -738,9 +741,11 @@ int run(const Options& o) {
         if (system_menu.sync_progress(*scene)) profile_dirty=true;
     };
     auto observe = [&](const dc4::MesCommand& c,const std::string& script) {
+        if (!system_menu.loaded()) return;
         system_menu.observe(c,script); profile_dirty=true;
     };
     auto apply_settings = [&]() {
+        if (scripted_dalsegno) return;
         const auto cfg=system_menu.config();
         audio.engine.set_master_volume(cfg.master_enabled?cfg.master_volume:0);
         audio.engine.set_user_volume(dc4::AudioGroup::Bgm,cfg.music_enabled?cfg.music_volume:0);
@@ -783,17 +788,27 @@ int run(const Options& o) {
                            const std::vector<uint8_t>& presentation = {},
                            bool retain_title_music = false) -> std::unique_ptr<dc4scene::SceneRunner> {
         auto rebuilt = std::make_unique<dc4scene::SceneRunner>(data);
+        rebuilt->set_use_system_menu(system_menu.loaded());
         rebuilt->set_debug(o.debug || std::getenv("DC4_DEBUG"));
         rebuilt->set_font(&font);
         rebuilt->set_observer(observe);
         if (audio_ready) rebuilt->set_audio(&audio.engine, &voices);
         if (!rebuilt->load_sheets(data + "/MES/start.mes") ||
-            !rebuilt->load_ui_script(data + "/MES/" + system_menu.scene_ui_script()) ||
+            !rebuilt->load_ui_script(data + "/MES/" + (scripted_dalsegno ? "start.mes" : system_menu.scene_ui_script())) ||
             !rebuilt->load_script(script_path(data, scene_name), entry)) {
             fprintf(stderr, "Scene initialization failed: %s\n", rebuilt->last_error().c_str());
             return nullptr;
         }
-        system_menu.initialize_scene(*rebuilt,replay);
+        if (system_menu.loaded()) system_menu.initialize_scene(*rebuilt,replay);
+        if (scripted_dalsegno && line == 0) {
+            rebuilt->set_animation_enabled(animate_last);
+            rebuilt->advance_to_next_text();
+            if (!rebuilt->last_error().empty()) {
+                fprintf(stderr, "Scene initialization failed: %s\n", rebuilt->last_error().c_str());
+                return nullptr;
+            }
+            return rebuilt;
+        }
         if (!presentation.empty() && rebuilt->seed_dc2dm_presentation(presentation))
             rebuilt->set_variable(99,12,system_menu.variable(99,12));
         if (retain_title_music) rebuilt->seed_dc2dm_bgm(system_menu.title_music());
@@ -826,6 +841,15 @@ int run(const Options& o) {
             fprintf(stderr, "Cannot open movie '%s': %s\n", o.movie.c_str(), err.c_str());
             return 1;
         }
+    } else if (scripted_dalsegno) {
+        scene = build_scene(o.scene.empty() ? "main.mes" : o.scene, o.line,
+                            o.shot.empty() || o.effect_ms >= 0, &backlog);
+        if (!scene) return 1;
+        if (o.config || o.panel == "config") {
+            if (!scene->jump_to_label("config")) return 1;
+            scene->advance_to_next_text();
+        }
+        if (!o.shot.empty() && o.effect_ms >= 0) scene->update(uint32_t(o.effect_ms));
     } else if (!start_title) {
         std::string initial_scene=o.scene;
         if(initial_scene.empty()) {
@@ -948,6 +972,7 @@ int run(const Options& o) {
         if(!scene)return;
         if(scene->advance_to_next_text()){reset_line();return;}
         sync_progress();flush_profile();
+        if (scene->quit_requested()) { run_loop = false; return; }
         if(!scene->pending_movie().empty()) {
             movie_from_scene=true;
             if(!movie.open(data,scene->pending_movie(),movie_audio_engine(scene->pending_movie()),&err)) {
@@ -1361,7 +1386,17 @@ int run(const Options& o) {
     };
     auto action = [&](const std::string& tag) {
         if (!scene) return;
-        if (tag == ":voice" || tag == ":torisetu") {
+        if (scene->handle_dalsegno_action(tag)) return;
+        if (!tag.empty() && tag[0] != ':') {
+            const std::string target = tag;
+            if (target == scene->dalsegno_back_action() && scene->resume_dalsegno_config()) { reset_line(); return; }
+            if (scene->has_label(target)) {
+                if (scene->jump_to_label(target)) advance_script();
+            } else if (scene->load_script(script_path(data, target))) advance_script();
+            else notify(scene->last_error());
+            return;
+        }
+        if (tag == ":voice" || tag == ":torisetu" || tag == ":t") {
             if (!scene->replay_voice()) notify("No voice on this line");
         } else if (tag == ":auto") {
             auto_mode = !scene->waiting_for_choice() && !auto_mode; skip_mode = false; status.clear();
@@ -1391,7 +1426,15 @@ int run(const Options& o) {
         else if (tag == ":ql" || tag==":aaqload") prompt_quick(true);
         else if (tag == ":ds" || tag==":aasave") { scene->set_sidebar_visible(false); if(system_menu.is_dc2dm())play_sys_voice(12); open_slots(false); }
         else if (tag == ":dl" || tag==":aaload") { scene->set_sidebar_visible(false); if(system_menu.is_dc2dm())play_sys_voice(13); open_slots(true); }
-        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":menu") { scene->set_sidebar_visible(false); open_system(dc4ui::SystemMenuPage::Config); }
+        else if (tag == ":aawin_size" && scripted_dalsegno) {
+            const bool full = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+            SDL_SetWindowFullscreen(window.get(), full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+        }
+        else if (tag == ":option" || tag==":aaconfig" || tag==":aawin_size" || tag==":menu") {
+            scene->set_sidebar_visible(false);
+            if (scripted_dalsegno) { scene->open_dalsegno_config(); reset_line(); }
+            else open_system(dc4ui::SystemMenuPage::Config);
+        }
         else if (tag == ":aatitle") {
             if (scene->save_format_version() != 0x9D72) scene->set_sidebar_visible(false);
             prompt_title();
@@ -1653,6 +1696,7 @@ int run(const Options& o) {
             if (event.type == SDL_QUIT) { prompt_quit(); continue; }
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
                 mouse_down = false; pressed_action.clear(); pressed_widget = false;
+                if (scene) scene->handle_slider_touch(3, -1, -1);
                 if (scene && scene->minigame_active()) {
                     scene->minigame_pointer(3, -1, -1);
                     sync_progress(); flush_profile();
@@ -1664,6 +1708,10 @@ int run(const Options& o) {
             if(event.type==SDL_WINDOWEVENT && event.window.event==SDL_WINDOWEVENT_FOCUS_GAINED){movie.set_paused(false);audio.engine.set_device_paused(false);animation_tick=SDL_GetTicks();}
             if (event.type == SDL_MOUSEMOTION) {
                 mx = event.motion.x; my = event.motion.y;
+                if (scene && !menu_open && !slots.open && !backlog.open && !movie.active()) {
+                    scene->set_pointer(mx, my, mouse_down);
+                    scene->handle_slider_touch(2, mx, my);
+                }
                 if (thumb_drag && backlog.open)
                     backlog.scroll = log_screen.thumb_scroll(my, backlog.rows.size());
                 if(menu_open && mouse_down) {
@@ -1756,13 +1804,26 @@ int run(const Options& o) {
                 }
                 if (event.button.button == SDL_BUTTON_RIGHT && event.type == SDL_MOUSEBUTTONDOWN) {
                     if (scene) {
-                        if (scene->save_format_version() == 0x9D72)
+                        const auto back = scene->dalsegno_back_action();
+                        if (!back.empty()) { action(back); continue; }
+                        if (scene->save_format_version() == 0x9D72 || scripted_dalsegno)
                             scene->set_sidebar_visible(!scene->sidebar_visible());
                         else scene->set_message_visible(!scene->message_visible());
                         auto_mode = skip_mode = false; update_title();
                     }
                 }
                 if (event.button.button != SDL_BUTTON_LEFT) continue;
+                if (scene) {
+                    const int touch = event.type == SDL_MOUSEBUTTONDOWN ? 0 : 1;
+                    scene->set_pointer(mx, my, touch == 0);
+                    std::string release;
+                    if (scene->handle_slider_touch(touch, mx, my, &release)) {
+                        mouse_down = touch == 0;
+                        pressed_action.clear(); pressed_widget = false;
+                        if (!release.empty()) action(release);
+                        continue;
+                    }
+                }
                 const std::string* tag = scene ?
                     (scene->message_visible() || scene->sidebar_visible() ? scene->hit_test(mx, my) : nullptr) : ui.hit_test(mx, my);
                 bool over_widget = tag != nullptr;
@@ -1786,7 +1847,8 @@ int run(const Options& o) {
                     else if (scene && scene->waiting_for_choice()) {
                         const int choice = scene->choice_at(mx, my);
                         if (choice >= 0) select_choice(size_t(choice));
-                    } else advance();
+                    } else if (!scene || (scene->save_format_version() & 0xFFFF) != 0x9F9A ||
+                               !scene->current_line().empty() || scene->buttons().empty()) advance();
                     update_title();
                 }
                 pressed_action.clear(); pressed_widget = false;
@@ -1851,6 +1913,20 @@ int run(const Options& o) {
                 continue;
             }
             if (event.key.repeat) continue;
+            if (scene && (scene->save_format_version() & 0xFFFF) == 0x9F9A) {
+                const auto back = scene->dalsegno_back_action();
+                if (key == SDLK_ESCAPE && !back.empty()) { action(back); continue; }
+                using UiKey = dc4scene::SceneRunner::UiKey;
+                std::string selected;
+                if ((key == SDLK_TAB && scene->handle_dalsegno_key(
+                         event.key.keysym.mod & KMOD_SHIFT ? UiKey::Previous : UiKey::Next, &selected)) ||
+                    ((key == SDLK_RETURN || key == SDLK_SPACE) && scene->handle_dalsegno_key(UiKey::Activate, &selected)) ||
+                    (key == SDLK_LEFT && scene->handle_dalsegno_key(UiKey::Decrease, &selected)) ||
+                    (key == SDLK_RIGHT && scene->handle_dalsegno_key(UiKey::Increase, &selected))) {
+                    if (!selected.empty()) action(selected);
+                    continue;
+                }
+            }
             if (key == SDLK_F11 || (key == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT))) {
                 const bool full = (SDL_GetWindowFlags(window.get()) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
                 if (SDL_SetWindowFullscreen(window.get(), full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) < 0) notify(SDL_GetError());

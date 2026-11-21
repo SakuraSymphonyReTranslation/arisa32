@@ -122,6 +122,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native boolean dc4SetSidebarVisible(boolean visible);
     private native String dc4BackOrSidemenu(boolean slots, boolean backlog);
     private native boolean dc4SidebarVisible();
+    private native boolean dc4NamePending();
+    private native String[] dc4NameValues();
+    private native boolean dc4SetName(byte[] family, byte[] given, boolean confirm);
     private native void dc4Render(Bitmap bitmap);
     private native int dc4MovieFrameSize();
     private native boolean dc4MovieFrame(Bitmap bitmap, boolean force);
@@ -508,6 +511,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private Bitmap frame;
     private Bitmap galleryFrame;
     private Thread renderThread;
+    private boolean namePromptShown;
+    private volatile boolean nameDialogOpen;
     private volatile boolean running;
     // Lifecycle flags are owned by the UI thread, not the render thread.
     private boolean resumed;
@@ -1185,6 +1190,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         }
                         Touch touch;
                         while ((touch = touches.poll()) != null) dispatchTouch(touch);
+                        pollPersonalName();
                         Bitmap displayBitmap = frame;
                         boolean galleryRendered = false;
                         if (dc4GalleryPreviewActive() && !dc4ConfirmActive()) {
@@ -1321,6 +1327,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void shellAction(String tag) {
         switch (tag) {
+            case ":namegiven":
+            case ":namefamily":
+            case ":nameedit":
+                namePromptShown = false;
+                pollPersonalName();
+                break;
             case ":auto":
                 autoMode = !stChoice && !autoMode;
                 skipMode = false;
@@ -1346,6 +1358,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 break;
             case ":sidebarwin":
             case ":full":
+            case ":aawin_size":
                 autoMode = skipMode = false;
                 dc4SetSidebarVisible(false);
                 runOnUiThread(() -> {
@@ -1371,7 +1384,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 break;
             case ":option":
             case ":aaconfig":
-            case ":aawin_size":
             case ":menu":
                 closeMenus();
                 dc4SetSidebarVisible(false);
@@ -1393,6 +1405,90 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             default:
                 break;
         }
+    }
+
+    private void pollPersonalName() {
+        if (!dc4NamePending()) { namePromptShown = false; return; }
+        autoMode = skipMode = false;
+        if (namePromptShown || nameDialogOpen) return;
+        String[] values = dc4NameValues();
+        if (values == null || values.length != 2) return;
+        namePromptShown = true; nameDialogOpen = true;
+        runOnUiThread(() -> showPersonalName(values));
+    }
+
+    private void showPersonalName(String[] values) {
+        if (!resumed || inLibrary) { nameDialogOpen = false; return; }
+        LinearLayout body = ArisaUi.column(this);
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.addView(text(tr("Enter a first name, then a family name. Default restores Takamura Atsuya.",
+                "Isi nama depan, lalu nama belakang. Default mengembalikan Takamura Atsuya.",
+                "名前、姓の順に入力してください。DefaultでTakamura Atsuyaに戻せます。"), 14, ArisaUi.TEXT));
+        String firstLabel = tr("First name", "Nama depan", "名前");
+        String familyLabel = tr("Family name", "Nama belakang", "姓");
+        EditText first = ArisaUi.input(this, firstLabel), family = ArisaUi.input(this, familyLabel);
+        first.setId(View.generateViewId()); family.setId(View.generateViewId());
+        for (EditText field : new EditText[]{first, family}) {
+            field.setSingleLine(true);
+            field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+            field.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(19)});
+        }
+        first.setText(values[1]); family.setText(values[0]);
+        first.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_NEXT);
+        first.setNextFocusForwardId(family.getId());
+        family.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        for (int i = 0; i < 2; ++i) {
+            TextView label = text(i == 0 ? firstLabel : familyLabel, 14, ArisaUi.TEXT);
+            label.setLabelFor(i == 0 ? first.getId() : family.getId());
+            label.setPadding(0, dp(12), 0, dp(4)); body.addView(label);
+            body.addView(i == 0 ? first : family, new LinearLayout.LayoutParams(-1, -2));
+        }
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.addView(body);
+        AlertDialog entry = dialog().setTitle(tr("Enter Personal Information", "Masukkan nama karakter", "主人公の名前"))
+                .setView(scroll)
+                .setPositiveButton(tr("Confirm", "Konfirmasi", "確認"), null)
+                .setNeutralButton("Default", null)
+                .setNegativeButton(tr("Back", "Kembali", "戻る"), null).create();
+        entry.setOnDismissListener(d -> { nameDialogOpen = false; applyFullscreen(); });
+        entry.setOnShowListener(d -> {
+            entry.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                first.setText("Atsuya"); family.setText("Takamura"); first.requestFocus(); first.selectAll();
+            });
+            entry.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                EditText[] fields = {first, family};
+                byte[][] encoded = new byte[2][];
+                for (int i = 0; i < fields.length; ++i) {
+                    String value = fields[i].getText().toString().trim();
+                    String error = null;
+                    if (value.isEmpty()) error = tr("Enter a name", "Nama wajib diisi", "名前を入力してください");
+                    else if (!SJIS.newEncoder().canEncode(value) || value.indexOf('$') >= 0 || value.indexOf('&') >= 0 || value.indexOf('#') >= 0)
+                        error = tr("Use letters supported by the game, without $, & or #", "Gunakan huruf yang didukung game, tanpa $, & atau #", "ゲーム対応の文字を使ってください。$, &, # は使えません");
+                    else if ((encoded[i] = value.getBytes(SJIS)).length > 19)
+                        error = tr("Name is too long (19 bytes maximum)", "Nama terlalu panjang (maksimal 19 byte)", "名前が長すぎます（最大19バイト）");
+                    if (error != null) { fields[i].setError(error); fields[i].requestFocus(); return; }
+                }
+                menuCommands.add(() -> {
+                    if (!dc4SetName(encoded[1], encoded[0], true)) notifyUser(tr("Could not apply name", "Nama belum bisa diterapkan", "名前を設定できません"));
+                });
+                entry.dismiss();
+            });
+            first.setOnEditorActionListener((v, action, event) -> {
+                if (action != android.view.inputmethod.EditorInfo.IME_ACTION_NEXT) return false;
+                family.requestFocus(); family.selectAll(); return true;
+            });
+            family.setOnEditorActionListener((v, action, event) -> {
+                if (action != android.view.inputmethod.EditorInfo.IME_ACTION_DONE) return false;
+                entry.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); return true;
+            });
+            first.requestFocus(); first.selectAll();
+            first.post(() -> {
+                android.view.inputmethod.InputMethodManager keyboard = (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (keyboard != null) keyboard.showSoftInput(first, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+            });
+        });
+        settingsDialog = entry;
+        entry.show();
+        entry.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
     }
 
     private void openBacklog() {
@@ -1522,7 +1618,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private boolean hasNativeSidebar() {
         String id = currentProfile().getId();
-        return "dc2pc".equals(id) || "dc2dm".equals(id) || "dc2ty".equals(id);
+        return "dc2pc".equals(id) || "dc2dm".equals(id) || "dc2ty".equals(id) || "dal_segno".equals(id);
     }
 
     private File resolveSlotSaveFile(File dir, int slotIndex) {
@@ -1835,8 +1931,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         final String status = dc4Status();
         if (status == null || status.isEmpty()) return;
-        final String[] parts = status.split(";", 7);
+        final String[] parts = status.split(";", 10);
         if (parts.length < 7) return;
+        if (parts.length > 9 && "1".equals(parts[9])) {
+            runOnUiThread(this::finish);
+            return;
+        }
         try {
             stLine = Integer.parseInt(parts[0]);
         } catch (NumberFormatException error) {
@@ -2636,6 +2736,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private File probePresetCandidate(File f, String presetId) {
         if (f == null || !f.isDirectory()) return null;
+        if ("ds".equals(presetId) || "dal_segno".equals(presetId)) {
+            File data = probeDir(f);
+            return data != null && GameProfileRegistry.getProfileById("dal_segno").matches(data, null) ? data : null;
+        }
         String name = f.getName().toLowerCase(Locale.ROOT);
         boolean match = false;
         if ("dc4ph".equals(presetId) && (name.contains("plus harmony") || name.contains("dc4ph"))) match = true;
@@ -2757,7 +2861,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }
 
                 for (String p : pathsToTry) {
-                    hit = probeDir(new File(root, p));
+                    File candidate = new File(root, p);
+                    hit = "ds".equals(presetId) || "dal_segno".equals(presetId)
+                            ? probePresetCandidate(candidate, presetId) : probeDir(candidate);
                     if (hit != null) break;
                 }
                 if (hit != null) break;
@@ -2875,7 +2981,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(48), dp(48)); gameLayout.addView(bubble, params);
         backSidemenu = null;
         if (hasNativeSidebar()) {
-            backSidemenu = text("Back /\nSidemenu", 10, ArisaUi.CYAN);
+            final boolean upperMenu = "dal_segno".equals(currentProfile().getId());
+            backSidemenu = text(upperMenu ? "Back /\nUpper menu" : "Back /\nSidemenu", 10, ArisaUi.CYAN);
             backSidemenu.setGravity(Gravity.CENTER);
             backSidemenu.setPadding(0, 0, 0, 0);
             backSidemenu.setMaxLines(2);
@@ -2883,7 +2990,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 backSidemenu.setAutoSizeTextTypeUniformWithConfiguration(8, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
             backSidemenu.setBackground(navigationBackground());
             backSidemenu.setElevation(dp(6)); backSidemenu.setFocusable(true);
-            backSidemenu.setContentDescription("Back / Sidemenu");
+            backSidemenu.setContentDescription(upperMenu ? "Back / Upper menu" : "Back / Sidemenu");
             gameLayout.addView(backSidemenu, new FrameLayout.LayoutParams(dp(64), dp(48)));
             backSidemenu.setOnClickListener(v -> {
                 if (!ioBusy) menuCommands.add(this::backOrSidemenu);
@@ -2963,6 +3070,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         autoMode = skipMode = false;
         final String action = dc4BackOrSidemenu(slotMenuOpen, backlogOpen);
         if ("close".equals(action)) closeMenus();
+        else if (action != null && action.startsWith(":")) shellAction(action);
         else if (action != null && !action.isEmpty()) notifyUser(action);
     }
     private String galleryBackLabel() {

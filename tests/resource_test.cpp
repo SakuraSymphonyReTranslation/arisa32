@@ -133,11 +133,29 @@ void dc2dm_movie_paths(const fs::path& root) {
     put(overlay / "Movie/DC2DM_OP04.mp5", "native-four");
     CHECK(get(dc4::resolve_movie_file(data.u8string(), overlay.u8string(), "en", "dc2dm_op04.mp5")) == "renamed-four");
 }
+void dalsegno_identity(const fs::path& root) {
+    const auto data = root / "My Novels/archive/Favorite Story/aDvDaTa";
+    const std::string script("\0\0\0\0\x9A\x9F\0\0", 8);
+    put(data / "mEs/MAIN.MES", script);
+    CHECK(!dc4::is_dalsegno_game(data.u8string()));
+    put(data / "mEs/DS_1129B_CM.mES", script);
+    CHECK(dc4::is_dalsegno_game(data.u8string()));
+    put(data / "mEs/DSIF_0101.mes", script);
+    CHECK(dc4::is_dalsegno_in_future_game(data.u8string()));
+    CHECK(!dc4::is_dalsegno_game(data.u8string()));
+    fs::remove(data / "mEs/DSIF_0101.mes");
+    put(data / "mEs/DS_1129B_CM.mES", "truncated");
+    CHECK(!dc4::is_dalsegno_game(data.u8string()));
+    put(data / "mEs/DS_1129B_CM.mES", script);
+    put(data.parent_path() / "DSIF.exe", "exe");
+    CHECK(!dc4::is_dalsegno_game(data.u8string()));
+    CHECK(dc4::is_dalsegno_in_future_game((root / "Dal Segno In Future/AdvData").u8string()));
+}
 }
 int main() {
     const auto root = fs::temp_directory_path() / ("dc4-resource-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    try { overlays(root); utf8(); movie_paths(root); dc2dm_movie_paths(root); }
+    try { overlays(root); utf8(); movie_paths(root); dc2dm_movie_paths(root); dalsegno_identity(root); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     dc4::configure_resources({});
     std::error_code ignored; fs::remove_all(root, ignored);

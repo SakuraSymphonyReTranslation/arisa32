@@ -64,7 +64,7 @@ final class NativeSaveFiles {
         return dir == null ? null : resolve(dir, lookup(dir), prefix, first, logical);
     }
     static File latestCopy(File dir, String prefix) {
-        return lookup(dir).get((prefix+(prefix.equalsIgnoreCase("DC2DM") ? "03.dat" : "01.dat")).toLowerCase(Locale.ROOT));
+        return lookup(dir).get((prefix+(prefix.equalsIgnoreCase("DC2DM") ? "03.dat" : prefix.equalsIgnoreCase("DSAO") ? "00.dat" : "01.dat")).toLowerCase(Locale.ROOT));
     }
     static File[] resolveAll(File dir, String prefix, int first, int count) {
         File[] saves = new File[count+1];
@@ -77,6 +77,7 @@ final class NativeSaveFiles {
         if (name == null) return false;
         String lower = name.toLowerCase(Locale.ROOT);
         return lower.matches(prefix.toLowerCase(Locale.ROOT)+"[0-9]{2,3}\\.(?:dat(?:\\.(?:arisa|png|txt|icon))?|png)")
+                || prefix.equalsIgnoreCase("DSAO") && lower.matches("dsao[0-9]{2,3}\\.arisa\\.dat")
                 || lower.matches("(?:slot[0-9]+|quicksave|autosave)\\.dc4sav(?:\\.(?:png|txt|icon))?")
                 || lower.equals("system.dat") || lower.equals("system-profile.dat") || lower.equals("read-lines.txt");
     }

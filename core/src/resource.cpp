@@ -1,6 +1,8 @@
 #include "arisa32/resource.h"
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 
@@ -391,6 +393,46 @@ bool is_dc4_or_dc4ph_game(const std::string& data_dir) {
         return true;
     }
     return false;
+}
+
+bool is_dalsegno_in_future_game(const std::string& data_dir) {
+    const auto path = folded(data_dir);
+    if (path.find("dsif") != std::string::npos || path.find("in future") != std::string::npos ||
+        path.find("d.s. i.f.") != std::string::npos || path.find("d.s.i.f.") != std::string::npos) return true;
+    const auto root = absolute_path(data_dir);
+    for (const auto& dir : {root, root.parent_path(), case_path(root, "MES")}) {
+        std::error_code ec;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto name = folded(it->path().filename().u8string());
+            const auto ext = folded(it->path().extension().u8string());
+            if (it->is_regular_file(ec) && (name.rfind("dsif", 0) == 0 || name.rfind("ds_if", 0) == 0) &&
+                (ext == ".mes" || ext == ".exe")) return true;
+        }
+    }
+    return false;
+}
+
+bool is_dalsegno_game(const std::string& data_dir) {
+    if (data_dir.empty() || is_dalsegno_in_future_game(data_dir)) return false;
+    const auto mes = case_path(absolute_path(data_dir), "MES");
+    // The engine version is shared evidence; the opening scenario identifies the game.
+    for (const char* filename : {"main.mes", "DS_1129B_CM.mes"}) {
+        std::ifstream in(case_path(mes, filename), std::ios::binary | std::ios::ate);
+        if (!in || in.tellg() < 8) return false;
+        const auto size = in.tellg();
+        in.seekg(0);
+        unsigned char count_bytes[4];
+        if (!in.read(reinterpret_cast<char*>(count_bytes), 4)) return false;
+        const uint32_t count = uint32_t(count_bytes[0]) | (uint32_t(count_bytes[1]) << 8) |
+            (uint32_t(count_bytes[2]) << 16) | (uint32_t(count_bytes[3]) << 24);
+        const uint64_t offset = 4 + uint64_t(count) * 6;
+        if (count > 0x100000 || offset + 3 > uint64_t(size)) return false;
+        in.seekg(std::streamoff(offset));
+        unsigned char version[3];
+        if (!in.read(reinterpret_cast<char*>(version), 3) ||
+            version[0] != 0x9A || version[1] != 0x9F || version[2] != 0) return false;
+    }
+    return true;
 }
 
 bool is_kotori_song_movie(const std::string& asset) {

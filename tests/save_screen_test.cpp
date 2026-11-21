@@ -425,6 +425,72 @@ void dc2dm_artwork_and_actions(const fs::path& root) {
     CHECK(is_action(click(screen, 1200, 600), SaveActionType::Back));
 }
 
+void dalsegno_artwork_and_actions(const fs::path& root) {
+    const auto system = root / "GRP/SYSTEM";
+    write_bytes(root / "MES/main.mes", {0,0,0,0,0x9A,0x9F,0,0});
+    write_bytes(root / "MES/DS_1129B_CM.mes", {0,0,0,0,0x9A,0x9F,0,0});
+    write_crx(system / "saveback.crx", 1280, 720, {10,20,30});
+    write_crx(system / "loadback.crx", 1280, 720, {40,50,60});
+    write_crx(system / "saveloadchip.crx", 940, 820, {}, true);
+    write_crx(system / "systemgoto.crx", 472, 230, {}, true);
+    SaveScreen screen;
+    std::string error;
+    CHECK(screen.load(root.string(), &error));
+    CHECK(screen.dalsegno()); CHECK(screen.page_count() == 10); CHECK(screen.slot_count() == 97);
+    screen.set_confirm_enabled(false);
+    CHECK(is_action(click(screen, 450, 100), SaveActionType::None));
+    CHECK(is_action(click(screen, 450, 200), SaveActionType::None));
+    CHECK(is_action(click(screen, 450, 300), SaveActionType::QuickSave));
+    CHECK(is_action(click(screen, 450, 400), SaveActionType::Slot, 0));
+    CHECK(screen.slot_hit(762, 386) == -1); CHECK(screen.slot_hit(422, 474) == -1);
+    std::set<int> indices;
+    for (int page=0;page<10;++page) {
+        screen.set_page(page);
+        for (int visible=0;visible<10;++visible) {
+            const int slot = screen.slot_hit(visible < 5 ? 450 : 850, 100 + visible % 5 * 102);
+            if (slot >= 0) { indices.insert(slot); CHECK(is_action(screen.visible_slot_action(visible), SaveActionType::Slot, slot)); }
+        }
+    }
+    CHECK(indices.size() == 97); CHECK(*indices.begin() == 0); CHECK(*indices.rbegin() == 96);
+    CHECK(screen.slot_hit(850, 520) == 96);
+    screen.set_slot_occupied(99, true); CHECK(screen.page_count() == 10);
+    CHECK(is_action(screen.activate({SaveActionType::Slot,97}), SaveActionType::None));
+    CHECK(is_action(click(screen, 330, 580), SaveActionType::Page, 0));
+    CHECK(is_action(click(screen, 60, 580), SaveActionType::Page, 9));
+    screen.set_page(0); screen.pointer_down(60,580);
+    CHECK(is_action(screen.pointer_up(330,580), SaveActionType::None)); CHECK(screen.page()==0);
+    screen.set_mode(SaveMode::Load);
+    CHECK(is_action(click(screen,450,400),SaveActionType::None));
+    screen.set_slot_occupied(0,true);
+    CHECK(is_action(click(screen,450,400),SaveActionType::Slot,0));
+    screen.set_shortcuts(true,true,true);
+    CHECK(is_action(click(screen,450,100),SaveActionType::LatestLoad));
+    CHECK(is_action(click(screen,450,200),SaveActionType::AutoLoad));
+    CHECK(is_action(click(screen,450,300),SaveActionType::QuickLoad));
+    screen.set_navigation(true,true,true);
+    CHECK(is_action(click(screen,740,680),SaveActionType::Mode,0));
+    CHECK(is_action(click(screen,850,680),SaveActionType::Mode,1));
+    CHECK(is_action(click(screen,960,680),SaveActionType::Config));
+    CHECK(is_action(click(screen,1100,680),SaveActionType::Title));
+    CHECK(is_action(click(screen,1220,680),SaveActionType::Quit));
+    CHECK(is_action(click(screen,1250,620),SaveActionType::Back));
+    const dc4scene::FontRenderer no_font;
+    std::vector<uint8_t> frame;
+    screen.draw({},-1,-1,false,no_font,&frame);
+    CHECK(pixel_is(frame,422,80,atlas_color(190,185)));
+    CHECK(pixel_is(frame,800,80,atlas_color(190,452)));
+    screen.draw({},450,100,false,no_font,&frame);
+    CHECK(pixel_is(frame,422,80,atlas_color(532,185)));
+    screen.set_page(9); screen.draw({},-1,-1,false,no_font,&frame);
+    CHECK(pixel_is(frame,422,80,atlas_color(190,452)));
+    CHECK(pixel_is(frame,110,468,atlas_color(478,541)));
+    CHECK(pixel_is(frame,146,468,atlas_color(430,541)));
+    CHECK(pixel_is(frame,196,518,atlas_color(688,0)));
+    write_bytes(system / "saveloadchip.crx", {'C','R','X','G'});
+    CHECK(!screen.load(root.string(),&error)); CHECK(error.find("SAVELOADCHIP")!=std::string::npos);
+    CHECK(is_action(click(screen,1250,620),SaveActionType::Back));
+}
+
 void installed_assets(const fs::path& data) {
     SaveScreen screen;
     std::string error;
@@ -433,7 +499,8 @@ void installed_assets(const fs::path& data) {
     const dc4scene::FontRenderer no_font;
     std::vector<uint8_t> normal, hovered;
     screen.draw({}, -1, -1, false, no_font, &normal);
-    const int x = screen.dc2dm() ? 400 : 200, y = screen.dc2dm() ? 450 : 100;
+    const int x = screen.dalsegno() ? 450 : screen.dc2dm() ? 400 : 200;
+    const int y = screen.dalsegno() ? 400 : screen.dc2dm() ? 450 : 100;
     screen.draw({}, x, y, false, no_font, &hovered);
     CHECK(normal != hovered);
     screen.set_mode(SaveMode::Load);
@@ -447,7 +514,8 @@ void installed_assets(const fs::path& data) {
         std::vector<dc4ui::SaveSlot> slots(100);
         slots[0].occupied = true;
         slots[0].timestamp = u"2026/10/29 15:45:10";
-        slots[0].excerpt = u"\u3053\u308c\u306f\u30bb\u30fc\u30d6\u753b\u9762\u306e\u9577\u3044\u8868\u793a\u78ba\u8a8d\u7528\u30c6\u30ad\u30b9\u30c8\u3067\u3059\u3002";
+        slots[0].excerpt = screen.dalsegno() ? u"Welcome to Paradise" : u"\u3053\u308c\u306f\u30bb\u30fc\u30d6\u753b\u9762\u306e\u9577\u3044\u8868\u793a\u78ba\u8a8d\u7528\u30c6\u30ad\u30b9\u30c8\u3067\u3059\u3002";
+        slots[96] = slots[0];
         slots[99] = slots[0];
         screen.set_slot_occupied(0, true);
         screen.set_special_slots(slots[0], slots[0]);
@@ -477,11 +545,13 @@ void installed_assets(const fs::path& data) {
 
 int main(int argc, char** argv) {
     try {
-        const fs::path root = fs::current_path() / "save-screen-test-data" /
+        const fs::path root = fs::temp_directory_path() / "arisa32-save-screen-tests" /
             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         geometry_and_navigation(); input_lifecycle(); rendering_and_failure(root);
         dc2dm_artwork_and_actions(root / "dc2dm");
+        dalsegno_artwork_and_actions(root / "dalsegno");
         if (argc > 1) installed_assets(argv[1]);
+        fs::remove_all(root);
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     std::cout << (failures ? "Save screen regressions FAILED\n" : "Save screen regressions passed\n");
     return failures ? 1 : 0;

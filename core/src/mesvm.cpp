@@ -85,10 +85,11 @@ uint64_t script_fingerprint(const MesFile& mes, bool legacy_version = false) {
     return hash;
 }
 
-bool snapshot_variable_valid(uint16_t bank, uint16_t index, int32_t value, bool dc2pc) {
+bool snapshot_variable_valid(uint16_t bank, uint16_t index, int32_t value, bool dc2pc, bool dalsegno) {
     const int size = byte_bank_size(bank, dc2pc);
     if (size) return index < size && value >= 0 && value <= 255;
     if (dc2pc) return bank == 99;
+    if (dalsegno && (bank == 94 || bank == 95)) return true;
     if (bank == 93) return index < 20;
     if (bank == 94) return index == 50 && value <= 100;
     if (bank == 95) return index == 50;
@@ -102,6 +103,7 @@ void MesVm::reset() {
     mes_ = nullptr;
     labels_.clear();
     variables_.clear();
+    family_name_ = "Takamura"; given_name_ = "Atsuya";
     dc4_progress_awards_ = 0;
     choices_.clear();
     entry_label_.clear();
@@ -178,6 +180,10 @@ bool MesVm::capture_snapshot(MesVmSnapshot* out, std::string* err) const {
     snapshot.ended = ended_;
     snapshot.transferring = transferring_;
     snapshot.waiting_for_choice = waiting_for_choice_;
+    if ((mes_->version & 0xFFFF) == 0x9F9A) {
+        snapshot.version = 2;
+        snapshot.family_name = family_name_; snapshot.given_name = given_name_;
+    }
     *out = std::move(snapshot);
     if (err) err->clear();
     return true;
@@ -189,8 +195,14 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
         return false;
     };
     if (!mes_ || !stream_) return reject("bind a MES script before restoring its VM");
-    if (snapshot.version != MesVmSnapshot::kVersion)
+    if (snapshot.version < 1 || snapshot.version > MesVmSnapshot::kVersion)
         return reject("unsupported MES VM snapshot version");
+    const auto valid_name = [](const std::string& name) {
+        return !name.empty() && name.size() <= 32 &&
+            std::none_of(name.begin(), name.end(), [](unsigned char ch) { return ch < 32 || ch == 127 || ch == '$' || ch == '&' || ch == '#'; });
+    };
+    if (snapshot.version == 2 && (!valid_name(snapshot.family_name) || !valid_name(snapshot.given_name)))
+        return reject("MES VM snapshot contains an invalid personal name");
     if (snapshot.script_fingerprint != script_fingerprint(*mes_) &&
         snapshot.script_fingerprint != script_fingerprint(*mes_, true))
         return reject("MES VM snapshot belongs to a different or modified script");
@@ -210,7 +222,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     }
     for (const auto& variable : snapshot.variables) {
         if (!snapshot_variable_valid(variable.first.first, variable.first.second, variable.second,
-                                     mes_uses_classic_dc2(mes_->dialect, mes_->version)))
+                                     mes_uses_classic_dc2(mes_->dialect, mes_->version),
+                                     (mes_->version & 0xFFFF) == 0x9F9A))
             return reject("MES VM snapshot contains an invalid variable bank, index, or value");
     }
 
@@ -251,6 +264,8 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     auto choices = snapshot.choices;
     auto entry_label = snapshot.entry_label;
     variables_.swap(variables);
+    family_name_ = snapshot.version >= 2 ? snapshot.family_name : "Takamura";
+    given_name_ = snapshot.version >= 2 ? snapshot.given_name : "Atsuya";
     choices_.swap(choices);
     entry_label_.swap(entry_label);
     stream_->seek(snapshot.pc);
@@ -260,6 +275,15 @@ bool MesVm::restore_snapshot(const MesVmSnapshot& snapshot, std::string* err) {
     dc4_progress_awards_ = 0;
     error_.clear();
     if (err) err->clear();
+    return true;
+}
+
+bool MesVm::set_personal_names(const std::string& family, const std::string& given) {
+    for (const auto* name : {&family, &given}) {
+        if (name->empty() || name->size() > 32 ||
+            std::any_of(name->begin(), name->end(), [](unsigned char ch) { return ch < 32 || ch == 127 || ch == '$' || ch == '&' || ch == '#'; })) return false;
+    }
+    family_name_ = family; given_name_ = given;
     return true;
 }
 
@@ -394,7 +418,7 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
     if (bank == 93 && index >= 20) return 0;
     // 94/95 address audio-track records; only the special record 50 is
     // independent of the original engine's track registry.
-    if ((bank == 94 || bank == 95) && index != 50) return -1;
+    if ((bank == 94 || bank == 95) && index != 50 && !is_ds) return -1;
     if (bank == 99 && index == 217) {
         const int32_t selected = read_variable(99, 218);
         return selected >= 0 && selected < 20
@@ -411,6 +435,7 @@ int32_t MesVm::read_variable(uint16_t bank, uint16_t index) const {
             case 9:   return 100; // Voice Volume
             case 207: return 100; // Movie Volume
             case 206: return 50;  // BGM Volume during voice-over
+            case 11:  return 80;  // Window opacity
             case 26:  return 8;   // Text speed
             case 27:  return 8;   // Auto speed
             case 29:  return 12;  // Auto wait
@@ -578,6 +603,19 @@ bool MesVm::execute_assignment(const MesCommand& command) {
         command.words[2] == 1 && command.words[3] == 0 && read_variable(9, 7) == 0)
         dc4_progress_awards_ |= uint32_t(1) << (command.words[1] - 100);
     return true;
+}
+
+void MesVm::reset_dalsegno_settings() {
+    if (!mes_ || (mes_->version & 0xFFFF) != 0x9F9A) return;
+    const uint16_t settings[] = {5, 7, 8, 9, 10, 11, 12, 14, 15, 26, 27, 28, 29,
+        30, 190, 194, 197, 198, 199, 200, 201, 202, 203, 205, 206, 207,
+        208, 209, 210, 211, 212, 213, 214, 217, 218, 221, 222, 225, 237};
+    for (auto index : settings) variables_.erase({99, index});
+    for (uint16_t i = 0; i <= 50; ++i) {
+        variables_.erase({94, i});
+        variables_.erase({95, i});
+    }
+    variables_.erase({100, 49});
 }
 
 bool MesVm::next(MesCommand* out) {

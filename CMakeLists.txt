@@ -21,6 +21,7 @@ add_library(arisa32_core STATIC
     core/src/circus_vq.cpp
     core/src/bgm.cpp
     core/src/scene.cpp
+    core/src/scene_dalsegno.cpp
     core/src/scene_sprite_motion.cpp
     core/src/scene_dc4_effects.cpp
     core/src/scene_state.cpp

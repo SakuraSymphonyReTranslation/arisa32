@@ -94,6 +94,9 @@ struct Image {
     std::string name;
     int w = 0, h = 0;
     std::vector<uint8_t> rgba;
+    bool native_placement = false;
+    float native_x = 0, native_y = 0, native_scale = 1;
+    int native_alpha = 255;
     bool valid() const { return !rgba.empty(); }
 };
 
@@ -232,6 +235,7 @@ struct UiButton {
     int x = 0, y = 0, w = 0, h = 0;
     std::string action;
     UiChip state[3];
+    std::array<std::vector<UiChip>, 3> layers;
     bool is_slider = false;
     int slider_bank = -1;
     int slider_index = 0;
@@ -240,6 +244,7 @@ struct UiButton {
     int slider_right = 0;
     bool has_knob = false;
     UiChip knob[2];
+    UiChip slider_caption;
 };
 
 // Message-window layout, measured against a 1:1 (1280x720) real screenshot.
@@ -338,10 +343,33 @@ public:
     }
     int choice_at(int x, int y) const;
     bool handle_slider_touch(int action, int x, int y, std::string* triggered_action = nullptr);
+    enum class UiKey { Next, Previous, Activate, Decrease, Increase };
+    bool handle_dalsegno_key(UiKey key, std::string* action);
+    std::string dalsegno_back_action() const;
+    bool dalsegno_name_pending() const { return ds_name_pending_; }
+    bool dalsegno_name_confirming() const { return ds_name_confirming_; }
+    const std::string& dalsegno_family_name() const { return ds_family_name_; }
+    const std::string& dalsegno_given_name() const { return ds_given_name_; }
+    bool set_dalsegno_name(const std::string& family, const std::string& given);
+    bool handle_dalsegno_action(const std::string& action);
+    bool open_dalsegno_config();
+    bool resume_dalsegno_config();
+    bool load_dalsegno_system(const std::string& path, std::string* error = nullptr);
+    bool load_dalsegno_profile(const std::string& path, std::string* error = nullptr);
+    bool save_dalsegno_profile(const std::string& directory, std::string* error = nullptr);
+    bool quit_requested() const { return ds_quit_requested_; }
+    bool dalsegno_music_active() const { return ds_music_active_; }
+    int dalsegno_music_track() const { return ds_music_track_; }
+    int dalsegno_music_scroll() const { return ds_music_scroll_; }
+    const std::vector<std::string>& dalsegno_music_titles() const { return ds_music_titles_; }
+    bool dalsegno_music_checked(int track) const { return track >= 0 && track < 42 && ds_music_checks_[size_t(track)]; }
     void sync_audio_from_slider(int bank, int index, int val);
     std::u16string visible_text() const;
     size_t visible_text_length() const;
-    void set_pointer(int x, int y, bool down) { pointer_x_ = x; pointer_y_ = y; pointer_down_ = down; }
+    void set_pointer(int x, int y, bool down) {
+        if (x != pointer_x_ || y != pointer_y_ || down != pointer_down_) ds_focus_ = -1;
+        pointer_x_ = x; pointer_y_ = y; pointer_down_ = down;
+    }
     bool minigame_active() const;
     void minigame_pointer(int action, int x, int y);
     void minigame_key(Dc2dmMinigame::Key key);
@@ -490,8 +518,24 @@ private:
     double screen_effect_remaining_ms() const;
 
     bool dispatch_command(const dc4::MesCommand& c, size_t& transfers);
+    bool dispatch_dalsegno_ui(const dc4::MesCommand& c);
+    void load_dalsegno_upper_menu();
+    void draw_dalsegno_name();
+    std::string dalsegno_text(const std::string& text) const;
+    void draw_dalsegno_captions();
+    void draw_dalsegno_confirmation();
+    void reset_dalsegno_ui();
+    bool dispatch_dalsegno_music(const dc4::MesCommand& c);
+    bool play_dalsegno_music();
+    void step_dalsegno_music(int direction);
+    void refresh_dalsegno_music();
+    void draw_dalsegno_music();
+    void update_dalsegno_music();
+    bool touch_dalsegno_music_scroll(int action, int x, int y);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error, bool ty = false);
     bool restore_dc2dm_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
+    bool capture_dalsegno_pc_save(std::vector<uint8_t>* bytes, std::string* error);
+    bool restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, std::string* error);
     void reset_restore_transients();
     bool dispatch_timing_command(const dc4::MesCommand& c);
     void sync_minigame();
@@ -526,6 +570,7 @@ private:
     std::string pending_movie_, input_skip_label_;
     bool pending_movie_is_effect_ = false;
     bool is_dc4_or_dc4ph_ = false;
+    bool is_dalsegno_profile_ = false;
     bool visual_effects_enabled_ = true;
     int dialogue_font_size_ = 22;
     bool dc4_replay_profile_ = false;
@@ -586,6 +631,32 @@ private:
     std::vector<UiButton> buttons_;        // 0x72/0x54/0x73/0x77 widgets
     UiButton pending_button_;
     bool pending_has_button_ = false;
+    struct DalSegnoCaption {
+        int x = 0, y = 0, size = 20;
+        bool preview = false;
+        std::string text;
+        double elapsed_ms = 0;
+    };
+    DalSegnoCaption ds_pending_caption_;
+    bool ds_has_caption_ = false;
+    std::vector<DalSegnoCaption> ds_captions_;
+    std::array<std::string, 16> ds_callbacks_;
+    std::vector<UiButton> ds_modal_buttons_;
+    std::vector<UiChip> ds_modal_chips_;
+    int ds_focus_ = -1;
+    bool ds_quit_requested_ = false;
+    bool ds_name_pending_ = false, ds_name_confirming_ = false;
+    std::string ds_family_name_ = "Takamura", ds_given_name_ = "Atsuya";
+    std::vector<UiButton> ds_name_buttons_;
+    std::vector<UiChip> ds_upper_chips_;
+    std::vector<uint8_t> ds_config_return_;
+    bool ds_music_active_ = false, ds_music_building_ = false, ds_music_drag_ = false;
+    bool ds_music_has_title_ = false;
+    int ds_music_track_ = 0, ds_music_scroll_ = 0, ds_music_repeat_ = 0;
+    std::vector<std::string> ds_music_titles_;
+    std::array<bool, 42> ds_music_checks_{};
+    uint32_t ds_music_random_ = 0xD5A032;
+    std::vector<uint8_t> ds_system_template_;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
     bool dc2dm_ui_ = false;
