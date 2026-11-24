@@ -1164,7 +1164,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
             }
         }
     }
-    if (menu_ok) e->confirm.load(e->data_dir);
+    if (menu_ok || dc4::is_dalsegno_game(e->data_dir)) e->confirm.load(e->data_dir);
     e->menu.bind_confirmations(e->confirm);
     e->menu.bind_confirmations(e->save_screen.confirm_dialog());
     e->menu.set_confirmation_changed_callback([e] { save_profile(e); });

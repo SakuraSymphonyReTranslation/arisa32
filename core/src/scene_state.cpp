@@ -295,11 +295,26 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
                 out.number(image.native_x); out.number(image.native_y);
                 out.number(image.native_scale); out.u32(image.native_alpha);
             }
+            out.u32(uint32_t(ds_background_motion_.size()));
+            for (const auto& motion : ds_background_motion_) {
+                out.number(motion.from_x); out.number(motion.from_y);
+                out.number(motion.to_x); out.number(motion.to_y);
+                out.number(motion.elapsed_ms); out.number(motion.duration_ms);
+            }
+            out.u32(uint32_t(ds_camera_layers_.size()));
+            for (const auto& item : ds_camera_layers_) {
+                const auto& layer = item.second; const auto& motion = layer.motion;
+                out.u32(uint32_t(item.first));
+                out.number(layer.base_x); out.number(layer.base_y); out.number(layer.base_scale);
+                out.number(motion.from_x); out.number(motion.from_y); out.number(motion.from_scale);
+                out.number(motion.to_x); out.number(motion.to_y); out.number(motion.to_scale);
+                out.number(motion.elapsed_ms); out.number(motion.duration_ms);
+            }
         }
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(ds ? 13 : ty ? 12 : save_motion ? 11 : save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(ds ? 14 : ty ? 12 : save_motion ? 11 : save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
         header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
@@ -761,6 +776,7 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             number(at+0x48,float(image.w)); number(at+0x4C,float(image.h));
             number(at+0x50,alpha/255.f); number(at+0x54,scale*100); number(at+0x58,scale*100);
             number(at+0x60,pivot_x); number(at+0x64,pivot_y); u32(at+0x1A8,uint32_t(priority));
+            number(at+0xB8,x); number(at+0xBC,y); number(at+0xC0,scale*100);
         };
         for (const auto& item : layers_) {
             if (item.first != 1) throw std::runtime_error("unsupported Dal Segno background layer");
@@ -768,7 +784,16 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             const float scale=image.native_placement?image.native_scale:std::max(1280.f/image.w,720.f/image.h)*camera_scale_;
             const float x=image.native_placement?image.native_x:-(camera_scale_-1)*camera_x_;
             const float y=image.native_placement?image.native_y:-(camera_scale_-1)*camera_y_;
-            name(0xA8+48,48,image.name); renderer(0,image,x,y,scale,image.native_alpha,0,0,0);
+            // Native zero pivots scale around the image centre.
+            const float raw_x=x-image.w/2.f*(1-scale),raw_y=y-image.h/2.f*(1-scale);
+            name(0xA8+48,48,image.name); renderer(0,image,raw_x,raw_y,scale,image.native_alpha,0,0,0);
+            const auto camera=ds_camera_layers_.find(-1);
+            if(camera!=ds_camera_layers_.end()) {
+                const auto& base=camera->second;
+                number(0x4C4C+0xB8,base.base_x-image.w/2.f*(1-base.base_scale));
+                number(0x4C4C+0xBC,base.base_y-image.h/2.f*(1-base.base_scale));
+                number(0x4C4C+0xC0,base.base_scale*100); u32(0x4C4C+0xC4,1);
+            }
         }
         for (size_t i=0;i<sprites_.size();++i) {
             const auto& sprite=sprites_[i];
@@ -781,8 +806,14 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             else continue;
             const auto& transform=i>=4 && i<8?sprites_[i-4]:sprite;
             Image canvas; canvas.w=sprite.canvas_w?sprite.canvas_w:sprite.img.w; canvas.h=sprite.canvas_h?sprite.canvas_h:sprite.img.h;
-            renderer(record,canvas,float(transform.cur_x),float(transform.cur_y),transform.scale*camera_scale_,sprite.alpha,sprite.priority,float(transform.x),float(transform.y));
-            u32(0x4C4C+record*0x1B0+0x80,sprite.visible?1:0);
+            renderer(record,canvas,float(transform.position(0)),float(transform.position(1)),transform.scale,transform.alpha,sprite.priority,float(transform.x),float(transform.y));
+            const auto camera=ds_camera_layers_.find(int(i>=4 && i<8?i-4:i));
+            if(camera!=ds_camera_layers_.end()) {
+                const auto& base=camera->second; const size_t at=0x4C4C+record*0x1B0;
+                number(at+0xB8,base.base_x); number(at+0xBC,base.base_y);
+                number(at+0xC0,base.base_scale*100); u32(at+0xC4,1);
+            }
+            u32(0x4C4C+record*0x1B0+0x80,sprite.visible && transform.visible?1:0);
             if (sprite.img.valid()) name(0xA8+slot*48,48,sprite.image);
         }
         scene_audio_.load_names(); const auto audio=scene_audio_.capture_snapshot();
@@ -853,6 +884,14 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
             image.native_scale=number(at+0x54)/100; image.native_alpha=int(std::lround(std::clamp(number(at+0x50),0.f,1.f)*255));
             if (image.native_scale<=0 || std::abs(number(at+0x58)/100-image.native_scale)>0.001f || number(at+0x5C)!=0)
                 throw std::runtime_error("unsupported Dal Segno background transform");
+            image.native_x+=image.w/2.f*(1-image.native_scale); image.native_y+=image.h/2.f*(1-image.native_scale);
+            if(integer(at+0xC4)) {
+                DsCameraLayer camera; camera.base_scale=number(at+0xC0)/100;
+                camera.base_x=number(at+0xB8)+image.w/2.f*(1-camera.base_scale);
+                camera.base_y=number(at+0xBC)+image.h/2.f*(1-camera.base_scale);
+                if(camera.base_scale<=0 || camera.base_scale>655.35) throw std::runtime_error("invalid Dal Segno original background scale");
+                candidate.ds_camera_layers_.emplace(-1,camera);
+            }
             if (!integer(at+0x80)) image.native_alpha=0;
         }
         for (int i=0;i<10;++i) {
@@ -869,6 +908,11 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
             sprite.visible=!resource.empty() && integer(at+0x80)!=0;
             if (sprite.scale<=0 || sprite.scale>655.35 || sprite.priority>100 || std::abs(number(at+0x58)/100-sprite.scale)>0.001f || number(at+0x5C)!=0)
                 throw std::runtime_error("unsupported Dal Segno sprite transform");
+            if(index<4 && integer(at+0xC4)) {
+                DsCameraLayer camera; camera.base_x=number(at+0xB8); camera.base_y=number(at+0xBC); camera.base_scale=number(at+0xC0)/100;
+                if(camera.base_scale<=0 || camera.base_scale>655.35) throw std::runtime_error("invalid Dal Segno original sprite scale");
+                candidate.ds_camera_layers_.emplace(index,camera);
+            }
         }
         auto audio=candidate.scene_audio_.capture_snapshot(); candidate.scene_audio_.load_names();
         auto normal=[](std::string value) {
@@ -1526,7 +1570,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 13)
+        if (version < 1 || version > 14)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -1870,7 +1914,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 candidate.scene_chips_.push_back(chip);
             }
         }
-        if (version == 13) {
+        if (version >= 13) {
             if ((candidate.mes_.version & 0xFFFF) != 0x9F9A) throw std::runtime_error("invalid Dal Segno snapshot profile");
             const auto count = in.count(64);
             if (count != candidate.layers_.size()) throw std::runtime_error("invalid Dal Segno layer placement count");
@@ -1888,6 +1932,42 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                     throw std::runtime_error("invalid Dal Segno layer coordinates");
             }
         }
+        if (version >= 14) {
+            const auto count = in.count(1);
+            for (uint32_t i = 0; i < count; ++i) {
+                CameraMotion motion;
+                motion.from_x = float(in.number()); motion.from_y = float(in.number());
+                motion.to_x = float(in.number()); motion.to_y = float(in.number());
+                motion.elapsed_ms = in.number(); motion.duration_ms = in.number();
+                if (std::abs(motion.from_x) > 65535 || std::abs(motion.from_y) > 65535 ||
+                    std::abs(motion.to_x) > 65535 || std::abs(motion.to_y) > 65535 ||
+                    motion.duration_ms <= 0 || motion.duration_ms > 65539.0 * 250 ||
+                    motion.elapsed_ms < 0 || motion.elapsed_ms >= motion.duration_ms)
+                    throw std::runtime_error("invalid Dal Segno background animation");
+                candidate.ds_background_motion_.push_back(motion);
+            }
+            const auto cameras = in.count(5);
+            for (uint32_t i = 0; i < cameras; ++i) {
+                const int index = in.integer();
+                if (index < -1 || index > 3 || candidate.ds_camera_layers_.count(index) ||
+                    (index == -1 && !candidate.layers_.count(1)))
+                    throw std::runtime_error("invalid Dal Segno camera layer");
+                DsCameraLayer layer;
+                layer.base_x = float(in.number()); layer.base_y = float(in.number()); layer.base_scale = float(in.number());
+                auto& motion = layer.motion;
+                motion.from_x = float(in.number()); motion.from_y = float(in.number()); motion.from_scale = float(in.number());
+                motion.to_x = float(in.number()); motion.to_y = float(in.number()); motion.to_scale = float(in.number());
+                motion.elapsed_ms = in.number(); motion.duration_ms = in.number();
+                for (float coordinate : {layer.base_x, layer.base_y, motion.from_x, motion.from_y, motion.to_x, motion.to_y})
+                    if (std::abs(coordinate) > 65535) throw std::runtime_error("invalid Dal Segno camera coordinate");
+                for (float scale : {layer.base_scale, motion.from_scale, motion.to_scale})
+                    if (scale <= 0 || scale > 655.35f) throw std::runtime_error("invalid Dal Segno camera scale");
+                if (motion.duration_ms < 0 || motion.duration_ms > 65535.0 * 200 || motion.elapsed_ms < 0 ||
+                    (motion.duration_ms ? motion.elapsed_ms >= motion.duration_ms : motion.elapsed_ms != 0))
+                    throw std::runtime_error("invalid Dal Segno camera animation");
+                candidate.ds_camera_layers_.emplace(index, layer);
+            }
+        }
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
         if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
         comu_visible_ = restored_comu_visible;
@@ -1900,6 +1980,8 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         script_name_ = script; current_line_ = line; speaker_ = speaker; transition_type_ = transition;
         camera_scale_ = float(camera_scale); camera_x_ = float(camera_x); camera_y_ = float(camera_y);
         camera_duration_ = camera_duration; camera_motion_ = std::move(camera_motion);
+        ds_background_motion_ = std::move(candidate.ds_background_motion_);
+        ds_camera_layers_ = std::move(candidate.ds_camera_layers_);
         scene_end_ = ended; message_visible_ = message_visible; preserve_scene_ = preserve_scene;
         reset_restore_transients();
         dialogue_actions_ = std::move(candidate.dialogue_actions_);

@@ -210,6 +210,8 @@ int main() {
         CHECK(dc4::bst_parse_name("BST\\TEST_0A_000_B", true).archive == "TEST_0A");
         CHECK(dc4::bst_parse_name("bst\\test_0a_000_b", true).entry == "test_0a_000_b");
         CHECK(dc4::bst_parse_name("BST\\TEST_0A_000_B,BST\\TEST_0A").entry == "TEST_0A_000");
+        CHECK(dc4::bst_parse_name("BST\\TEST_0A_000_B,BST\\TEST_0A", false, true).entry == "TEST_0A_000_B");
+        CHECK(dc4::bst_parse_name("BST\\LOOSE_B", false, true).archive.empty());
         for (int base : {0,1,2}) for (int diff : {0,1,2}) {
             fixture(root, base, diff); expanded_bounds(root, base, diff); transparent_background(root, base, diff);
         }

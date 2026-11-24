@@ -89,6 +89,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import org.dc4engine.profile.GameProfile;
 import org.dc4engine.profile.SaveMetadata;
 import org.dc4engine.profile.GameProfileRegistry;
+import org.dc4engine.profile.GameFonts;
 
 /** Android presentation/input shell; scene execution stays in arisa32core. */
 public class Arisa32Activity extends Activity implements SurfaceHolder.Callback {
@@ -643,12 +644,9 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private String effectiveFont(GameLibrary.Entry game) {
         if (game == null) return "";
-        if ("SYSTEM_DEFAULT".equals(game.font)) return "";
-        if (game.font != null && !game.font.isEmpty() && new File(game.font).isFile()) {
-            return game.font;
-        }
-        File def = ensureDefaultFont();
-        return def != null ? def.getAbsolutePath() : "";
+        File data = new File(game.path);
+        GameProfile profile = GameProfileRegistry.resolveProfile(data, game.title);
+        return GameFonts.resolve(profile, data, game.font, ensureDefaultFont());
     }
 
     @Override
@@ -3384,13 +3382,17 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 }).show();
     }
     private void chooseFont(GameLibrary.Entry game) {
-        File defaultFont = ensureDefaultFont();
+        File data = new File(game.path);
+        GameProfile profile = GameProfileRegistry.resolveProfile(data, game.title);
+        File nativeFont = profile.resolveDefaultFont(data);
+        File defaultFont = GameFonts.defaultFont(profile, data, ensureDefaultFont());
         File pretendard = ensureBundledFont("PretendardJP-Bold.ttf", "fonts/bundled");
         File root = new File(getFilesDir(), "fonts");
         File[] files = root.listFiles();
         ArrayList<File> customFonts = new ArrayList<>();
         ArrayList<String> labels = new ArrayList<>();
-        labels.add(tr("MS Gothic (Game default)", "MS Gothic (Bawaan game / default)", "MS ゴシック（標準フォント）"));
+        labels.add(nativeFont != null ? tr("M+ 1c Heavy (Game default)", "M+ 1c Heavy (Bawaan game)", "M+ 1c Heavy（標準フォント）") :
+                tr("MS Gothic (Game default)", "MS Gothic (Bawaan game / default)", "MS ゴシック（標準フォント）"));
         labels.add(tr("System default", "Bawaan sistem", "システム標準"));
         boolean selectedPretendard = false;
         if (pretendard != null) {
@@ -3399,7 +3401,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         if (files != null) {
             for (File file : files) {
-                if (file.isFile() && !file.getName().equalsIgnoreCase("MSGOTHIC.TTC")) {
+                if (file.isFile() && (nativeFont != null || !file.getName().equalsIgnoreCase("MSGOTHIC.TTC"))) {
                     if (sameFontFile(file, pretendard)) {
                         if (file.getAbsolutePath().equals(game.font)) selectedPretendard = true;
                         continue;

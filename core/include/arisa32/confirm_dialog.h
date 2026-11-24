@@ -81,10 +81,12 @@ public:
     void set_dont_confirm(bool val) { dont_confirm_ = val; }
 
 private:
+    int dalsegno_top() const { return kind_ == ConfirmKind::SceneJump ? 164 : 268; }
     bool active_ = false;
     bool loaded_ = false;
     bool dc2pc_ = false;
     bool dc2dm_ = false;
+    bool dalsegno_ = false;
     dc4scene::Image chip_; // GRP/SYSTEM/ADVMENUCHIP.CRX
     std::u16string message_;
     std::u16string title_;

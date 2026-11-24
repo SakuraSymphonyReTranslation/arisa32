@@ -426,6 +426,14 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
 }
 
 bool SceneAudio::dispatch(const MesCommand& c) {
+    if (c.ds && c.kind == CmdKind::Str) {
+        // DSAO raw 46 completes without playback; raw 5C clears only on "-".
+        if (c.raw_op == 0x46) return true;
+        if (c.raw_op == 0x5C) {
+            if (c.str == "-") play_se(-2, false);
+            return true;
+        }
+    }
     if (pending_bgm_fade_) {
         pending_bgm_fade_ = false;
         bool extension = c.kind == CmdKind::Words4 && c.opcode() == dc4::Opcode::CHIP;
@@ -434,7 +442,7 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         if (extension) return true;
     }
     if (c.kind == CmdKind::Param2 &&
-        ((c.dc2dm && c.raw_op == 0x06) || (!c.dc2dm && !c.classic_dc2() && c.op == 0x06))) {
+        (((c.dc2dm || c.ds) && c.raw_op == 0x06) || (!c.dc2dm && !c.ds && !c.classic_dc2() && c.op == 0x06))) {
         // The runner consumes this wait when advancing past the voiced line.
         state_.last_voice_name.clear();
         last_voice_.clear();

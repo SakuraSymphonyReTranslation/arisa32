@@ -27,6 +27,15 @@ public final class DalSegnoProfile implements GameProfile {
     }
 
     @Override
+    public File resolveDefaultFont(File dataRoot) {
+        if (dataRoot == null) return null;
+        File grp = GameDataFiles.child(dataRoot, "GRP");
+        if (!grp.isDirectory()) grp = GameDataFiles.child(GameDataFiles.child(dataRoot, "AdvData"), "GRP");
+        File font = GameDataFiles.child(grp, "mplus-1c-heavy.ttf");
+        return font.isFile() ? font : null;
+    }
+
+    @Override
     public boolean matches(File dataRoot, String pathLower) {
         if (dataRoot == null && pathLower == null) return false;
         if (isInFuture(dataRoot, pathLower)) return false;

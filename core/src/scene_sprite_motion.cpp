@@ -28,7 +28,8 @@ void BstSprite::finish_motion() {
 }
 
 bool SceneRunner::animating() const {
-    return !dialogue_actions_.empty() || !camera_motion_.empty() || dc2pc_transition_active_ || dc2dm_transition_.active ||
+    return !dialogue_actions_.empty() || !camera_motion_.empty() || !ds_background_motion_.empty() || dc2pc_transition_active_ || dc2dm_transition_.active ||
+        std::any_of(ds_camera_layers_.begin(), ds_camera_layers_.end(), [](const auto& item) { return item.second.motion.duration_ms > 0; }) ||
         std::any_of(sprites_.begin(), sprites_.end(), [](const BstSprite& s) { return s.moving() || s.fade.active(); }) ||
         (is_dc4_or_dc4ph_ && (transition_active_ || !screen_effect_.empty()));
 }
@@ -103,6 +104,104 @@ void SceneRunner::queue_sprite_slide(uint16_t x, uint16_t y, uint16_t target, ui
     s.relative_origin_valid = relative;
     queue_sprite_move(index, int(int16_t(x)) + (relative ? s.relative_x : 0),
                       int(int16_t(y)) + (relative ? s.relative_y : 0), mode ? mode * 6u : 60u);
+}
+
+void SceneRunner::apply_dalsegno_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, uint16_t y) {
+    if (mode > 3 || !scale_pct) return;
+    ds_background_motion_.clear();
+    for (int index = -1; index < 4; ++index) {
+        auto background = layers_.find(1);
+        if (index == -1 && background == layers_.end()) continue;
+        if (index >= 0 && !sprites_[index].img.valid()) continue;
+        float current_x, current_y, current_scale;
+        if (index == -1) {
+            auto& image = background->second;
+            if (!image.native_placement) {
+                image.native_placement = true;
+                image.native_x = float((1280 - image.w) / 2);
+                image.native_y = float((720 - image.h) / 2);
+                image.native_scale = 1;
+            }
+            current_x = image.native_x; current_y = image.native_y; current_scale = image.native_scale;
+        } else {
+            auto& body = sprites_[index];
+            current_x = float(body.position(0)); current_y = float(body.position(1)); current_scale = body.scale;
+            body.finish_motion(); body.cur_x = int(std::lround(current_x)); body.cur_y = int(std::lround(current_y));
+            body.fade = {}; body.alpha = 255;
+        }
+        auto existing = ds_camera_layers_.find(index);
+        const bool restore = mode >= 2 || scale_pct == 100;
+        if (restore && existing == ds_camera_layers_.end()) continue;
+        if (existing == ds_camera_layers_.end()) {
+            DsCameraLayer layer;
+            layer.base_x = current_x; layer.base_y = current_y; layer.base_scale = current_scale;
+            existing = ds_camera_layers_.emplace(index, layer).first;
+        }
+        auto& layer = existing->second;
+        auto& motion = layer.motion;
+        motion = {};
+        motion.from_x = current_x; motion.from_y = current_y; motion.from_scale = current_scale;
+        motion.to_x = layer.base_x; motion.to_y = layer.base_y; motion.to_scale = layer.base_scale;
+        if (!restore) {
+            const float ratio = scale_pct / 100.f;
+            double position_scale = ratio;
+            if (index == -1) {
+                motion.to_scale = ratio;
+                motion.to_x += background->second.w / 2.f * (layer.base_scale - ratio) - int16_t(x) * ratio;
+                motion.to_y += background->second.h / 2.f * (layer.base_scale - ratio) - int16_t(y) * ratio;
+            } else {
+                // Native 0x418B4A multiplies non-unit original scales before truncating.
+                const auto& body = sprites_[index];
+                const float factor = body.image.find("_B,") != std::string::npos ? 1.2f : 1.15f;
+                motion.to_scale = std::floor(scale_pct * (layer.base_scale == 1 ? factor : layer.base_scale * 1.15f) + .001f) / 100;
+                position_scale = std::floor(scale_pct * (layer.base_scale == 1 ? factor : 1.1f) + .001f) / 100.0;
+                const float width = float(body.canvas_w ? body.canvas_w : body.img.w);
+                motion.to_x = std::trunc(motion.to_x + (layer.base_x + int(width) / 2 - 640 - int16_t(x)) * position_scale);
+                motion.to_y = std::trunc(motion.to_y + (layer.base_y - int16_t(y)) * position_scale);
+            }
+        }
+        motion.duration_ms = animation_enabled_ && effects_enabled_ && (mode == 1 || mode == 3) ?
+            camera_duration_ * 12.0 * 1000 / 60 : 0;
+        motion.elapsed_ms = -1;
+    }
+    update_dalsegno_camera(0);
+    scene_dirty_ = true;
+}
+
+void SceneRunner::update_dalsegno_camera(double elapsed_ms, bool finish) {
+    for (auto it = ds_camera_layers_.begin(); it != ds_camera_layers_.end();) {
+        const int index = it->first;
+        auto& layer = it->second;
+        auto& motion = layer.motion;
+        if (!motion.duration_ms && !motion.elapsed_ms) { ++it; continue; }
+        motion.elapsed_ms = finish ? motion.duration_ms : std::min(motion.duration_ms, std::max(0.0, motion.elapsed_ms) + elapsed_ms);
+        const double t = motion.duration_ms ? motion.elapsed_ms / motion.duration_ms : 1;
+        const auto interpolate = [t](float a, float b) { return float(a + (b - a) * t); };
+        if (index == -1) {
+            auto background = layers_.find(1);
+            if (background != layers_.end()) {
+                auto& image = background->second;
+                image.native_x = interpolate(motion.from_x, motion.to_x);
+                image.native_y = interpolate(motion.from_y, motion.to_y);
+                image.native_scale = interpolate(motion.from_scale, motion.to_scale);
+            }
+        } else {
+            auto& body = sprites_[index];
+            body.cur_x = int(std::lround(interpolate(motion.from_x, motion.to_x)));
+            body.cur_y = int(std::lround(interpolate(motion.from_y, motion.to_y)));
+            body.scale = interpolate(motion.from_scale, motion.to_scale);
+        }
+        if (t >= 1) {
+            motion.duration_ms = motion.elapsed_ms = 0;
+            if (motion.to_x == layer.base_x && motion.to_y == layer.base_y && motion.to_scale == layer.base_scale) {
+                it = ds_camera_layers_.erase(it);
+                scene_dirty_ = true;
+                continue;
+            }
+        }
+        scene_dirty_ = true;
+        ++it;
+    }
 }
 
 void SceneRunner::update_sprite_motion(double elapsed_ms) {

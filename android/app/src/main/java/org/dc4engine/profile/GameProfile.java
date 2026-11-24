@@ -18,6 +18,8 @@ public interface GameProfile {
     /** Canonical game title display name. */
     String getDisplayName();
 
+    default File resolveDefaultFont(File dataRoot) { return null; }
+
     /** Checks whether this profile applies to the specified data directory. */
     boolean matches(File dataRoot, String pathLower);
 

@@ -110,6 +110,7 @@ bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
     if(error)error->clear();
     const std::string dir = data_dir + "/GRP/SYSTEM";
     dc2pc_ = dc4::asset_exists(dir + "/common_load_chip00.crx");
+    dalsegno_ = dc4::is_dalsegno_game(data_dir);
     dc4::MesFile main;
     dc2dm_ = main.load_file(data_dir + "/MES/main.mes") &&
         dc4::mes_opcode_profile(main.dialect, main.version).id == dc4::MesProfileId::ClassicDM;
@@ -133,14 +134,16 @@ bool ConfirmDialog::load(const std::string& data_dir, std::string* error) {
     chip_.name = name;
     chip_.w = info.width;
     chip_.h = info.height;
-    loaded_ = chip_.valid() && chip_.w >= (dc2pc_ ? 456 : dc2dm_ ? 748 : kBoxW) &&
-        chip_.h >= (dc2pc_ ? 272 : dc2dm_ ? 224 : kBoxH);
+    loaded_ = chip_.valid() && chip_.w >= (dc2pc_ ? 456 : dc2dm_ ? 748 : dalsegno_ ? 776 : kBoxW) &&
+        chip_.h >= (dc2pc_ ? 272 : dc2dm_ ? 224 : dalsegno_ ? 369 : kBoxH);
+    if (!loaded_ && error) *error = "Incomplete confirmation atlas " + name;
     return loaded_;
 }
 
 void ConfirmDialog::set_chip(const dc4scene::Image& chip) {
     dc2pc_=false;
     dc2dm_=false;
+    dalsegno_=false;
     chip_ = chip;
     loaded_ = chip_.valid() && chip_.w >= kBoxW && chip_.h >= kBoxH;
 }
@@ -204,6 +207,7 @@ void ConfirmDialog::close() {
 }
 
 bool ConfirmDialog::hit_yes(int x, int y) const {
+    if(dalsegno_)return x>=480 && x<600 && y>=dalsegno_top()+80 && y<dalsegno_top()+144;
     if(dc2dm_)return x>=435 && x<620 && y>=355 && y<435;
     if(dc2pc_)return x>=515 && x<640 && y>=378 && y<416;
     const int bx = kBoxX + kYesRelX;
@@ -213,6 +217,7 @@ bool ConfirmDialog::hit_yes(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_no(int x, int y) const {
+    if(dalsegno_)return x>=666 && x<786 && y>=dalsegno_top()+80 && y<dalsegno_top()+144;
     if(dc2dm_)return x>=670 && x<855 && y>=355 && y<435;
     if(dc2pc_)return x>=640 && x<765 && y>=378 && y<416;
     const int bx = kBoxX + kNoRelX;
@@ -222,7 +227,7 @@ bool ConfirmDialog::hit_no(int x, int y) const {
 }
 
 bool ConfirmDialog::hit_checkbox(int x, int y) const {
-    if(dc2pc_ || dc2dm_)return false;
+    if(dc2pc_ || dc2dm_ || dalsegno_)return false;
     const int bx = kBoxX + kChkRelX;
     const int by = kBoxY + kChkRelY;
     return x >= bx && x < bx + kChkW && y >= by && y < by + kChkH;
@@ -264,6 +269,32 @@ void ConfirmDialog::draw(int mouse_x, int mouse_y, bool down,
                          const dc4scene::FontRenderer& font,
                          std::vector<uint8_t>* frame) const {
     if (!active_ || !frame || frame->size() != size_t(kW) * kH * 4) return;
+    if(dalsegno_) {
+        const int top=dalsegno_top();
+        blit_subimage(chip_,0,0,700,184,290,top,frame);
+        blit_subimage(chip_,700,0,23,35,626,top+100,frame);
+        const bool yes=hit_yes(mouse_x,mouse_y),no=hit_no(mouse_x,mouse_y);
+        blit_subimage(chip_,yes?240:0,185,119,64,480,top+80,frame);
+        blit_subimage(chip_,no?360:120,185,119,64,666,top+80,frame);
+        int sx=-1,sy=0;
+        switch(kind_) {
+        case ConfirmKind::Save: case ConfirmKind::Overwrite: case ConfirmKind::QuickSave: sx=388;sy=279;break;
+        case ConfirmKind::Load: case ConfirmKind::QuickLoad: sx=388;sy=309;break;
+        case ConfirmKind::Title: sx=0;sy=339;break;
+        case ConfirmKind::Quit: sx=0;sy=249;break;
+        case ConfirmKind::ReplayExit: sx=388;sy=249;break;
+        case ConfirmKind::SceneJump: case ConfirmKind::NewGame: case ConfirmKind::SceneReplay: sx=388;sy=339;break;
+        default: break;
+        }
+        if(sx>=0) blit_subimage(chip_,sx,sy,388,30,450,top+20,frame);
+        else {
+            const auto& prompt=message_.empty()?title_:message_;
+            int size=24;
+            while(size>12 && font.text_width(prompt,float(size))>570)--size;
+            draw_text(font,prompt,640-font.text_width(prompt,float(size))/2,top+20,size,0xFFFFFF,frame,0x000000);
+        }
+        return;
+    }
     if(dc2dm_) {
         // start.mes defines this 440x224 dialog in the 1024x576 canvas.
         auto native_blit=[&](int sx,int sy,int w,int h,int x,int y) {

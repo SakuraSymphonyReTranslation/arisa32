@@ -15,8 +15,9 @@ namespace dc4ui {
 
 namespace {
 
-bool read_crx(const std::string& data_dir, const char* rel, dc4scene::Image* out) {
-    const std::string dir = data_dir + "/GRP/SYSTEM";
+bool read_crx(const std::string& data_dir, const char* rel, dc4scene::Image* out,
+              const char* subdir = "/SYSTEM") {
+    const std::string dir = data_dir + "/GRP" + subdir;
     const std::string resolved = dc4::find_file_ci(dir, rel);
     std::vector<uint8_t> buf;
     std::ifstream in(dc4::resolve_asset(resolved.empty() ? dir + "/" + rel : dir + "/" + resolved),
@@ -182,10 +183,11 @@ std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bo
 }
 
 bool LogScreen::load(const std::string& data_dir) {
-    back_={};chip_={};
+    back_={};chip_={};inline_bar_={};
     dc4::MesFile main;
     dc2dm_=main.load_file(data_dir+"/MES/main.mes") && main.dialect==dc4::MesDialect::ClassicDM;
     dalsegno_ = dc4::is_dalsegno_game(data_dir);
+    if (dalsegno_) read_crx(data_dir, "bar.CRX", &inline_bar_, "");
     if ((main.version & 0xFFFF) == 0x9F9A && !dalsegno_) return false;
     dc2dm_text_rgb_ = 0xC8A0DC;
     dc2dm_selected_rgb_ = 0xFFFFFF;
@@ -280,13 +282,16 @@ void LogScreen::blit(const dc4scene::Image& img, int sx, int sy, int sw, int sh,
 // White glyphs with the font's built-in dark outline, matching the message
 // window. Rasterizes a tight bounds buffer like the shell's overlay_text.
 void LogScreen::draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
-                          int x, int baseline, std::vector<uint8_t>* frame, int size) const {
+                          int x, int baseline, std::vector<uint8_t>* frame, int size,
+                          const dc4scene::Image* inline_dash) const {
     if (text.empty()) return;
-    const int width = std::min(text_width(text, size) + 8, dc4scene::kScreenW - x + 2);
+    const int measured = inline_dash ? font.text_width(text, float(size), false, false, 0, inline_dash) : text_width(text, size);
+    const int width = std::min(measured + 8, dc4scene::kScreenW - x + 2);
     if (width <= 0) return;
     const int height = size + 16;
     std::vector<uint8_t> pixels(size_t(width) * height * 4, 0);
-    font.rasterize_line(text, 2, size + 8, &pixels, width, height, float(size));
+    font.rasterize_line(text, 2, size + 8, &pixels, width, height, float(size),
+                        0xFFFFFF, false, 0, false, 0, 0, 1, true, inline_dash);
     const int top = baseline - size - 8;
     for (int py = 0; py < height; ++py) {
         for (int px = 0; px < width; ++px) {
@@ -509,12 +514,12 @@ void LogScreen::draw_dalsegno(const std::vector<LogRow>& rows, int scroll,
         draw_text(font,row.name,150,top + 26,frame,22);
         std::u16string line;
         int baseline = top + 34;
-        const auto flush = [&] {draw_text(font,line,310,baseline,frame,22); line.clear(); baseline += 28;};
+        const auto flush = [&] {draw_text(font,line,310,baseline,frame,22,&inline_bar_); line.clear(); baseline += 28;};
         for (char16_t ch : row.text) {
             if (ch == u'\r') continue;
             if (ch == u'\n') {flush(); if (baseline > top + 105) break; continue;}
             line += ch;
-            if (font.text_width(line,22) > 735) {
+            if (font.text_width(line,22,false,false,0,&inline_bar_) > 735) {
                 size_t split = line.find_last_of(u' ');
                 if (split == std::u16string::npos || split == 0) split = line.size()-1;
                 const auto tail = line.substr(split + (line[split] == u' ' ? 1 : 0));

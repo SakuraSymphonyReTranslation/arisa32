@@ -1,5 +1,10 @@
 # Dal Segno: catatan lanjutan 21 November 2026
 
+Catatan ini memuat checkpoint historis 21 November dan lanjutan sebelum commit
+24 November. Status gabungan terbaru, audit semua commit, APK dan instalasi ada
+di [handoff 24 November](dalsegno-handoff-2026-11-24.md). Angka pengujian dan hash
+APK pada bagian historis tidak menyatakan status build terbaru.
+
 Ini pekerjaan dukungan Dal Segno MangaGamer, bukan release baru. Versi aplikasi
 tetap 0.7.4. Dal Segno dan Dal Segno in Future (DSIF) adalah dua game berbeda.
 Dukungan penuh DSIF belum diimplementasikan atau diuji dengan data asli.
@@ -81,7 +86,7 @@ manual. Temp sesi:
 Gunakan subfolder `story-reference` dan `music-reference`; sebagian contact sheet
 di root Temp berasal dari rekaman 0552 yang berbeda.
 
-## Verifikasi akhir
+## Verifikasi checkpoint 21 November 2026
 
 | Pemeriksaan | Hasil |
 | --- | --- |
@@ -100,7 +105,8 @@ di root Temp berasal dari rekaman 0552 yang berbeda.
 | Pemasangan HP | PASS, `adb install -r`, tanpa clear data; Activity cold launch `Status: ok`, proses hidup |
 | `git diff --check` | PASS |
 
-APK final: `android/app/build/outputs/apk/debug/app-debug.apk`.
+APK pada checkpoint 21 November: `android/app/build/outputs/apk/debug/app-debug.apk`.
+Output tersebut telah digantikan build 24 November yang dicatat di bawah.
 SHA256: `96970669D0F0DD2B44173EBAA3CF7C126992A07C09E779029851D993E39F564C`.
 HP mencatat pembaruan pada 21 November 2026 pukul 17:16:13 zona lokal.
 Log hasil tersedia di Temp sesi, prefix `final-`. QA memakai aplikasi terpisah;
@@ -162,3 +168,115 @@ visual lengkap atau release yang selesai.
   dipertahankan di working tree, tidak dicampur ke commit Dal Segno.
   Build sesi ini menggunakan AGP lokal 8.13.2 di `android/build.gradle`;
   baseline Git masih 8.5.2. Periksa perbedaan ini jika membangun dari clone baru.
+
+## Lanjutan 24 November 2026: popup Android dan font native
+
+Screenshot pengguna memperlihatkan fallback generik “Return to this backlog
+scene?” dengan checkbox “Don't ask again”. Penyebabnya ada di startup JNI:
+`e->confirm.load(e->data_dir)` hanya dijalankan ketika `menu_ok` bernilai true.
+Dal Segno menggunakan menu scripted asli sehingga `menu_ok` false; atlas
+konfirmasi Dal Segno yang sudah didukung core tidak pernah dimuat oleh Android.
+Startup sekarang memuat konfirmasi untuk Dal Segno juga.
+
+Pada HP, popup kini menggunakan atlas asli dengan teks “Proceed?” dan Yes/No.
+Dialog SceneJump berada di posisi atas (top 164; pusat Yes 540,276 dan No 726,276).
+Posisi Yes lama pada y=380 tidak bereaksi. Dialog nama/save tetap memakai posisi
+bawah (top 268; Yes y=348..412). Jangan menyamakan hitbox kedua jenis dialog.
+
+Font PC dipastikan melalui executable dan pembacaan memori proses: PC memuat
+`AdvData/GRP/mplus-1c-heavy.ttf`, face M+ 1c heavy, ukuran file 1.731.500 byte.
+Android kini memilih font ini sebagai default Dal Segno melalui `GameFonts` dan
+`DalSegnoProfile.resolveDefaultFont`. Pilihan font eksplisit tetap dipertahankan;
+game lain dan data tanpa font native tetap memakai fallback sebelumnya.
+Picker menampilkan “M+ 1c Heavy (Game default)”.
+
+Assertion Java awal gagal karena membandingkan string path dengan casing berbeda
+di Windows. Resolver menunjuk file yang sama; pemeriksaan sekarang membandingkan
+identitas `File`. Tidak ada perubahan resolver untuk menyamarkan kegagalan tes.
+
+| Pemeriksaan lanjutan | Hasil |
+| --- | --- |
+| Gradle `assembleDebug -ParisaAbi=arm64-v8a --max-workers=2` | PASS, 1m9s |
+| Java ProfileChecks dengan EXE asli | PASS, 533 pemeriksaan |
+| CTest desktop terbaru | 44 PASS, 0 gagal, 1 SKIP dari 45; 121,78 detik |
+| Native save desktop asli | PASS, 00/01/02/03/05/06 dan profil sistem |
+| JNI HP: popup dengan override MSGothic | PASS, atlas asli, posisi atas, cancel, No, Yes, Back |
+| JNI HP: default M+ 1c heavy | PASS, resolver produksi menunjuk font asli yang dapat dibaca |
+| JNI HP: nama | PASS, validasi, edit, cancel, No, Default, Yes dan speaker cerita |
+| JNI HP: relaunch nama | PASS, Budi/Adam dipulihkan setelah `app_process` baru |
+| JNI HP: enam native save dan companion | PASS, teks/speaker/pixel clean scene identik |
+| JNI HP: backlog | PASS, replay voice, cancel/drag, posisi lama inert, No mempertahankan posisi, Yes memulihkan teks/speaker checkpoint sebelumnya, Back |
+| `git diff --check` | PASS, hanya peringatan konversi CRLF |
+
+APK yang diuji: `android/app/build/outputs/apk/debug/app-debug.apk`.
+Package `org.dc4engine`, version 0.7.4/code 22, ABI arm64-v8a.
+SHA256: `37AEE83F61A73F0AE034D617E28907048F0CC52E34872FA2C99B3152D214AF1F`.
+JNI SHA256: `90B2DE4920FB410F6C7BF508B1A14A6B85E689424F73903FB2FA8E5655F3720F`.
+Build ini belum dipasang ke aplikasi produksi di HP. Tes menggunakan JNI dari
+APK melalui `app_process`; save/profile pemain tidak disentuh. Tidak ada commit,
+push, tag atau release baru pada lanjutan ini.
+
+Harness yang dipelihara: `tests/android/run_dalsegno_probe.py` dan
+`tests/android/dalsegno-probe/org/dc4engine/Arisa32Activity.java`; cara pakai ada di
+`tests/android/README.md`. Bukti sementara:
+
+- MSGothic/popup: `C:\Users\adamb\AppData\Local\Temp\arisa32-dalsegno-jni-ugje7uus`.
+- Default native/seluruh kasus: `C:\Users\adamb\AppData\Local\Temp\arisa32-dalsegno-jni-7oab_mf8`.
+- `captures/backlog-confirmation.png` memperlihatkan dialog asli;
+  `captures/backlog-jump.png` memperlihatkan checkpoint yang dipulihkan.
+
+Perubahan core sebelumnya juga sudah diperiksa: varian sprite `_B` memakai aset
+asli tanpa multiplier skala 1,28; companion v14 menyimpan native camera originals
+B8/BC/C0/C4 dan tetap menerima v13; background memakai center pivot native;
+preload raw46 tidak memulai voice, raw5C `.` mempertahankan voice dan `-`
+menghapusnya, raw06 menghapus asosiasi replay; accessory mengikuti body motion.
+Tes motion dan confirm dialog lulus. Perbandingan body yang sudah berhenti
+bergerak mendekati PC dalam sekitar 2 pixel; frame pan stabil berada pada detik
+48, bukan 47 yang masih bergerak atau 49 yang mulai reset.
+
+Review visual memakai artwork, warna, komposisi dan font game asli sesuai arah
+pengguna (ENERGY 2 / RHYTHM 1 / MOTION 1). Interaksi popup yang diubah telah
+diverifikasi satu per satu melalui JNI. Keyboard/picker Activity dan seluruh
+playthrough tetap belum tercakup. Ini verifikasi perbaikan popup, bukan klaim
+kesetaraan seluruh game.
+
+Delivery gate pada lingkup perbaikan loading popup:
+
+| Blok | Hasil dan bukti |
+| --- | --- |
+| Hard Gate | PASS pada perubahan ini: APK dibangun, artwork game asli dimuat, popup muat dalam canvas 1280x720, semua gesture konfirmasi yang diubah diuji |
+| Purpose-Gate | PASS: atlas, warna dan font berasal dari game PC untuk memenuhi referensi pengguna; tidak ada dekorasi baru |
+| Liveliness | PASS: ENERGY 2 / RHYTHM 1 / MOTION 1; motif gear dan fokus Yes/No tetap memakai komposisi asli |
+| Craftsmanship / Quality Locks | PASS pada perilaku yang diubah: posisi atas/bawah berbeda, cancel dan No menjaga state, Yes mengembalikan checkpoint yang benar; hasil dicatat oleh harness |
+
+Sheet kamera sementara juga telah diregenerasi dengan pan pada detik 48:
+`C:\Users\adamb\AppData\Local\Temp\arisa32-dalsegno-20261123\camera-comparison.png`.
+Row pan memakai 419 inlier SIFT, scale 1,00153 dan translasi sekitar +1,39/-0,19
+pixel. `pc-pan-stable.png` sekarang memakai frame 48 detik yang benar.
+
+Temuan awal lanjutan: satu baris backlog menampilkan literal `#h` pada akhir
+“The island where no one is ever unhappy”. Temuan ini diperbaiki pada lanjutan
+berikut. Choice checkpoint, seluruh transisi dan batas export PC tetap terbuka.
+
+## Koreksi inline image 24 November 2026
+
+Analisis DSAO.exe membuktikan `#h` dan alias `#b` memuat `GRP/bar.CRX`, bukan
+teks biasa. Handler `0x43099D..0x430AA7` memeriksa `#h` di `0x4309B3` dan memanggil
+loader `0x43C080` melalui `0x4309CD`. Aset asli berukuran 19x22 RGBA dengan warna
+dan outline sendiri. Renderer DS kini memakai aset tersebut untuk dialog dan
+backlog, dengan advance 19 pixel, wrapping dan reveal satu karakter. Teks mentah
+di scene/save tetap mempertahankan tag; hanya tampilan DS yang mengubahnya.
+Profil lain dan tag yang belum dikenal tetap memakai perilaku sebelumnya.
+
+Tes desktop `dalsegno_text_test` lulus setelah fixture MES diperbaiki: spasi DS
+harus diencode sebagai `$` karena byte nol adalah terminator. Probe backlog HP
+pada APK terbaru lulus, termasuk checkpoint garis, replay, cancel/drag, popup
+atas, No/Yes dan Back. Bukti:
+`C:\Users\adamb\AppData\Local\Temp\arisa32-dalsegno-jni-9hl5pgkt`.
+Capture `backlog-inline-bar.png` tidak lagi menampilkan `#h`. Posisi vertikal garis
+sesuai baris referensi PC setelah title bar 26 pixel dan posisi row diselaraskan;
+geometri font seluruh kalimat belum dinyatakan identik.
+
+Tag gambar lain `#s` (`dbr2.crx`), `#e` (`dbr.crx`) dan `#o` (`onp.crx`) ditemukan
+di executable tetapi belum diimplementasikan atau diuji. Gunakan handoff terbaru
+untuk hash APK, hasil suite akhir, commit dan status instalasi.

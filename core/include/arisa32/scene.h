@@ -43,6 +43,9 @@ using SjisDecoder = std::u16string (*)(const std::string&);
 extern SjisDecoder g_sjis_decoder;
 std::u16string sjis_to_utf16(const std::string& s);
 
+struct Image;
+constexpr char16_t kInlineDash = u'\u2014';
+
 // stb_truetype wrapper rasterizing one UTF-16 line into an RGBA buffer.
 class FontRenderer {
 public:
@@ -65,11 +68,13 @@ public:
                         bool wide = false, uint32_t outline_rgb = 0,
                         bool fixed_grid = false, int tracking = 0,
                         float raster_size = 0, float output_scale = 1,
-                        bool outlined = true) const;
+                        bool outlined = true, const Image* inline_dash = nullptr) const;
     int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false,
-                      bool fixed_grid = false, int tracking = 0) const;
+                      bool fixed_grid = false, int tracking = 0,
+                      const Image* inline_dash = nullptr) const;
     int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false,
-                   bool fixed_grid = false, int tracking = 0) const;
+                   bool fixed_grid = false, int tracking = 0,
+                   const Image* inline_dash = nullptr) const;
     std::pair<int, int> text_vertical_bounds(const std::u16string& text, float pixel_size = 0) const;
 
 private:
@@ -463,6 +468,8 @@ private:
     void draw_dc2pc_choices();
     UiButton dc2pc_choice_button(size_t index) const;
     void apply_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, uint16_t y);
+    void apply_dalsegno_camera(uint16_t mode, uint16_t scale_pct, uint16_t x, uint16_t y);
+    void update_dalsegno_camera(double elapsed_ms, bool finish = false);
     void reset_camera();
     void queue_sprite_slide(uint16_t x, uint16_t y, uint16_t target, uint16_t mode);
     void queue_sprite_move(size_t index, int x, int y, uint32_t frames);
@@ -657,6 +664,7 @@ private:
     std::array<bool, 42> ds_music_checks_{};
     uint32_t ds_music_random_ = 0xD5A032;
     std::vector<uint8_t> ds_system_template_;
+    Image ds_inline_bar_;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
     bool dc2dm_ui_ = false;
@@ -690,6 +698,12 @@ private:
         double elapsed_ms = 0, duration_ms = 0;
     };
     std::vector<CameraMotion> camera_motion_;
+    std::vector<CameraMotion> ds_background_motion_;
+    struct DsCameraLayer {
+        float base_x = 0, base_y = 0, base_scale = 1;
+        CameraMotion motion;
+    };
+    std::map<int, DsCameraLayer> ds_camera_layers_;
     uint16_t camera_duration_ = 5; // MES 0x99, native default 5 * 12 updates
     bool animation_enabled_ = false;
     bool effects_enabled_ = true;

@@ -546,3 +546,37 @@ mix the player's progress with the staged flags. All saves are written there.
 Logs, APK/JNI hashes, and captures are copied to `build/dc2dm-save-validation/`.
 See [the validation report](../../docs/dc2dm-save-progress-validation.md) for
 results and the limits of native-PC compatibility.
+
+## Dal Segno packaged JNI checks
+
+`run_dalsegno_probe.py` runs the arm64 library from an existing APK on a connected
+device. It creates a UUID fixture in `/data/local/tmp`, links only read-only game
+assets, and pushes copies of native saves 00/01/02/03/05/06. All profile and save
+writes stay inside that fixture. It does not install the APK or launch the
+player's Activity. Captures, logs, and APK/JNI hashes go to Windows Temp; the
+device fixture is removed after testing.
+
+```powershell
+python tests/android/run_dalsegno_probe.py `
+  --apk android/app/build/outputs/apk/debug/app-debug.apk `
+  --saves 'E:\Games\Dal Segno\AdvData\savedata' `
+  --data '/storage/emulated/0/Gamehub/Dal Segno/AdvData' `
+  --serial DEVICE_SERIAL
+```
+
+Replace the paths and serial with the actual game/device locations. Omitting
+`--font` uses the same `GameFonts` and `DalSegnoProfile` resolver as the Activity,
+and requires the authored `GRP/mplus-1c-heavy.ttf`. An optional `--font` supplies
+an explicit local font override that is copied into the fixture.
+
+The default cases are `name name-restart saves backlog`. Name checks cover
+validation, edit, cancelled confirmation, NO, Default, YES, story substitution,
+and persistence across fresh processes. Save checks compare dialogue, speaker,
+and clean scene pixels after companion round trips. Backlog checks cover real
+voice replay, cancelled/dragged input, the native upper confirmation positions,
+NO, YES restoring the exact earlier selected line, and Back. It rejects literal
+`#h`/`#b`, requires the native island checkpoint with one semantic dash, and
+captures its original `GRP/bar.CRX` rendering in `captures/backlog-inline-bar.png`.
+Use `--cases backlog`
+for the popup regression alone. `name-restart` requires `name` earlier in the same
+run. The harness does not exercise Android keyboard widgets or Activity layout.

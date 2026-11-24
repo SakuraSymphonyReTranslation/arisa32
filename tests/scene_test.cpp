@@ -1809,6 +1809,16 @@ void dalsegno_game_regressions(const fs::path& data) {
     CHECK(restored.restore_state(personal_save, &personal_error));
     if (!personal_error.empty()) std::cerr << "Personal restore: " << personal_error << '\n';
     CHECK(restored.current_line() == story_line && restored.speaker() == "Adam");
+    scene.draw(-1);
+    restored.draw(-1);
+    CHECK(scene.frame() == restored.frame());
+    int name_ink = 0;
+    for (int y = 576; y < 597; ++y) for (int x = 300; x < 350; ++x) {
+        const size_t pixel = (size_t(y) * 1280 + x) * 4;
+        const auto& frame = scene.frame();
+        if (frame[pixel] > 220 && frame[pixel + 1] > 220 && frame[pixel + 2] > 220) ++name_ink;
+    }
+    CHECK(name_ink > 20);
     capture("name-story-return");
     dc4ui::LogScreen log;
     CHECK(log.load(data.string()));
@@ -1846,6 +1856,20 @@ void dalsegno_game_regressions(const fs::path& data) {
     }
     CHECK(restored.restore_state(rows[3].snapshot));
     CHECK(dc4ui::capture_log_row(restored,3).text == rows[3].text);
+
+    bool voiced = false, multiple_bodies = false;
+    for (int line = 0; line < 250 && !(voiced && multiple_bodies); ++line) {
+        if (!scene.advance_to_next_text()) break;
+        CHECK(scene.last_error().empty());
+        if (!scene.last_voice().empty() && !voiced) {
+            CHECK(dc4ui::capture_log_row(scene,line).voice == scene.last_voice());
+            capture("story-first-voice"); voiced = true;
+        }
+        int bodies = 0;
+        for (int body = 0; body < 4; ++body) if (scene.sprite(body).visible && scene.sprite(body).img.valid()) ++bodies;
+        if (bodies >= 2 && !multiple_bodies) { capture("story-multiple-bodies"); multiple_bodies = true; }
+    }
+    CHECK(voiced && multiple_bodies);
 
     open("main"); click("end");
     CHECK(!scene.quit_requested());

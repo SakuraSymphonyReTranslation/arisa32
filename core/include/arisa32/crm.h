@@ -79,8 +79,9 @@ struct BstRef {
     char marker = 0;       // ',', '*', '@' or 0
     bool valid = false;
 };
-// DC2PC keeps _B as a real variant and infers the archive from the outfit.
-BstRef bst_parse_name(const std::string& name, bool dc2pc = false);
+// DC2PC infers the archive from the outfit; Dal Segno also keeps _B variants.
+BstRef bst_parse_name(const std::string& name, bool dc2pc = false,
+                      bool preserve_variant = false);
 
 // Case-insensitive filename lookup inside a directory (the game ships mixed
 // case: "GRP/BST/nin_b.CRM" is referenced from scripts as "BST\\NIN_B").
@@ -91,6 +92,6 @@ std::string find_file_ci(const std::string& dir, const std::string& name);
 // RGBA, opening either the named .CRM archive or a loose .CRX.
 bool bst_load(const std::string& grp_dir, const std::string& ref,
               std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err = nullptr,
-              bool dc2pc = false);
+              bool dc2pc = false, bool preserve_variant = false);
 
 }  // namespace dc4

@@ -11,6 +11,7 @@ import java.util.Map;
 import org.dc4engine.profile.GameProfile;
 import org.dc4engine.profile.Dc4Profile;
 import org.dc4engine.profile.GameProfileRegistry;
+import org.dc4engine.profile.GameFonts;
 import org.dc4engine.profile.GameSaveDirectory;
 import org.dc4engine.profile.SaveMetadata;
 import org.dc4engine.profile.ScenarioTitles;
@@ -511,6 +512,19 @@ public final class ProfileChecks {
                 check(actual.size()==280,"all Dal Segno native scenario titles");
                 check("Welcome to Paradise".equals(actual.get("ds_1129b_cm")), "real Dal Segno scenario title");
             }
+            Path fonts = Files.createDirectories(root.resolve("font-choice/grp"));
+            Path nativeFont = fonts.resolve("MPLUS-1C-HEAVY.TTF");
+            Path fallbackFont = root.resolve("MSGOTHIC.TTC");
+            Files.write(nativeFont,new byte[]{1}); Files.write(fallbackFont,new byte[]{2});
+            File fontData = fonts.getParent().toFile();
+            check(ds.resolveDefaultFont(fontData).equals(nativeFont.toFile()), "Dal Segno native font with case differences");
+            check(new File(GameFonts.resolve(ds,fontData,"",fallbackFont.toFile())).equals(nativeFont.toFile()), "Dal Segno default uses authored font");
+            check(GameFonts.resolve(ds,fontData,fallbackFont.toString(),null).equals(fallbackFont.toString()), "explicit imported font preserved");
+            check(GameFonts.resolve(ds,fontData,"SYSTEM_DEFAULT",fallbackFont.toFile()).isEmpty(), "explicit system font preserved");
+            check(new File(GameFonts.resolve(ds,fontData,"missing.ttf",fallbackFont.toFile())).equals(nativeFont.toFile()), "missing override falls back to game font");
+            check(GameFonts.resolve(new Dc4Profile(),fontData,"",fallbackFont.toFile()).equals(fallbackFont.toString()), "other profiles keep their default");
+            Files.delete(nativeFont);
+            check(GameFonts.resolve(ds,fontData,"",fallbackFont.toFile()).equals(fallbackFont.toString()), "missing native font keeps MS Gothic fallback");
             check(GameProfileRegistry.getAllProfiles().size() == 7, "all seven profiles registered");
             check(GameProfileRegistry.getAllStandardScanPaths().contains("DC2PC/AdvData"), "DC2PC scan path");
             check(GameProfileRegistry.getAllStandardScanPaths().contains("Games/DC2DM/AdvData"), "DC2DM scan path");

@@ -333,7 +333,7 @@ bool crxd_decode(const uint8_t* data, size_t size, const uint8_t* base_data,
     return true;
 }
 
-BstRef bst_parse_name(const std::string& name, bool dc2pc) {
+BstRef bst_parse_name(const std::string& name, bool dc2pc, bool preserve_variant) {
     BstRef r;
     size_t cut = std::string::npos;
     for (size_t i = 0; i < name.size(); ++i) {
@@ -355,7 +355,7 @@ BstRef bst_parse_name(const std::string& name, bool dc2pc) {
         r.archive.resize(r.archive.size() - 4);
     // Sprite_BstParseName appends "_B" to the entry when the slot previously
     // used that outfit; the stored name then has it as a suffix.
-    if (!dc2pc && r.entry.size() > 2 && r.entry.compare(r.entry.size() - 2, 2, "_B") == 0)
+    if (!dc2pc && !preserve_variant && r.entry.size() > 2 && r.entry.compare(r.entry.size() - 2, 2, "_B") == 0)
         r.entry.resize(r.entry.size() - 2);
     if (dc2pc && r.archive.empty()) {
         std::string stem = r.entry;
@@ -406,8 +406,8 @@ std::string find_file_ci(const std::string& dir, const std::string& name) {
 }
 
 bool bst_load(const std::string& grp_dir, const std::string& ref,
-              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err, bool dc2pc) {
-    BstRef r = bst_parse_name(ref, dc2pc);
+              std::vector<uint8_t>* rgba, CrxInfo* info, std::string* err, bool dc2pc, bool preserve_variant) {
+    BstRef r = bst_parse_name(ref, dc2pc, preserve_variant);
     if (!r.valid) {
         if (err) *err = "empty BST reference";
         return false;

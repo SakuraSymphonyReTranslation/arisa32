@@ -1,6 +1,7 @@
 #include "arisa32/audio.h"
 #include "arisa32/scene.h"
 #include "arisa32/scene_audio.h"
+#include "arisa32/log_screen.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -23,7 +24,7 @@ static void put32(std::vector<uint8_t>& bytes, size_t at, uint32_t v) {
     for (int i = 0; i < 4; ++i) bytes[at + i] = uint8_t(v >> (8 * i));
 }
 
-static void dc2dm_voice_prefetch() {
+static void dc2dm_voice_prefetch(bool ds = false) {
     using namespace dc4;
     const auto directory = std::filesystem::temp_directory_path() /
         ("arisa32-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -43,9 +44,10 @@ static void dc2dm_voice_prefetch() {
     AudioEngine audio;
     SceneAudio scene(directory.string());
     scene.set_engine(&audio, nullptr);
-    auto command = [](uint8_t opcode, const char* name) {
+    auto command = [ds](uint8_t opcode, const char* name) {
         MesCommand raw;
-        raw.dc2dm = true; raw.kind = CmdKind::Str; raw.op = opcode; raw.str = name;
+        raw.dc2dm = !ds; raw.ds = ds; raw.kind = CmdKind::Str;
+        raw.op = ds ? opcode == 0x37 ? 0x46 : opcode == 0x35 ? 0x44 : 0x45 : opcode; raw.str = name;
         return mes_engine_command(raw);
     };
     const auto prefetch = command(0x37, "next");
@@ -69,7 +71,7 @@ static void dc2dm_voice_prefetch() {
     check(scene.replay_voice() && render(audio, 8)[0] == 17 * 256 && !scene.voice_playing(),
           "explicit replay still plays the retained voice once");
     MesCommand next_line;
-    next_line.dc2dm = true; next_line.kind = CmdKind::Param2; next_line.op = 0x06;
+    next_line.dc2dm = !ds; next_line.ds = ds; next_line.kind = CmdKind::Param2; next_line.op = 0x06;
     next_line = mes_engine_command(next_line);
     check(scene.dispatch(command(0x36, "current")), "start voice before advancing the dialogue");
     render(audio, 2);
@@ -81,26 +83,42 @@ static void dc2dm_voice_prefetch() {
     check(headless.dispatch(command(0x36, "current")) && headless.dispatch(prefetch) &&
           headless.last_voice_name() == "current", "headless prefetch preserves explicit playback association");
     check(headless.dispatch(next_line) && headless.last_voice_name().empty(), "headless advance clears the voiced line");
+    if (ds) {
+        MesCommand clear; clear.ds = true; clear.kind = CmdKind::Str; clear.op = 0x5C; clear.str = ".";
+        check(scene.dispatch(command(0x36, "current")), "start Dal Segno sentinel voice");
+        render(audio, 2);
+        check(scene.dispatch(mes_engine_command(clear)) && scene.last_voice_name() == "current" &&
+              audio.channel_position(8) == 2, "Dal Segno dot sentinel preserves voice and replay");
+        clear.str = "-";
+        check(scene.dispatch(mes_engine_command(clear)) && !scene.voice_playing() && scene.last_voice_name().empty(),
+              "Dal Segno dash sentinel stops and clears voice");
+    }
     std::vector<uint8_t> script{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0};
+    if (ds) script = {0,0,0,0,0x9A,0x9F,0};
     const auto voice_command = [&](uint8_t op, const std::string& name) {
-        script.push_back(op);
+        script.push_back(ds ? op == 0x37 ? 0x46 : op == 0x35 ? 0x44 : 0x45 : op);
         script.insert(script.end(), name.begin(), name.end());
         script.push_back(0);
     };
     const auto dialogue = [&](const std::string& line) {
-        script.push_back(0x4F);
+        script.push_back(ds ? 0x61 : 0x4F);
         for (unsigned char ch : line) script.push_back(uint8_t(ch - 0x20));
         script.insert(script.end(), {0,0x06,0,0});
     };
     voice_command(0x37, "next"); dialogue("FIRST");
     voice_command(0x36, "current"); voice_command(0x37, "next"); dialogue("CURRENT");
     voice_command(0x37, "next"); dialogue("NARRATION");
-    script.push_back(0x4E);
+    script.push_back(ds ? 0x60 : 0x4E);
     for (unsigned char ch : std::string("Yoshiyuki")) script.push_back(uint8_t(ch - 0x20));
     script.push_back(0); dialogue("MC");
     voice_command(0x36, "next"); voice_command(0x37, "current"); dialogue("NEXT");
     script.push_back(0);
     std::filesystem::create_directories(directory / "MES");
+    if (ds) {
+        const std::vector<uint8_t> marker{0,0,0,0,0x9A,0x9F,0,0};
+        for (const auto* file : {"main.mes", "DS_1129B_CM.mes"})
+            std::ofstream(directory / "MES" / file, std::ios::binary).write(reinterpret_cast<const char*>(marker.data()), marker.size());
+    }
     const auto path = directory / "MES/voice-sequence.mes";
     {
         std::ofstream file(path, std::ios::binary);
@@ -115,6 +133,7 @@ static void dc2dm_voice_prefetch() {
           runner.last_voice().empty() && !runner.voice_playing(), "runner ignores narration prefetch");
     check(runner.advance_to_next_text() && runner.current_line() == "CURRENT" &&
           runner.last_voice() == "current" && runner.voice_playing(), "runner retains played voice through prefetch");
+    check(dc4ui::capture_log_row(runner,1).voice == "current", "backlog retains the played voice rather than the preload");
     render(sequence_audio, 8);
     check(!runner.voice_playing() && runner.last_voice() == "current" && runner.replay_voice(),
           "completed line keeps its own replay available");
@@ -124,6 +143,7 @@ static void dc2dm_voice_prefetch() {
           "runner advances to narration without restarting or associating another voice");
     std::vector<uint8_t> silent_line;
     check(runner.capture_state(&silent_line) && !runner.replay_voice(), "capture narration with no replay");
+    check(dc4ui::capture_log_row(runner,2).voice.empty(), "backlog narration has no inherited replay voice");
     check(runner.advance_to_next_text() && runner.speaker() == "Yoshiyuki" &&
           runner.last_voice().empty() && !runner.replay_voice(), "unvoiced Yoshiyuki cannot replay another character");
     check(runner.advance_to_next_text() && runner.current_line() == "NEXT" &&
@@ -131,7 +151,7 @@ static void dc2dm_voice_prefetch() {
           "runner plays deferred voice once at its own dialogue");
     check(runner.restore_state(silent_line) && runner.current_line() == "NARRATION" &&
           runner.last_voice().empty() && !runner.replay_voice(), "restoring DC2DM narration keeps replay unavailable");
-    for (uint8_t version : {0xAA, 0xAB}) {
+    if (!ds) for (uint8_t version : {0xAA, 0xAB}) {
         std::filesystem::create_directories(directory / "MES");
         const auto modern_path = directory / "MES/modern-voice-sequence.mes";
         script = {1,0,0,0,3,0,0,0,0,0,0xB6,version,0};
@@ -444,6 +464,7 @@ static void dalsegno_audio_sentinels() {
 int main(int argc, char** argv) {
     using namespace dc4;
     dc2dm_voice_prefetch();
+    dc2dm_voice_prefetch(true);
     deferred_channel_adoption();
     dc2dm_retained_title_bgm();
     dc2ty_character_voice_controls();

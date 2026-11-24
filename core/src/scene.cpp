@@ -326,7 +326,8 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
                                   std::vector<uint8_t>* rgba, int buf_w,
                                   int buf_h, float pixel_size, uint32_t rgb, bool wide,
                                   uint32_t outline_rgb, bool fixed_grid, int tracking,
-                                  float raster_size, float output_scale, bool outlined) const {
+                                  float raster_size, float output_scale, bool outlined,
+                                  const Image* inline_dash) const {
     if (!font_) return;
     if (!rgba || buf_w <= 0 || buf_h <= 0 || rgba->size() < size_t(buf_w) * buf_h * 4) return;
     if (!std::isfinite(output_scale) || output_scale <= 0) return;
@@ -334,8 +335,14 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
     const int glyph_size = std::max(1, int(std::round(int(raster_size > 0 ? raster_size : ps) * output_scale)));
     const int output_baseline = int(std::round(baseline * output_scale));
     std::vector<uint8_t> mask(size_t(buf_w) * buf_h, 0);
+    std::vector<int> dash_positions;
     int x = x0;
     for (char16_t ch : text) {
+        if (ch == kInlineDash && inline_dash && inline_dash->valid()) {
+            dash_positions.push_back(x);
+            x += inline_dash->w;
+            continue;
+        }
         const Glyph& g = glyph(ch, glyph_size, wide);
         const int output_x = int(std::round(x * output_scale));
         for (int ry = 0; ry < g.h; ++ry) for (int rx = 0; rx < g.w; ++rx) {
@@ -375,9 +382,42 @@ void FontRenderer::rasterize_line(const std::u16string& text, int x0, int baseli
             d[3] = uint8_t(std::clamp(out_a, 0, 255));
         }
     }
+    // Dal Segno's bar.CRX carries its own color and outline; keep it out of the font mask.
+    for (int dash_x : dash_positions) {
+        const auto& img = *inline_dash;
+        const int left = int(std::round(dash_x * output_scale));
+        const int top = int(std::round((baseline - 18) * output_scale));
+        const int width = int(img.w * output_scale), height = int(img.h * output_scale);
+        if (width <= 0 || height <= 0) continue;
+        for (int py = std::max(0, top); py < std::min(buf_h, top + height); ++py)
+            for (int px = std::max(0, left); px < std::min(buf_w, left + width); ++px) {
+                const float sx = std::clamp((px - left + .5f) * img.w / width - .5f, 0.f, float(img.w - 1));
+                const float sy = std::clamp((py - top + .5f) * img.h / height - .5f, 0.f, float(img.h - 1));
+                const int ix = int(sx), iy = int(sy);
+                const float fx = sx - ix, fy = sy - iy;
+                const auto sample = [&](int x, int y, int channel) {
+                    return img.rgba[(size_t(y) * img.w + x) * 4 + channel];
+                };
+                uint8_t src[4];
+                for (int c = 0; c < 4; ++c)
+                    src[c] = uint8_t(std::lround(
+                        (sample(ix, iy, c) * (1 - fx) + sample(std::min(ix + 1, img.w - 1), iy, c) * fx) * (1 - fy) +
+                        (sample(ix, std::min(iy + 1, img.h - 1), c) * (1 - fx) +
+                         sample(std::min(ix + 1, img.w - 1), std::min(iy + 1, img.h - 1), c) * fx) * fy));
+                if (!src[3]) continue;
+                uint8_t* dst = &(*rgba)[(size_t(py) * buf_w + px) * 4];
+                const int background_alpha = int(dst[3]) * (255 - src[3]) / 255;
+                const int alpha = src[3] + background_alpha;
+                for (int c = 0; c < 3; ++c)
+                    dst[c] = uint8_t((int(src[c]) * src[3] + int(dst[c]) * background_alpha) / alpha);
+                dst[3] = uint8_t(alpha);
+            }
+    }
 }
 
-int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide, bool fixed_grid, int tracking) const {
+int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide, bool fixed_grid, int tracking,
+                                const Image* inline_dash) const {
+    if (ch == kInlineDash && inline_dash && inline_dash->valid()) return inline_dash->w;
     const int ps = int(pixel_size > 0 ? pixel_size : pixel_size_);
     if (!fixed_grid && font_ && ch < 0x100) {
         const Glyph& g = glyph(ch, ps, wide);
@@ -386,9 +426,10 @@ int FontRenderer::glyph_advance(char16_t ch, float pixel_size, bool wide, bool f
     return std::max(0, (ch < 0x100 || (ch >= 0xFF61 && ch <= 0xFF9F) ? ps / 2 : ps) * (wide ? 2 : 1) + tracking);
 }
 
-int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool wide, bool fixed_grid, int tracking) const {
+int FontRenderer::text_width(const std::u16string& text, float pixel_size, bool wide, bool fixed_grid, int tracking,
+                             const Image* inline_dash) const {
     int w = 0;
-    for (char16_t ch : text) w += glyph_advance(ch, pixel_size, wide, fixed_grid, tracking);
+    for (char16_t ch : text) w += glyph_advance(ch, pixel_size, wide, fixed_grid, tracking, inline_dash);
     return w;
 }
 
@@ -414,6 +455,7 @@ SceneRunner::SceneRunner(const std::string& data_dir)
       dc4_replay_profile_(has_dc4_replay_profile(data_dir)) {
     frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
     set_latin_mode(dc4::is_latin());
+    if (is_dalsegno_profile_) load_grp_crx("bar.crx", &ds_inline_bar_, nullptr);
 }
 
 void SceneRunner::set_latin_mode(bool latin) {
@@ -1181,8 +1223,8 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
     const bool modern_dc4 = is_dc4_or_dc4ph_ && !c.dc2dm && !c.classic_dc2() &&
         (mes_.version == 0xAAB6 || mes_.version == 0xABB6);
-    if (c.dc2dm && c.kind == K::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
-        load_sheet(c.p1 + 21, c.str);
+    if ((c.dc2dm || c.ds) && c.kind == K::ParamStr && c.opcode() == dc4::Opcode::LOAD_SHEET) {
+        load_sheet(c.p1 + (c.ds ? 26 : 21), c.str);
         return true;
     }
     if (c.kind == K::Param2 && c.opcode() == dc4::Opcode::TRANSITION) {
@@ -1303,6 +1345,61 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
 
 bool SceneRunner::dispatch_sprite_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    if (c.ds && c.kind == K::Words4) {
+        if (c.raw_op == 0x7E) {
+            const size_t index = c.words[3] ? c.words[3] & 15 : c.words[2];
+            if (index >= 4 || c.words[3] == 255) return true;
+            if (c.words[3] & 0x80) {
+                auto& body = sprites_[index];
+                body.finish_motion(); body.fade = {};
+                pending_sprites_[index] = pending_sprites_[index + 4] = true;
+                const double frames = c.words[1] * 12.0;
+                if (animation_enabled_ && effects_enabled_ && frames > 0) {
+                    body.fade.start_alpha = body.alpha;
+                    body.fade.rate_per_frame = -255.0 / frames;
+                    body.fade.duration_frames = frames;
+                } else {
+                    body.visible = sprites_[index + 4].visible = false;
+                    body.alpha = 255;
+                }
+            } else if (c.words[3] & 0x40) {
+                if (c.words[0] < 4) {
+                    queue_sprite_entrance(index, c.words[0] == 0 ? 1 : c.words[0] == 1 ? 2 : 0,
+                                          c.words[0] == 3 ? std::max(1u, c.words[1] * 12u) : 20);
+                    pending_sprites_[index] = true;
+                }
+            } else set_sprite_transform(c.words[0], c.words[1], c.words[2], c.words[3]);
+            scene_dirty_ = true;
+            return true;
+        }
+        if (c.raw_op == 0x80) {
+            if (!(c.words[2] & 0x10) && c.words[2] < 4)
+                queue_sprite_move(c.words[2], int16_t(c.words[0]), int16_t(c.words[1]),
+                                  c.words[3] ? c.words[3] * 6u : 60);
+            return true;
+        }
+        if (c.raw_op == 0x8E) {
+            apply_dalsegno_camera(c.words[0], c.words[1], c.words[2], c.words[3]);
+            return true;
+        }
+        if (c.raw_op == 0x7C) {
+            auto root = layers_.find(1);
+            if (root != layers_.end()) {
+                CameraMotion motion;
+                motion.from_x = root->second.native_x; motion.from_y = root->second.native_y;
+                motion.to_x = int16_t(c.words[0]); motion.to_y = int16_t(c.words[1]);
+                const unsigned frames = c.words[2] == 0 ? 120 : c.words[2] == 99 ? c.words[3] * 12u : (c.words[3] + 4u) * 15u;
+                motion.duration_ms = frames * 1000.0 / 60;
+                ds_background_motion_.clear();
+                if (animation_enabled_ && effects_enabled_ && c.words[2] != 1 && frames)
+                    ds_background_motion_.push_back(motion);
+                else { root->second.native_x = motion.to_x; root->second.native_y = motion.to_y; }
+                root->second.native_placement = true;
+                scene_dirty_ = true;
+            }
+            return true;
+        }
+    }
     if (c.kind == K::ParamStr && (c.opcode() == dc4::Opcode::CHARACTER_LAYER || c.opcode() == dc4::Opcode::EFFECT_LAYER || c.opcode() == dc4::Opcode::FACE_LAYER)) {
         if (c.dc2dm) {
             if (c.p1 >= 4) return true;
@@ -1579,7 +1676,7 @@ bool SceneRunner::load_sheets(const std::string& mes_path) {
             std::string lower = c.str;
             for (char& ch : lower) ch = char(std::tolower((unsigned char)ch));
             if (load_grp_crx(lower + ".crx", &img, &err)) {
-                sheets_[c.p1 + (c.dc2dm ? 21 : 37)] = std::move(img);
+                sheets_[c.p1 + (c.ds ? 26 : c.dc2dm ? 21 : 37)] = std::move(img);
                 ++n;
             } else if (debug_) {
                 printf("  sheet %d: %s (%s)\n", c.p1 + 37, c.str.c_str(),
@@ -1739,16 +1836,17 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         layout_.bg_h = 153;
         layout_.bg_src_x = 0;
         layout_.bg_src_y = 0;
-        layout_.text_x = 300;
+        layout_.text_x = 390;
         layout_.text_w = 800;
-        layout_.text_baseline = 618;
+        layout_.text_baseline = 656;
         layout_.name_x = 300;
-        layout_.name_baseline = 567;
+        layout_.name_baseline = 597;
         layout_.name_font = 20;
         layout_.font_size = 22;
         layout_.line_spacing = 32;
         layout_.max_lines = 3;
-        layout_.gear_w = layout_.gear_h = 0;
+        layout_.gear_x = 282; layout_.gear_y = 279;
+        layout_.gear_w = 21; layout_.gear_h = 19;
         ui_bar_top_ = 540;
     }
     if (dc2dm_ui_) {
@@ -1868,7 +1966,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
             for (char& ch : lower)
                 ch = char(std::tolower((unsigned char)ch));
             if (load_grp_crx(lower + ".crx", &img, &err))
-                sheets_[c.p1 + 37] = std::move(img);
+                sheets_[c.p1 + (c.ds ? 26 : 37)] = std::move(img);
             continue;
         }
         if (c.kind == K::Words4 &&
@@ -1916,7 +2014,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
             pending.sheet = c.words[2];
             int state = c.words[3] == 99 ? 0 : c.words[3] == 1 ? 1 : c.words[3] == 2 ? 2 : -1;
             const int min_y = ((ui.version & 0xFFFF) == 0x9F9A) ? 540 : 690;
-            if (pending.dst_y >= min_y && pending.dst_y < kScreenH) {
+            if ((pending.dst_y >= min_y || (c.ds && from_widget && saw_rect && pending.dst_y >= 510)) && pending.dst_y < kScreenH) {
                 if (from_widget && state >= 0) {
                     if (!buttons_.empty()) {
                         buttons_.back().state[state] = pending;
@@ -1993,6 +2091,12 @@ void SceneRunner::load_layer(int layer, const std::string& path) {
         return;
     }
     img.name = path;
+    if ((mes_.version & 0xFFFF) == 0x9F9A) {
+        img.native_placement = true;
+        img.native_x = float((1280 - img.w) / 2);
+        img.native_y = float((720 - img.h) / 2);
+        img.native_scale = 1;
+    }
     layers_[layer] = std::move(img);
 }
 
@@ -2228,10 +2332,11 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     std::string err;
     const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
     const bool message_face = (mes_.dialect == dc4::MesDialect::ClassicDM || dc4_message_faces()) && (idx == 8 || idx == 9);
+    const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
     s.visible = false;
     s.img = Image{};
-    if (!bst_load(data_ + (message_face ? "/GRP/FACE" : "/GRP/BST"), name, &s.img.rgba, &info, &err, dc2pc) &&
-        (message_face || !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc))) {
+    if (!bst_load(data_ + (message_face ? "/GRP/FACE" : "/GRP/BST"), name, &s.img.rgba, &info, &err, dc2pc, ds) &&
+        (message_face || !bst_load(data_ + "/GRP/FACE", name, &s.img.rgba, &info, &err, dc2pc, ds))) {
         if (debug_) printf("  bst: %s\n", err.c_str());
         return;
     }
@@ -2240,7 +2345,6 @@ void SceneRunner::load_bst(int idx, const std::string& name, int slot) {
     s.img.h = info.height;
     // The canvas sits at (inner, inner+size) inside a 1280-tall registration
     // frame; its centre is what the placement math anchors around.
-    const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
     const int shift_x = (!ds && !message_face && info.canvas_width > 1024) ? int(info.canvas_width - 1024) / 2 : 0;
     const int shift_y = (!ds && !message_face && info.canvas_height > 2048) ? int(info.canvas_height - 2048) / 2 : 0;
     s.frame_cx = (info.offset_x - shift_x) + float(info.width) / 2;
@@ -2336,8 +2440,9 @@ void SceneRunner::load_preload(int slot, const std::string& name) {
     CrxInfo info;
     std::string err;
     const bool dc2pc = dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version);
-    if (!bst_load(data_ + "/GRP/BST", name, &img.rgba, &info, &err, dc2pc) &&
-        !bst_load(data_ + "/GRP/FACE", name, &img.rgba, &info, &err, dc2pc)) {
+    const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
+    if (!bst_load(data_ + "/GRP/BST", name, &img.rgba, &info, &err, dc2pc, ds) &&
+        !bst_load(data_ + "/GRP/FACE", name, &img.rgba, &info, &err, dc2pc, ds)) {
         if (debug_) printf("  preload bst: %s\n", err.c_str());
         return;
     }
@@ -3150,6 +3255,8 @@ void SceneRunner::set_animation_enabled(bool enabled) {
 
 void SceneRunner::reset_camera() {
     camera_motion_.clear();
+    ds_background_motion_.clear();
+    ds_camera_layers_.clear();
     camera_scale_ = 1; camera_x_ = 512; camera_y_ = 288;
     scene_dirty_ = true;
 }
@@ -3215,6 +3322,19 @@ void SceneRunner::update(uint32_t elapsed_ms) {
         if (dc2dm_ending_.elapsed_ms >= dc2dm_ending_.duration_ms) finish_dc2dm_ending(false);
     }
     double remaining = elapsed_ms;
+    update_dalsegno_camera(elapsed_ms);
+    if (!ds_background_motion_.empty()) {
+        auto& motion = ds_background_motion_.front();
+        motion.elapsed_ms = std::min(motion.duration_ms, motion.elapsed_ms + elapsed_ms);
+        const double t = motion.elapsed_ms / motion.duration_ms;
+        auto root = layers_.find(1);
+        if (root != layers_.end()) {
+            root->second.native_x = float(motion.from_x + (motion.to_x - motion.from_x) * t);
+            root->second.native_y = float(motion.from_y + (motion.to_y - motion.from_y) * t);
+        }
+        scene_dirty_ = true;
+        if (t >= 1) ds_background_motion_.clear();
+    }
     update_dc2pc_transition(elapsed_ms);
     if (dc2dm_transition_.active) {
         dc2dm_transition_.elapsed_ms += elapsed_ms;
@@ -3254,6 +3374,13 @@ void SceneRunner::update(uint32_t elapsed_ms) {
 }
 
 void SceneRunner::finish_animations(bool finish_screen_effect) {
+    update_dalsegno_camera(0, true);
+    if (!ds_background_motion_.empty()) {
+        const auto& motion = ds_background_motion_.back();
+        auto root = layers_.find(1);
+        if (root != layers_.end()) { root->second.native_x = motion.to_x; root->second.native_y = motion.to_y; }
+        ds_background_motion_.clear(); scene_dirty_ = true;
+    }
     // Script resumption may precede the last small petal's fade by 400ms.
     if (finish_screen_effect) screen_effect_.clear();
     scene_dirty_ = true;
@@ -3325,14 +3452,17 @@ void SceneRunner::compose_scene() {
             if (!s.visible || !s.img.valid() || s.z != pass) continue;
             if (dc2dm || ds) {
                 const auto& transform = sprites_[index >= 4 && index < 8 ? index - 4 : index];
+                if (ds && !transform.visible) continue;
                 const float scale = transform.scale;
-                const float left = transform.cur_x + transform.x * (1 - scale)
+                const float left = float(transform.position(0)) + transform.x * (1 - scale)
                                  + (s.frame_cx - s.img.w / 2.f) * scale;
-                const float top = transform.cur_y + transform.y * (1 - scale)
+                const float top = float(transform.position(1)) + transform.y * (1 - scale)
                                 + (s.frame_cy - s.img.h / 2.f) * scale;
-                const float output_scale = dc2dm ? 1.25f : camera_scale_;
-                blit(&frame_, kScreenW, kScreenH, int(std::lround(left * output_scale)),
-                     int(std::lround(top * output_scale)), s.img, scale * output_scale, s.alpha);
+                const float output_scale = dc2dm ? 1.25f : 1.0f;
+                const float dx = left * output_scale;
+                const float dy = top * output_scale;
+                blit(&frame_, kScreenW, kScreenH, int(std::lround(dx)), int(std::lround(dy)),
+                     s.img, scale * output_scale, ds ? transform.alpha : s.alpha);
                 continue;
             }
             // 0x423AA0 -> 0x41F540: characters use 80% of the camera
@@ -3463,7 +3593,7 @@ void SceneRunner::draw(int reveal_chars) {
         if (dc2dm_ui_) draw_dc2dm_message_face();
         if (dc4_message_faces()) draw_dc4_message_face();
         if (taskbar_visible_) {
-            for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
+            if (!ds) for (const UiChip& ch : static_chips_) blit_chip(ch, 255);
             for (const UiButton& b : buttons_) {
                 if (!dc2dm_ui_ && !save_load_allowed() && (b.action == ":qsave" || b.action == ":qload")) continue;
                 if (b.y >= ui_bar_top_) {
@@ -3848,7 +3978,8 @@ char16_t dc2dm_translation_character(char16_t ch) {
 }
 
 void SceneRunner::draw_message_window(int reveal_chars) {
-    auto win = sheets_.find(dc2dm_ui_ ? 21 : 37);
+    const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
+    auto win = sheets_.find(ds ? 26 : dc2dm_ui_ ? 21 : 37);
     if (win == sheets_.end()) win = sheets_.find(0);
     const Image* img = (win != sheets_.end()) ? &win->second : (meswin_.valid() ? &meswin_ : nullptr);
     static int s_win_log = 0;
@@ -3887,7 +4018,11 @@ void SceneRunner::draw_message_window(int reveal_chars) {
              int(std::lround(layout_.bg_y * scale)), piece,
              scale, (window_opacity_ * 255 + 50) / 100);
     }
+    // Dal Segno's static toolbar chips include the nameplate background.
+    if (ds && taskbar_visible_) for (const auto& chip : static_chips_) blit_chip(chip, 255);
     if (textbox_font_) {
+        if (ds && !displayed_speaker().empty())
+            blit_chip(UiChip{0,567,0,316,634,38,26,true},255);
         // Speaker text occupies the floral nameplate in the complete frame.
         if (!displayed_speaker().empty()) {
             auto text = sjis_to_utf16(displayed_speaker());
@@ -3938,7 +4073,8 @@ struct DisplayText {
     std::vector<TextStyle> styles;
     std::vector<RubyText> ruby;
 };
-DisplayText display_text(const std::string& sjis, int default_size = 22, bool dc2dm_translation = false) {
+DisplayText display_text(const std::string& sjis, int default_size = 22, bool dc2dm_translation = false,
+                         bool dalsegno = false) {
     const std::u16string raw = sjis_to_utf16(sjis);
     DisplayText out;
     TextStyle style; style.size = default_size;
@@ -3963,6 +4099,10 @@ DisplayText display_text(const std::string& sjis, int default_size = 22, bool dc
     };
     for (size_t i = 0; i < raw.size();) {
         if (raw[i] == u'\r') { ++i; continue; }
+        if (dalsegno && raw[i] == u'#' && i + 1 < raw.size() &&
+            (raw[i + 1] == u'h' || raw[i + 1] == u'b')) {
+            append(kInlineDash); i += 2; continue;
+        }
         if (raw[i] == u'@' && i + 1 < raw.size()) {
             // 0x41FD70 consumes these commands before glyph rendering.
             // Match longest first, so @muf and @bt1 are not font tags.
@@ -4089,7 +4229,7 @@ Image dc2ty_choice_label(const FontRenderer& font, const std::u16string& text, i
 
 std::u16string SceneRunner::visible_text() const {
     const bool translated = mes_.dialect == dc4::MesDialect::ClassicDM && dc2dm_latin_text(sjis_to_utf16(current_line_));
-    return display_text(current_line_, layout_.font_size, translated).text;
+    return display_text(current_line_, layout_.font_size, translated, is_dalsegno_profile_).text;
 }
 size_t SceneRunner::visible_text_length() const {
     auto text = visible_text();
@@ -4101,14 +4241,15 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
     const bool dm_proportional = dc2dm_ui_ && textbox_font_->is_pretendard_jp_bold();
     const bool fixed_grid = dc2dm_ui_ && !dm_proportional;
     const int tracking = fixed_grid ? -1 : 0;
-    const auto parsed = display_text(sjis, layout_.font_size, dm_latin);
+    const auto parsed = display_text(sjis, layout_.font_size, dm_latin, is_dalsegno_profile_);
+    const Image* inline_dash = is_dalsegno_profile_ ? &ds_inline_bar_ : nullptr;
     const int line_spacing = dm_latin ? 24 : layout_.line_spacing;
     const int text_baseline = layout_.text_baseline;
     struct Line { size_t start = 0, end = 0; int width = 0; };
     std::vector<Line> lines;
     auto advance_at = [&](size_t i) {
         const auto& style = parsed.styles[i];
-        return textbox_font_->glyph_advance(parsed.text[i], float(style.size), style.wide, fixed_grid, tracking);
+        return textbox_font_->glyph_advance(parsed.text[i], float(style.size), style.wide, fixed_grid, tracking, inline_dash);
     };
 
     auto is_cjk = [](char16_t ch) {
@@ -4221,7 +4362,8 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
             while (end < shown_end && parsed.styles[end] == style) ++end;
             textbox_font_->rasterize_line(parsed.text.substr(at, end - at), 2 + x, baseline,
                 &text_img.rgba, text_img.w, text_img.h, float(style.size), style.rgb, style.wide,
-                0, fixed_grid, tracking, dm_latin && !dm_proportional ? style.size * 15.0f / 19.0f : 0);
+                0, fixed_grid, tracking, dm_latin && !dm_proportional ? style.size * 15.0f / 19.0f : 0,
+                1, true, inline_dash);
             for (; at < end; ++at) x += advance_at(at);
         }
         for (const auto& ruby : parsed.ruby) {
@@ -4244,11 +4386,12 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
         float(available_height) / text_img.h : 1.0f;
     blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.text_x - 2) * scale)),
          int(std::lround(y * scale)), text_img, scale * fit, 255);
-    if (wait_marker_ && (mes_.version & 0xFFFF) != 0x9F9A && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
+    if (wait_marker_ && (reveal < 0 || size_t(reveal) >= visible_text_length())) {
+        const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
         UiChip gear{layout_.text_x - 2 + int(std::lround((last_x + 4) * fit)),
             y + int(std::lround((text_top + last_y) * fit)) - (dc2dm_ui_ ? 14 : 23),
-            layout_.gear_x + (dc2dm_ui_ ? (wait_frame_ % 6) * 24 : (wait_frame_ % 4) * 33), layout_.gear_y,
-            layout_.gear_w, layout_.gear_h, dc2dm_ui_ ? 21 : 37, true};
+            layout_.gear_x + (ds ? 0 : dc2dm_ui_ ? (wait_frame_ % 6) * 24 : (wait_frame_ % 4) * 33), layout_.gear_y,
+            layout_.gear_w, layout_.gear_h, ds ? 26 : dc2dm_ui_ ? 21 : 37, true};
         blit_chip(gear, 255);
     }
 }

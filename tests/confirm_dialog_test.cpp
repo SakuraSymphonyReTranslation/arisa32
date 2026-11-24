@@ -78,29 +78,68 @@ void saves(){
     s.activate({SaveActionType::QuickLoad});s.set_mode(SaveMode::Save);
     CHECK(!s.confirming());CHECK(s.answer_confirmation(true).type==SaveActionType::None);
 }
-void dc2dm(){
+void dc2dm(bool ds=false){
     namespace fs=std::filesystem;
     const auto parent=fs::canonical(fs::temp_directory_path());
     const auto root=parent/("dc2dm-confirm-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(root/"GRP/SYSTEM");fs::create_directory(root/"MES");
-    const std::array<uint8_t,14> mes{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,0};
+    const std::vector<uint8_t> mes=ds?std::vector<uint8_t>{0,0,0,0,0x9A,0x9F,0,0}:
+        std::vector<uint8_t>{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0,0};
     std::ofstream(root/"MES/main.mes",std::ios::binary).write(reinterpret_cast<const char*>(mes.data()),mes.size());
+    if(ds)std::ofstream(root/"MES/DS_1129B_CM.mes",std::ios::binary).write(reinterpret_cast<const char*>(mes.data()),mes.size());
+    const int width=ds?776:775,height=ds?369:640;
     std::vector<uint8_t> bytes{'C','R','X','G',0,0,0,0};
     auto word=[&](int n){bytes.push_back(uint8_t(n));bytes.push_back(uint8_t(n>>8));};
-    word(775);word(640);word(1);word(0);word(0);word(0);
-    const int stride=(775*3+3)&~3;
-    std::vector<uint8_t> pixels(size_t(stride)*640,0);
-    for(int y=0;y<640;++y)for(int x=0;x<775;++x){
+    word(width);word(height);word(1);word(0);word(0);word(0);
+    const int stride=(width*3+3)&~3;
+    std::vector<uint8_t> pixels(size_t(stride)*height,0);
+    for(int y=0;y<height;++y)for(int x=0;x<width;++x){
         const size_t at=size_t(y)*stride+x*3;
         pixels[at]=uint8_t((x+y)%251);pixels[at+1]=uint8_t(y%251);pixels[at+2]=uint8_t(x%251);
     }
     for(size_t at=0;at<pixels.size();at+=8){
         bytes.push_back(255);bytes.insert(bytes.end(),pixels.begin()+at,pixels.begin()+std::min(at+8,pixels.size()));
     }
-    std::ofstream(root/"GRP/SYSTEM/ADVMENU_CHIP.CRX",std::ios::binary)
+    std::ofstream(root/"GRP/SYSTEM"/(ds?"ADVMENUCHIP.CRX":"ADVMENU_CHIP.CRX"),std::ios::binary)
         .write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
     ConfirmDialog d;std::string error;
     CHECK(d.load(root.string(),&error));CHECK(error.empty());
+    if(ds){
+        CHECK(d.hit_yes(480,348)&&!d.hit_yes(600,348)&&!d.hit_yes(480,412));
+        CHECK(d.hit_no(666,348)&&!d.hit_no(786,348)&&!d.hit_no(666,347));
+        CHECK(!d.hit_checkbox(600,445));
+        const dc4scene::FontRenderer font;std::vector<uint8_t> frame(1280*720*4,0);
+        auto matches=[&](int x,int y,int sx,int sy){const size_t at=(size_t(y)*1280+x)*4;
+            return frame[at]==sx%251&&frame[at+1]==sy%251&&frame[at+2]==(sx+sy)%251;};
+        const std::array<std::array<int,3>,10> prompts{{
+            {int(ConfirmKind::Save),388,279},{int(ConfirmKind::Overwrite),388,279},
+            {int(ConfirmKind::QuickSave),388,279},{int(ConfirmKind::Load),388,309},
+            {int(ConfirmKind::QuickLoad),388,309},{int(ConfirmKind::Title),0,339},
+            {int(ConfirmKind::Quit),0,249},{int(ConfirmKind::ReplayExit),388,249},
+            {int(ConfirmKind::SceneJump),388,339},{int(ConfirmKind::SceneReplay),388,339}}};
+        for(const auto& prompt:prompts){
+            CHECK(d.open(ConfirmKind(prompt[0])));std::fill(frame.begin(),frame.end(),0);
+            const int top=prompt[0]==int(ConfirmKind::SceneJump)?164:268;
+            const int button_y=top+112;
+            d.draw(-1,-1,false,font,&frame);
+            CHECK(matches(290,top,0,0)&&matches(989,top+183,699,183));
+            CHECK(matches(451,top+21,prompt[1]+1,prompt[2]+1));
+            CHECK(matches(480,top+80,0,185)&&matches(666,top+80,120,185)&&matches(626,top+100,700,0));
+            CHECK(frame[((top-1)*1280+290)*4+3]==0);
+            CHECK(d.hit_yes(480,top+80)&&!d.hit_yes(600,top+80)&&!d.hit_yes(480,top+144));
+            CHECK(d.hit_no(666,top+80)&&!d.hit_no(786,top+80)&&!d.hit_no(666,top+79));
+            CHECK(!d.hit_yes(500,top==164?380:276));
+            d.draw(500,button_y,true,font,&frame);CHECK(matches(480,top+80,240,185));
+            d.draw(700,button_y,true,font,&frame);CHECK(matches(666,top+80,360,185));
+            d.pointer_down(10,10);CHECK(d.pointer_up(500,button_y)==ConfirmResult::None);
+            d.pointer_down(500,button_y);CHECK(d.pointer_up(700,button_y)==ConfirmResult::None);
+            d.pointer_down(500,button_y);d.cancel_pointer();CHECK(d.pointer_up(500,button_y)==ConfirmResult::None);
+            d.pointer_down(700,button_y);CHECK(d.pointer_up(700,button_y)==ConfirmResult::No);
+        }
+        CHECK(d.open(ConfirmKind::Save));d.pointer_down(500,380);CHECK(d.pointer_up(500,380)==ConfirmResult::Yes);
+        std::error_code ec;if(fs::weakly_canonical(root,ec)==root&&!ec&&root.parent_path()==parent)fs::remove_all(root,ec);
+        return;
+    }
     CHECK(d.hit_yes(435,355) && !d.hit_yes(620,355));
     CHECK(d.hit_no(670,355) && !d.hit_no(855,355));
     CHECK(!d.hit_yes(435,354) && !d.hit_yes(435,435));
@@ -144,4 +183,4 @@ void dc2dm(){
     if(fs::weakly_canonical(root,ec)==root && !ec && root.parent_path()==parent)fs::remove_all(root,ec);
 }
 }
-int main(){dialog();scene_replay_prompt();saves();dc2dm();return failures?1:0;}
+int main(){dialog();scene_replay_prompt();saves();dc2dm();dc2dm(true);return failures?1:0;}
