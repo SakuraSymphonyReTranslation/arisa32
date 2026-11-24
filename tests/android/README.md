@@ -580,3 +580,11 @@ captures its original `GRP/bar.CRX` rendering in `captures/backlog-inline-bar.pn
 Use `--cases backlog`
 for the popup regression alone. `name-restart` requires `name` earlier in the same
 run. The harness does not exercise Android keyboard widgets or Activity layout.
+
+Use `--cases toolbar menus` for Dal Segno's New Game toolbar and title navigation.
+Toolbar checks cover all authored shell actions, voice replay, collapse/reopen,
+Config return, native save restoration, and hidden textbox hit targets. The
+intro can animate while its buttons remain usable, so the test does not require
+all animation to stop before tapping it. Menu checks verify that title Load opens
+the host slot screen, Back preserves the title, and scenarios 03/05/06 return to
+the same clean title pixels. These cases still use isolated profiles and saves.

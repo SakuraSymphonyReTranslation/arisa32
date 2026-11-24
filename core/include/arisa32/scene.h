@@ -636,6 +636,7 @@ private:
     bool pending_scene_blit_ = false;
     bool pending_chip_is_button_ = false;
     std::vector<UiButton> buttons_;        // 0x72/0x54/0x73/0x77 widgets
+    std::vector<UiButton> ds_dialogue_buttons_;
     UiButton pending_button_;
     bool pending_has_button_ = false;
     struct DalSegnoCaption {

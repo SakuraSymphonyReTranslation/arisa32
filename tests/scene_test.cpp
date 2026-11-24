@@ -1778,6 +1778,18 @@ void dalsegno_game_regressions(const fs::path& data) {
     CHECK(scene.handle_dalsegno_action(":nameyes"));
     CHECK(!scene.dalsegno_name_pending());
     CHECK(scene.speaker() == "Adam");
+    CHECK(scene.buttons().size() == toolbar.size());
+    for (const auto& button : scene.buttons()) {
+        const auto* hit = scene.hit_test(button.x + button.w / 2, button.y + button.h / 2);
+        CHECK(hit && *hit == button.action);
+    }
+    scene.set_taskbar_visible(false);
+    CHECK(!scene.hit_test(1074, 588));
+    CHECK(scene.hit_test(1260, 588) && *scene.hit_test(1260, 588) == ":n");
+    scene.set_taskbar_visible(true);
+    scene.set_message_visible(false);
+    CHECK(!scene.hit_test(1224, 588));
+    scene.set_message_visible(true);
     const auto story_line = scene.current_line();
     const auto story_speaker = scene.speaker();
     const auto story_script = scene.script_name();
@@ -2012,6 +2024,14 @@ void dalsegno_native_save_regressions(const fs::path& data) {
         const auto unchanged=companion.current_line(); auto damaged=native; damaged[0x844]=255; damaged[0x845]=255;
         CHECK(!companion.restore_pc_save(damaged,&error)); CHECK(companion.current_line()==unchanged);
         CHECK(!companion.restore_pc_save(std::vector<uint8_t>(native.begin(),native.end()-1),&error));
+        companion.set_use_system_menu(false);
+        CHECK(companion.open_dalsegno_config());
+        for (int i = 0; i < 16; ++i) CHECK(!companion.sprite(i).visible);
+        CHECK(companion.resume_dalsegno_config());
+        companion.draw(-1); CHECK(companion.frame() == frame);
+        CHECK(companion.load_script(dc4::resolve_asset((data/"MES/main.mes").string())));
+        for (int i = 0; i < 16; ++i) CHECK(!companion.sprite(i).visible);
+        companion.advance_to_next_text(); companion.draw(-1);
         std::cout<<filename<<" PC/Arisa round trip checked\n";
     }
     dc4scene::SceneRunner profile(data.string()); CHECK(profile.load_script((data/"MES/main.mes").string()));

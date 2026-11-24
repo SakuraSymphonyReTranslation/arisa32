@@ -648,6 +648,20 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
         dc2pc_present_pending_ = true;
     }
     script_name_ = std::filesystem::path(resolved).filename().string();
+    std::string menu_name = std::filesystem::path(resolved).stem().string();
+    for (char& ch : menu_name) ch = char(std::tolower((unsigned char)ch));
+    if (is_dalsegno_profile_ && (menu_name == "main" || menu_name == "config" ||
+            menu_name == "music" || menu_name == "extra" || menu_name == "cgmode" ||
+            menu_name == "scemode" || menu_name.rfind("cg_", 0) == 0 ||
+            menu_name.rfind("sce_", 0) == 0 ||
+            menu_name == "save" || menu_name == "load")) {
+        // System menus start a new graphics layout; story transfers retain it.
+        layers_.clear();
+        for (auto& sprite : sprites_) sprite = {};
+        std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
+        preserve_scene_ = false;
+        reset_camera();
+    }
     reset_dalsegno_ui();
     last_error_.clear();
     scene_end_ = false;
@@ -1582,6 +1596,8 @@ bool SceneRunner::dispatch_text_command(const dc4::MesCommand& c) {
         return true;
     }
     current_line_ = dalsegno_text(c.str);
+    if (c.ds && !current_line_.empty() && !ds_dialogue_buttons_.empty())
+        buttons_ = ds_dialogue_buttons_;
     if (c.dc2dm && (variable(3, 98) == 1 || variable(3, 98) == 2)) {
         const int index = variable(3, 98) == 1 ? 16 : 18;
         current_line_ = dc2dm_minigame_score_text(current_line_, variable(100, index), variable(100, index + 1));
@@ -1819,6 +1835,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     UiChip pending;
     bool from_widget = false;   // 0x73 belongs to a widget, 0x7A draws outright
     bool saw_rect = false;
+    int ds_control_group = 0;
     static_chips_.clear();
     buttons_.clear();
     dc2pc_choices_.clear();
@@ -1957,6 +1974,8 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
     while (stream.next(&c)) {
         c = dc4::mes_engine_command(c);
         using K = dc4::CmdKind;
+        if (c.ds && c.raw_op == 0x04 && c.kind == K::Param2)
+            ds_control_group = c.p1;
         if (c.kind == K::ParamStr && (c.opcode() == dc4::Opcode::LOAD_SHEET ||
                                       c.opcode() == dc4::Opcode::LEGACY_LOAD_SHEET ||
                                       c.opcode() == dc4::Opcode::LEGACY_LOAD_SLOT ||
@@ -2022,7 +2041,9 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
                             buttons_.back().layers[state].push_back(pending);
                     }
                 } else {
-                    static_chips_.push_back(pending);
+                    // Group 2 is the expanded toolbar; other groups draw dialogs and nameplates.
+                    if (!c.ds || ds_control_group == 2)
+                        static_chips_.push_back(pending);
                 }
             }
             pending.valid = false;
@@ -2049,6 +2070,7 @@ bool SceneRunner::load_ui_script(const std::string& mes_path) {
         else *old = button;
     }
     buttons_ = std::move(unique);
+    if ((ui.version & 0xFFFF) == 0x9F9A) ds_dialogue_buttons_ = buttons_;
     if (open_button_.action.empty()) {
         open_button_.x = 1233;
         open_button_.y = 695;
@@ -4577,6 +4599,15 @@ const std::string* SceneRunner::hit_test(int x, int y) const {
                 if (x >= 666 && x < 786) return &no;
             }
             return nullptr;
+        }
+        if (!current_line_.empty() && !ds_name_pending_ && !sidebar_visible_ && ds_modal_buttons_.empty()) {
+            if (!message_visible_ || script_wait_pending_ || !pending_movie_.empty()) return nullptr;
+            if (!taskbar_visible_) {
+                if (x >= open_button_.x && x < open_button_.x + open_button_.w &&
+                    y >= open_button_.y && y < open_button_.y + open_button_.h)
+                    return &open_button_.action;
+                return nullptr;
+            }
         }
         const auto& controls = ds_name_pending_ ? ds_name_buttons_ : sidebar_visible_ ? sidebar_buttons_ :
             ds_modal_buttons_.empty() ? buttons_ : ds_modal_buttons_;

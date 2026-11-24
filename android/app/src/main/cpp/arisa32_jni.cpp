@@ -1192,7 +1192,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
     e->scene->set_observer([e](const dc4::MesCommand& c,const std::string& script){e->menu.observe(c,script);});
 
     e->scene->load_sheets(e->data_dir + "/MES/start.mes");
-    const std::string ui_script = (e->scene->save_format_version() & 0xFFFF) == 0x9F9A
+    const std::string ui_script = dc4::is_dalsegno_game(e->data_dir)
         ? "start.mes"
         : e->menu.scene_ui_script();
     e->scene->load_ui_script(e->data_dir + "/MES/" + ui_script);
@@ -1567,6 +1567,12 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
             if (*tag == ":disabled") {
                 // Consume disabled toolbar taps without advancing the scene or
                 // reporting an unsupported shell action.
+            } else if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A &&
+                    (*tag == "gomenu02" || (*tag == "load" &&
+                        (e->scene->script_name() == "main.mes" ||
+                         e->scene->script_name() == "MAIN.mes")))) {
+                // The title script draws Load's background; Java supplies its slots.
+                message = ":dl";
             } else if (e->scene->handle_dalsegno_action(*tag)) {
                 begin_line(e);
             } else if (*tag == ":voice" || *tag == ":torisetu" || *tag == ":t") {
@@ -1807,7 +1813,9 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsOpen(JNIEnv* env, jobject, jboolean loadi
     e->save_screen.set_mode(loading ? dc4ui::SaveMode::Load : dc4ui::SaveMode::Save);
     e->save_screen.set_shortcuts(latest, e->auto_slot.occupied, quick);
     e->save_screen.set_special_slots(e->quick_slot,e->latest_slot,e->auto_slot);
-    e->save_screen.set_navigation(true,true,true);
+    const bool can_save = (e->scene->save_format_version() & 0xFFFF) != 0x9F9A ||
+                          !e->scene->current_line().empty();
+    e->save_screen.set_navigation(can_save,true,true);
     if (e->menu_open) { e->menu_return = true; e->return_page = e->menu.page(); }
     e->menu_open = false;
     e->save_screen.cancel_pointer();

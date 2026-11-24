@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--data', required=True, help='Read-only device AdvData directory')
     parser.add_argument('--font', type=Path, help='Explicit font override; omit to use the production game default')
     parser.add_argument('--serial', required=True)
-    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog'],
+    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog', 'toolbar', 'menus'],
                         default=['name', 'name-restart', 'saves', 'backlog'])
     args = parser.parse_args()
     if 'name-restart' in args.cases and 'name' not in args.cases:

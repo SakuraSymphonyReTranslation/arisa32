@@ -34,6 +34,10 @@ public final class Arisa32Activity {
     private native void dc4ConfirmFrame(Bitmap target);
     private native String dc4ConfirmTouch(int action,int x,int y);
     private native boolean dc4CancelConfirmation();
+    private native String dc4OpenMenu(String page);
+    private native String dc4BackOrSidemenu(boolean slots,boolean backlog);
+    private native String dc4SlotsOpen(boolean loading,boolean latest,boolean quick);
+    private native boolean dc4SlotsFrame(Bitmap target);
 
     public String decodeSjis(byte[] bytes) { return new String(bytes,Charset.forName("windows-31j")); }
     private static void check(boolean ok,String message) { if (!ok) throw new AssertionError(message); }
@@ -192,6 +196,63 @@ public final class Arisa32Activity {
         dc4LogTouch(0,1230,670); check("close".equals(dc4LogTouch(1,1230,670)),"backlog Back action");
         System.out.println("PASS real voice replay, cancelled/dragged input, upper jump confirmation, NO, YES and Back; restored: "+jumpLine);
     }
+    private String toolbarTap(int x,int y) {
+        check(dc4Touch(0,x,y).isEmpty(),"toolbar press");
+        return dc4Touch(1,x,y);
+    }
+    private void menus(File input,File captures,Bitmap frame) throws Exception {
+        for (int i=0;i<8;++i) { dc4Render(frame); dc4Advance(); Thread.sleep(20); }
+        dc4Touch(3,-1,-1); dc4Render(frame);
+        int[] title=pixels(frame);
+        png(frame,new File(captures,"menus-fresh-title.png"));
+        check(":dl".equals(toolbarTap(560,704)),"title Load dispatches to the slot screen");
+        check(dc4SlotsOpen(true,false,false).isEmpty(),"title Load slot screen opens");
+        check(dc4SlotsFrame(frame),"Load slot frame renders"); png(frame,new File(captures,"menus-title-load.png"));
+        check(!Arrays.equals(title,pixels(frame)),"Load renders the slot screen");
+        check("close".equals(dc4BackOrSidemenu(true,false)),"Load Back closes slot screen");
+        dc4Touch(3,-1,-1); dc4Render(frame);
+        check(Arrays.equals(title,pixels(frame)),"Load Back preserves the title");
+        for (String slot:new String[]{"03","05","06"}) {
+            load(new File(input,"DSAO"+slot+".dat"),frame);
+            check(dc4OpenMenu("title").isEmpty(),"return to title "+slot);
+            dc4Touch(3,-1,-1); dc4Render(frame);
+            png(frame,new File(captures,"menus-return-"+slot+".png"));
+            check(Arrays.equals(title,pixels(frame)),"story sprites do not remain on title "+slot);
+        }
+        System.out.println("PASS title Load dispatch, slot screen Back and clean title after native scenarios 03/05/06");
+    }
+    private void toolbar(File input,File captures,Bitmap frame) throws Exception {
+        reachName(frame);
+        check(dc4SetName(name("Takamura"),name("Atsuya"),true),"toolbar name confirmation");
+        tap(540,380); dc4Render(frame);
+        String line=dc4CurrentLine();
+        check(!line.isEmpty(),"new game dialogue");
+        png(frame,new File(captures,"toolbar-new-game.png"));
+        int[] xs={1014,1044,1074,1104,1134,1164,1194,1224};
+        String[] actions={":rapid",":auto",":qs",":ql",":backlog",":ds",":dl",":option"};
+        for (int i=0;i<xs.length;++i) {
+            check(actions[i].equals(toolbarTap(xs[i],588)),"new game toolbar "+actions[i]);
+            check(line.equals(dc4CurrentLine()),"toolbar does not advance dialogue "+actions[i]);
+        }
+        check("No voice on this line".equals(toolbarTap(984,588)),"unvoiced replay consumes tap");
+        tap(960,588); dc4Render(frame); png(frame,new File(captures,"toolbar-collapsed.png"));
+        check(!":qs".equals(toolbarTap(1074,588)),"collapsed toolbar has no QS hit target");
+        tap(1260,588); dc4Render(frame);
+        check(":option".equals(toolbarTap(1224,588)),"collapsed toolbar reopens");
+        String configLine=dc4CurrentLine();
+        check(dc4OpenMenu("config").isEmpty(),"toolbar Config opens");
+        dc4Render(frame); png(frame,new File(captures,"toolbar-config.png"));
+        check(dc4CurrentLine().isEmpty(),"Config is showing its controls");
+        check(dc4BackOrSidemenu(false,false).isEmpty(),"Config returns to story");
+        dc4Render(frame); check(configLine.equals(dc4CurrentLine()),"Config preserves dialogue");
+        check(":backlog".equals(toolbarTap(1134,588)),"toolbar restored after Config");
+        load(new File(input,"DSAO03.dat"),frame);
+        check(":ds".equals(toolbarTap(1164,588)),"native save restores Save hit target");
+        dc4Render(frame); png(frame,new File(captures,"toolbar-native-save.png"));
+        tap(1254,588); dc4Render(frame); png(frame,new File(captures,"toolbar-textbox-hidden.png"));
+        check(!":option".equals(toolbarTap(1224,588)),"hidden textbox has no Config hit target");
+        System.out.println("PASS New Game toolbar actions, collapse/reopen, Config return, native save toolbar and hidden textbox");
+    }
     private void verify(File root,String data,String font,String mode) throws Exception {
         File output=new File(root,mode.startsWith("name") ? "name-profile" : "profile-"+mode);
         check(output.isDirectory() || output.mkdirs(),"isolated profile directory");
@@ -208,6 +269,8 @@ public final class Arisa32Activity {
             else if (mode.equals("name-restart")) names(captures,frame,true);
             else if (mode.equals("saves")) saves(new File(root,"input"),output,captures,frame);
             else if (mode.equals("backlog")) backlog(new File(root,"input"),captures,frame);
+            else if (mode.equals("toolbar")) toolbar(new File(root,"input"),captures,frame);
+            else if (mode.equals("menus")) menus(new File(root,"input"),captures,frame);
             else throw new AssertionError("unknown mode: "+mode);
         } finally { dc4Quit(); frame.recycle(); }
     }
