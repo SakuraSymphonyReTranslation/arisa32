@@ -201,8 +201,21 @@ std::string SceneRunner::dalsegno_back_action() const {
     return ds_callbacks_[3];
 }
 
+bool SceneRunner::dalsegno_menu_active() const {
+    return (mes_.version & 0xFFFF) == 0x9F9A && current_line_.empty() &&
+        !buttons_.empty() && !dalsegno_dialogue_controls();
+}
+
+bool SceneRunner::dalsegno_dialogue_controls() const {
+    if (ds_dialogue_buttons_.empty() || buttons_.size() != ds_dialogue_buttons_.size()) return false;
+    for (size_t i = 0; i < buttons_.size(); ++i)
+        if (buttons_[i].action != ds_dialogue_buttons_[i].action) return false;
+    return true;
+}
+
 bool SceneRunner::handle_dalsegno_key(UiKey key, std::string* action) {
     if ((mes_.version & 0xFFFF) != 0x9F9A || (!current_line_.empty() && !sidebar_visible_ && !ds_name_pending_)) return false;
+    if (dalsegno_dialogue_controls() && !sidebar_visible_ && !ds_name_pending_ && ds_modal_buttons_.empty()) return false;
     if (ds_name_confirming_) {
         if (action) action->clear();
         if (key == UiKey::Next || key == UiKey::Previous) ds_focus_ = ds_focus_ == 0 ? 1 : 0;

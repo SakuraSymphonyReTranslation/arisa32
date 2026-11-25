@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--data', required=True, help='Read-only device AdvData directory')
     parser.add_argument('--font', type=Path, help='Explicit font override; omit to use the production game default')
     parser.add_argument('--serial', required=True)
-    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog', 'toolbar', 'menus'],
+    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog', 'toolbar', 'menus', 'transitions'],
                         default=['name', 'name-restart', 'saves', 'backlog'])
     args = parser.parse_args()
     if 'name-restart' in args.cases and 'name' not in args.cases:
@@ -57,6 +57,15 @@ def main():
     for slot in ('00', '01', '02', '03', '05', '06'):
         name = 'DSAO' + slot + '.dat'
         subprocess.run(adb + ['push', str(args.saves / name), device + '/input/' + name],
+                       capture_output=True, check=True)
+    if 'transitions' in args.cases:
+        checkpoint = bytearray((args.saves / 'DSAO01.dat').read_bytes())
+        if len(checkpoint) != 0x11AF8 or int.from_bytes(checkpoint[0x83C:0x840], 'little') != 348:
+            raise ValueError('transitions requires an automatic start checkpoint in DSAO01.dat')
+        checkpoint[8:168] = b'DS_1201A_CM'.ljust(160, b'\0')
+        fixture = out / 'date-start.dat'
+        fixture.write_bytes(checkpoint)
+        subprocess.run(adb + ['push', str(fixture), device + '/input/date-start.dat'],
                        capture_output=True, check=True)
     command = ['toybox', 'timeout', '-k', '5s', '110s', 'env',
                'CLASSPATH=' + device + '/classes.dex', 'LD_LIBRARY_PATH=' + device,

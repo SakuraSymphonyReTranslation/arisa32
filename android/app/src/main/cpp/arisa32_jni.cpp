@@ -1617,8 +1617,8 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
             } else message = "Not available on Android: " + *tag;
         }
     } else if (x >= 0 && x < dc4scene::kScreenW && y >= 0 && y < dc4scene::kScreenH) {
-        if ((e->scene->save_format_version() & 0xFFFF) == 0x9F9A && e->scene->current_line().empty() && !e->scene->buttons().empty()) {
-            // Dal Segno title menu: do not advance into attract movie on background taps
+        if (e->scene->dalsegno_menu_active()) {
+            // Scripted menu background taps must not enter the attract movie.
         } else {
             if (!Java_org_dc4engine_Dc4Activity_dc4Advance(env, thiz)) message = stopped_message(e);
         }

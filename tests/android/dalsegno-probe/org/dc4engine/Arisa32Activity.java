@@ -58,9 +58,18 @@ public final class Arisa32Activity {
     }
     private void settle(Bitmap frame) throws Exception {
         long deadline=System.nanoTime()+10_000_000_000L;
+        long stableSince=System.nanoTime();
+        int[] previous=null;
         do {
             dc4Render(frame);
-            if ("0".equals(dc4Status().split(";")[3])) return;
+            // DS's transient crossfade is outside the host animation status.
+            dc4RenderPreview(frame);
+            int[] current=pixels(frame);
+            long now=System.nanoTime();
+            if (!"0".equals(dc4Status().split(";")[3]) || !Arrays.equals(previous,current))
+                stableSince=now;
+            else if (now-stableSince>=300_000_000L) return;
+            previous=current;
             Thread.sleep(20);
         } while (System.nanoTime()<deadline);
         throw new AssertionError("scene did not settle: "+dc4Status());
@@ -68,8 +77,11 @@ public final class Arisa32Activity {
     private void load(File input,Bitmap frame) throws Exception {
         String error=dc4Load(input.getAbsolutePath());
         check(error.isEmpty(),input.getName()+": "+error);
-        settle(frame);
-        if (dc4CurrentLine().isEmpty()) dc4Advance();
+        dc4Render(frame);
+        // Automatic saves can resume before an authored input wait.
+        for (int attempt=0;attempt<120 && dc4CurrentLine().isEmpty();++attempt) {
+            dc4Advance(); dc4Render(frame); Thread.sleep(20);
+        }
         settle(frame);
         check(!dc4CurrentLine().isEmpty(),input.getName()+": dialogue restored");
     }
@@ -133,6 +145,7 @@ public final class Arisa32Activity {
             load(saved,frame);
             check(line.equals(dc4CurrentLine()) && speaker.equals(dc4Speaker()),"roundtrip dialogue "+slot);
             dc4RenderPreview(frame);
+            png(frame,new File(captures,"save-"+slot+"-restored.png"));
             check(Arrays.equals(original,pixels(frame)),"roundtrip scene pixels "+slot);
             System.out.println("PASS native save "+slot+" and companion roundtrip: "+line);
         }
@@ -253,6 +266,38 @@ public final class Arisa32Activity {
         check(!":option".equals(toolbarTap(1224,588)),"hidden textbox has no Config hit target");
         System.out.println("PASS New Game toolbar actions, collapse/reopen, Config return, native save toolbar and hidden textbox");
     }
+    private void transitions(File input,File captures,Bitmap frame) throws Exception {
+        check(dc4Load(new File(input,"date-start.dat").getAbsolutePath()).isEmpty(),"automatic date checkpoint loads");
+        boolean date=false;
+        for (int attempt=0;attempt<120;++attempt) {
+            dc4Render(frame);
+            int cyan=0;
+            for (int y=544;y<600;++y) for (int x=40;x<384;++x) {
+                int color=frame.getPixel(x,y);
+                if (((color>>16)&255)<50 && ((color>>8)&255)>150 && (color&255)>150) ++cyan;
+            }
+            if (dc4CurrentLine().isEmpty() && cyan>100) { date=true; break; }
+            dc4Advance(); Thread.sleep(20);
+        }
+        png(frame,new File(captures,"transitions-date-reached.png"));
+        check(date,"date reaches its authored lower-left position: "+dc4Status()+" "+dc4CurrentLine());
+        Thread.sleep(3700); dc4Render(frame);
+        check(dc4CurrentLine().isEmpty(),"date waits for user input");
+        int[] waiting=pixels(frame);
+        png(frame,new File(captures,"transitions-date.png"));
+        dc4Touch(0,1074,588); dc4Touch(3,1074,588);
+        check(!":qs".equals(dc4Touch(1,1074,588)),"date has no cached QS hit target");
+        tap(700,300);
+        for (int attempt=0;attempt<30 && dc4CurrentLine().isEmpty();++attempt) {
+            dc4Render(frame); Thread.sleep(40);
+        }
+        check(dc4CurrentLine().trim().equals("The sun's piercing rays were full of summer energy."),"background tap advances date to next scene: "+dc4Status()+" "+dc4CurrentLine());
+        dc4Advance(); dc4Render(frame);
+        check(!Arrays.equals(waiting,pixels(frame)),"scene changes after date tap");
+        check(":qs".equals(toolbarTap(1074,588)),"QS returns with the textbox");
+        png(frame,new File(captures,"transitions-dialogue.png"));
+        System.out.println("PASS native automatic date load, cyan alpha/origin, hidden toolbar, background tap and restored toolbar");
+    }
     private void verify(File root,String data,String font,String mode) throws Exception {
         File output=new File(root,mode.startsWith("name") ? "name-profile" : "profile-"+mode);
         check(output.isDirectory() || output.mkdirs(),"isolated profile directory");
@@ -271,6 +316,7 @@ public final class Arisa32Activity {
             else if (mode.equals("backlog")) backlog(new File(root,"input"),captures,frame);
             else if (mode.equals("toolbar")) toolbar(new File(root,"input"),captures,frame);
             else if (mode.equals("menus")) menus(new File(root,"input"),captures,frame);
+            else if (mode.equals("transitions")) transitions(new File(root,"input"),captures,frame);
             else throw new AssertionError("unknown mode: "+mode);
         } finally { dc4Quit(); frame.recycle(); }
     }

@@ -1557,7 +1557,7 @@ void dalsegno_game_regressions(const fs::path& data) {
     for (const auto& action : toolbar) {
         CHECK(std::any_of(scene.buttons().begin(), scene.buttons().end(), [&](const auto& b) {
             const auto* hit = scene.hit_test(b.x + b.w / 2, b.y + b.h / 2);
-            return b.action == action && hit && *hit == action;
+            return b.action == action && !hit;
         }));
     }
     CHECK(scene.load_script((data / "MES/main.mes").string()));
@@ -1903,6 +1903,81 @@ void dalsegno_game_regressions(const fs::path& data) {
     std::cout << "Dal Segno title gates, toolbar hit targets and " << sliders_checked << " slider drags checked\n";
 }
 
+void dalsegno_transition_regressions(const fs::path& data) {
+    dc4scene::FontRenderer font;
+    CHECK(font.load((data / "GRP/mplus-1c-heavy.ttf").string(), 0, 28));
+    for (const bool automatic : {false, true}) {
+    dc4scene::SceneRunner scene(data.string());
+    scene.set_font(&font); scene.set_use_system_menu(false);
+    scene.set_animation_enabled(true);
+    CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+    CHECK(scene.load_script((data / "MES/DS_1201A_CM.mes").string()));
+    int last_wait = -1;
+    scene.set_observer([&](const dc4::MesCommand& c, const std::string&) {
+        if (c.op == 0x13 && c.kind == dc4::CmdKind::Param2) {
+            last_wait = c.p1;
+            std::cout << "Date WAIT " << int(c.p1) << ',' << int(c.p2) << '\n';
+        }
+    });
+    if (automatic) {
+        std::ifstream input(data / "savedata/DSAO01.dat", std::ios::binary);
+        std::vector<uint8_t> save((std::istreambuf_iterator<char>(input)), {});
+        CHECK(save.size() == 0x11AF8);
+        if (save.size() != 0x11AF8) continue;
+        CHECK(save[0x83C] == 0x5C && save[0x83D] == 1 && save[0x83E] == 0 && save[0x83F] == 0);
+        std::fill(save.begin() + 8, save.begin() + 168, 0);
+        const std::string script = "DS_1201A_CM";
+        std::copy(script.begin(), script.end(), save.begin() + 8);
+        CHECK(scene.restore_pc_save(save));
+    } else scene.advance_to_next_text();
+    for (int i = 0; i < 40 && last_wait != 0; ++i) {
+        CHECK(scene.current_line().empty() && scene.waiting_for_time());
+        scene.update(5000);
+        if (scene.script_ready()) scene.advance_to_next_text();
+    }
+    CHECK(last_wait == 0 && scene.waiting_for_time() && scene.current_line().empty());
+    CHECK(!scene.dalsegno_menu_active());
+    CHECK(scene.last_error().empty());
+    const auto toolbar = scene.buttons();
+    CHECK(toolbar.size() == 11);
+    for (const auto& b : toolbar) CHECK(!scene.hit_test(b.x + b.w / 2, b.y + b.h / 2));
+    std::string action;
+    CHECK(!scene.handle_dalsegno_key(dc4scene::SceneRunner::UiKey::Next, &action));
+    scene.draw(-1); const auto date_frame = scene.frame();
+    int cyan = 0, white = 0;
+    for (int y = 544; y < 600; ++y) for (int x = 40; x < 384; ++x) {
+        const size_t p = (size_t(y) * 1280 + x) * 4;
+        cyan += date_frame[p] < 50 && date_frame[p+1] > 150 && date_frame[p+2] > 150;
+        white += date_frame[p] > 240 && date_frame[p+1] > 240 && date_frame[p+2] > 240;
+    }
+    CHECK(cyan > 100 && white == 0);
+    if (const char* directory = std::getenv("DS_UI_CAPTURE")) {
+        std::ofstream out(fs::path(directory) / "date-1201.ppm", std::ios::binary);
+        out << "P6\n1280 720\n255\n";
+        for (size_t i = 0; i < date_frame.size(); i += 4)
+            out.write(reinterpret_cast<const char*>(date_frame.data() + i), 3);
+    }
+    scene.update(60000); scene.draw(-1);
+    CHECK(scene.waiting_for_time() && !scene.script_ready() && scene.frame() == date_frame);
+    scene.finish_script_wait();
+    CHECK(!scene.waiting_for_time());
+    scene.advance_to_next_text();
+    for (int i = 0; i < 40 && scene.current_line().empty(); ++i) {
+        scene.update(5000);
+        if (scene.script_ready()) scene.advance_to_next_text();
+    }
+    CHECK(scene.current_line() == " The sun's piercing rays were full of summer energy. ");
+    CHECK(scene.last_error().empty() && !scene.waiting_for_time());
+    scene.draw(-1);
+    for (const auto& b : toolbar) {
+        const auto* hit = scene.hit_test(b.x + b.w / 2, b.y + b.h / 2);
+        CHECK(hit && *hit == b.action);
+    }
+    std::cout << "Dal Segno " << (automatic ? "automatic load" : "script entry")
+              << " date origin, cyan alpha, hidden toolbar and click-to-dialogue checked\n";
+    }
+}
+
 void dalsegno_music_regressions(const fs::path& data) {
     dc4::AudioEngine audio;
     dc4scene::FontRenderer font;
@@ -2085,7 +2160,12 @@ int main(int argc, char** argv) {
             std::cout << (failures ? "Dal Segno music FAILED\n" : "Dal Segno music passed\n");
             return failures ? 1 : 0;
         }
+        if (argc > 2 && std::string(argv[1]) == "--dalsegno-transitions") {
+            dalsegno_transition_regressions(argv[2]);
+            return failures ? 1 : 0;
+        }
         if (argc > 2 && std::string(argv[1]) == "--dalsegno") {
+            dalsegno_transition_regressions(argv[2]);
             dalsegno_game_regressions(argv[2]);
             std::cout << (failures ? "Dal Segno regressions FAILED\n" : "Dal Segno regressions passed\n");
             return failures ? 1 : 0;

@@ -350,6 +350,7 @@ public:
     bool handle_slider_touch(int action, int x, int y, std::string* triggered_action = nullptr);
     enum class UiKey { Next, Previous, Activate, Decrease, Increase };
     bool handle_dalsegno_key(UiKey key, std::string* action);
+    bool dalsegno_menu_active() const;
     std::string dalsegno_back_action() const;
     bool dalsegno_name_pending() const { return ds_name_pending_; }
     bool dalsegno_name_confirming() const { return ds_name_confirming_; }
@@ -637,6 +638,7 @@ private:
     bool pending_chip_is_button_ = false;
     std::vector<UiButton> buttons_;        // 0x72/0x54/0x73/0x77 widgets
     std::vector<UiButton> ds_dialogue_buttons_;
+    bool dalsegno_dialogue_controls() const;
     UiButton pending_button_;
     bool pending_has_button_ = false;
     struct DalSegnoCaption {

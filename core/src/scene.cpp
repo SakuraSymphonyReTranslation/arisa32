@@ -594,6 +594,24 @@ bool SceneRunner::load_grp_crx(const std::string& rel, Image* out,
     CrxInfo info;
     std::vector<uint8_t> rgba;
     if (!crx_decode(buf.data(), buf.size(), &rgba, &info, err)) return false;
+    if (is_dalsegno_profile_ && info.colors == 0x102) {
+        if (buf.size() < 20 + 256 * 4) {
+            if (err) *err = "truncated Dal Segno BGRA palette";
+            return false;
+        }
+        std::vector<uint8_t> pixels, palette;
+        int stride = 0;
+        if (!crx_decode_raw(buf.data(), buf.size(), &pixels, &info, &stride, &palette, err)) return false;
+        // DSAO 0x439F60 converts BGRA palette entries to inverted-alpha ABGR.
+        for (int y = 0; y < info.height; ++y) for (int x = 0; x < info.width; ++x) {
+            const size_t index = 20 + size_t(pixels[size_t(y) * stride + x]) * 4;
+            const size_t dst = (size_t(y) * info.width + x) * 4;
+            rgba[dst] = buf[index + 2];
+            rgba[dst + 1] = buf[index + 1];
+            rgba[dst + 2] = buf[index];
+            rgba[dst + 3] = buf[index + 3];
+        }
+    }
     out->name = rel;
     out->w = info.width;
     out->h = info.height;
@@ -1082,6 +1100,12 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
 
 bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    if (c.ds && c.kind == K::Words4 && c.opcode() == dc4::Opcode::CHIP_ORIGIN) {
+        // DSAO 0x40E4D0 stores only the destination origin.
+        scene_chip_origin_x_ = int16_t(c.words[0]);
+        scene_chip_origin_y_ = int16_t(c.words[1]);
+        return true;
+    }
     if (c.dc2dm && c.kind == K::Words4 && c.opcode() == dc4::Opcode::CHIP_ORIGIN) {
         switch (c.words[2]) {
         case 0:
@@ -1151,6 +1175,10 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     if (is_chip_pos) {
         pending_scene_chip_ = UiChip{int16_t(c.words[0]), int16_t(c.words[1]),
                                      c.words[2], c.words[3], 0, 0, 0, true};
+        if (c.ds) {
+            pending_scene_chip_.dst_x += scene_chip_origin_x_;
+            pending_scene_chip_.dst_y += scene_chip_origin_y_;
+        }
         if (c.dc2dm) {
             pending_scene_chip_.dst_x += scene_chip_origin_x_;
             pending_scene_chip_.dst_y += scene_chip_origin_y_;
@@ -3574,7 +3602,7 @@ void SceneRunner::draw(int reveal_chars) {
         }
     };
     if (ds && current_line_.empty()) {
-        for (size_t i = 0; i < buttons_.size(); ++i) {
+        if (!dalsegno_dialogue_controls()) for (size_t i = 0; i < buttons_.size(); ++i) {
             const auto& b = buttons_[i];
             const bool hover = ds_modal_buttons_.empty() && (ds_focus_ == int(i) ||
                 (pointer_x_ >= b.x && pointer_x_ < b.x + b.w &&
@@ -4591,7 +4619,7 @@ void SceneRunner::draw_choices() {
 }
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
-    if ((mes_.version & 0xFFFF) == 0x9F9A) {
+    if (is_dalsegno_profile_) {
         if (ds_name_pending_ && ds_name_confirming_) {
             static const std::string yes = ":nameyes", no = ":nameno";
             if (y >= 348 && y < 412) {
@@ -4600,8 +4628,10 @@ const std::string* SceneRunner::hit_test(int x, int y) const {
             }
             return nullptr;
         }
-        if (!current_line_.empty() && !ds_name_pending_ && !sidebar_visible_ && ds_modal_buttons_.empty()) {
-            if (!message_visible_ || script_wait_pending_ || !pending_movie_.empty()) return nullptr;
+        if ((dalsegno_dialogue_controls() || !current_line_.empty()) &&
+                !ds_name_pending_ && !sidebar_visible_ && ds_modal_buttons_.empty()) {
+            if (current_line_.empty() || !message_visible_ || script_wait_pending_ ||
+                effect_pck_.active || !pending_movie_.empty()) return nullptr;
             if (!taskbar_visible_) {
                 if (x >= open_button_.x && x < open_button_.x + open_button_.w &&
                     y >= open_button_.y && y < open_button_.y + open_button_.h)

@@ -933,9 +933,10 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
             audio.looped_se.push_back({lookup(candidate.scene_audio_.se_names(),se),channel,0});
         }
         if (!candidate.scene_audio_.restore_snapshot(audio,false,&error)) throw std::runtime_error(error);
-        if (automatic) candidate.advance_to_next_text();
         std::vector<uint8_t> state;
         if (!candidate.capture_state(&state,&error) || !restore_state(state,&error)) throw std::runtime_error(error);
+        // Resume autosaves on the live scene so authored waits use the host's animation settings.
+        if (automatic) advance_to_next_text();
         if (restore_error) restore_error->clear(); return true;
     } catch (const std::exception& error) { if (restore_error) *restore_error=error.what(); return false; }
 }
