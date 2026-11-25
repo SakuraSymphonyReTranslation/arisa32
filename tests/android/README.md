@@ -588,3 +588,13 @@ intro can animate while its buttons remain usable, so the test does not require
 all animation to stop before tapping it. Menu checks verify that title Load opens
 the host slot screen, Back preserves the title, and scenarios 03/05/06 return to
 the same clean title pixels. These cases still use isolated profiles and saves.
+
+Use `--cases transitions` for the Dal Segno date screen. The harness derives a
+DS_1201A_CM start fixture from a copy of the automatic DSAO01.dat checkpoint
+(resume offset 348). It checks the date at (40,544), cyan palette alpha, the
+absence of cached toolbar hit targets, a background tap reaching the next
+dialogue, and toolbar restoration. The source save remains unchanged.
+
+Load checks advance through authored input waits with a bounded retry. Save
+round trips wait for host animation idle and clean-preview pixels to remain
+stable for 300 ms; Dal Segno's transient crossfade is outside the host status bit.

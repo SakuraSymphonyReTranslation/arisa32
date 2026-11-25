@@ -45,7 +45,8 @@ Dukungan penuh DSIF belum diimplementasikan atau diuji dengan data asli.
 - Import/export native save mempertahankan format PC. Companion canonical
   `DSAO03.arisa.dat`; companion lama `.dat.arisa` tetap dapat dibaca. Export PC
   mengecualikan tambahan Arisa; export Arisa mempertahankannya.
-- Snapshot scene v13 memulihkan posisi sprite/state DS. Mapping body/accessory
+- Snapshot scene v13 pada checkpoint 21 November memulihkan posisi sprite/state DS.
+  Lanjutan 24 November menulis v14 dan tetap membaca v13. Mapping body/accessory
   dan camera placement DS dipisahkan dari pivot generik. Audio autosave dipulihkan
   sebelum skrip dilanjutkan agar tidak menimpa BGM baru yang dimulai skrip.
 - `system-profile.dat` DS menyimpan nama, settings, progress dan pilihan Music
@@ -164,10 +165,10 @@ visual lengkap atau release yang selesai.
 - Data HP `/storage/emulated/0/Gamehub/[MangaGamer] D.S. -Dal Segno-/AdvData`.
 - Tidak ada release/tag baru. APK tidak masuk Git; output standar
   `android/app/build/outputs/apk/debug/app-debug.apk`.
-- Perubahan plugin build Android dan alat cleanup yang telah ada sebelumnya
-  dipertahankan di working tree, tidak dicampur ke commit Dal Segno.
-  Build sesi ini menggunakan AGP lokal 8.13.2 di `android/build.gradle`;
-  baseline Git masih 8.5.2. Periksa perbedaan ini jika membangun dari clone baru.
+- Perubahan plugin build Android dan alat cleanup yang sebelumnya ada di working
+  tree telah dicatat dalam commit terpisah pada 24 November, sebagaimana handoff.
+  AGP 8.13.2 di `android/build.gradle` sekarang committed; baseline sebelum audit
+  memakai 8.5.2.
 
 ## Lanjutan 24 November 2026: popup Android dan font native
 
@@ -280,3 +281,13 @@ geometri font seluruh kalimat belum dinyatakan identik.
 Tag gambar lain `#s` (`dbr2.crx`), `#e` (`dbr.crx`) dan `#o` (`onp.crx`) ditemukan
 di executable tetapi belum diimplementasikan atau diuji. Gunakan handoff terbaru
 untuk hash APK, hasil suite akhir, commit dan status instalasi.
+
+## Lanjutan 25 November 2026: date/input dan Debug terpasang
+
+Commit `2ed2177` memperbaiki toolbar, reset grafis title dan navigasi Load.
+Commit `880e6eb` melanjutkan palette/origin date native, toolbar inert saat date
+menunggu, tap sesudah automatic Load serta pemulihan animasi pada scene live.
+Desktop/JNI terkait lulus; CTest 45 PASS, 1 SKIP, 0 FAIL. Debug 0.7.4/code 22
+dipasang dengan install -r, hash perangkat cocok; slot/Back Activity diperiksa.
+Hasil lengkap, bukti dan batas parity tetap tercatat pada
+[handoff 24/25 November](dalsegno-handoff-2026-11-24.md).
