@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.5 - 2026-11-26
+
+### Bahasa Indonesia
+
+- Memperluas profil Dal Segno MangaGamer dengan deteksi folder berdasarkan skrip, pengisian nama dan konfirmasi asli, serta pemulihan nama saat bermain kembali.
+- Memperbaiki toolbar, Upper Menu, Backlog dengan replay suara dan lompat dialog, Load dari judul, Return to Title, serta input pada layar tanggal setelah Auto Load.
+- Menambahkan 10 halaman save, 97 slot biasa di samping Latest/Auto/Quick, dan tabel 280 judul skenario. Mendukung impor/ekspor slot PC pada checkpoint yang didukung serta companion lama dan baru.
+- Mengaktifkan EXTRA dengan Scenario Replay, pratinjau CG dan variannya, serta Music Mode dengan 42 lagu, playlist, repeat, dan shuffle. Tile Scenario dan CG mengikuti progres.
+- Menyambungkan pengaturan lima tab CONFIG ke teks, Auto, Skip, efek, transparansi textbox, serta volume dan mute, termasuk volume movie dan per karakter.
+- Mengoreksi posisi sprite dan aksesori, pan/zoom, potret dialog, angka animasi, palet layar tanggal, dan gambar inline. Menambahkan transisi lingkaran menyusut serta efek pembuka.
+- Dal Segno tetap eksperimental. Seluruh rute, ending, unlock, dan kesamaan visual dengan PC masih perlu divalidasi.
+
+### English
+
+- Expands the MangaGamer Dal Segno profile with script-based folder detection, original name entry and confirmation, and name persistence.
+- Fixes the dialogue toolbar, Upper Menu, Backlog voice replay and line jumps, title Load, Return to Title, and date-screen input after Auto Load.
+- Adds 10 save pages, 97 regular slots alongside Latest/Auto/Quick, and a table of 280 scenario titles. Supports PC slot import/export at supported checkpoints and current and legacy companions.
+- Enables EXTRA with Scenario Replay, CG previews and variants, and Music Mode with 42 tracks, playlists, repeat, and shuffle. Scenario and CG tiles follow player progress.
+- Connects the five CONFIG tabs to text, Auto, Skip, effects, textbox transparency, and volume and mute, including movie and individual character volume.
+- Corrects sprite and accessory placement, pan/zoom, dialogue portraits, animated numbers, the date palette, and inline images. Adds shrinking-circle transitions and opening effects.
+- Dal Segno remains experimental. Full routes, endings, unlocks, and visual parity with PC still require validation.
+
+Catatan rilis lengkap / Full release notes: [Bahasa Indonesia](docs/releases/v0.7.5/id.md) | [English](docs/releases/v0.7.5/en.md).
+
 ## 0.7.4 - 2026-11-19
 
 ### Bahasa Indonesia
