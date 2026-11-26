@@ -28,6 +28,7 @@ void BstSprite::finish_motion() {
 }
 
 bool SceneRunner::animating() const {
+    if (ds_break_.active()) return true;
     return !dialogue_actions_.empty() || !camera_motion_.empty() || !ds_background_motion_.empty() || dc2pc_transition_active_ || dc2dm_transition_.active ||
         std::any_of(ds_camera_layers_.begin(), ds_camera_layers_.end(), [](const auto& item) { return item.second.motion.duration_ms > 0; }) ||
         std::any_of(sprites_.begin(), sprites_.end(), [](const BstSprite& s) { return s.moving() || s.fade.active(); }) ||

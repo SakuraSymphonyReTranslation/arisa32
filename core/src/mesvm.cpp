@@ -479,6 +479,7 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
         for (int i=0;i<4;++i) write_variable(bank-200,index+i,(bits >> (24-8*i)) & 255);
         return;
     }
+    const bool is_ds = mes_ && (mes_->version & 0xFFFF) == 0x9F9A;
     const int size = byte_bank_size(bank,dc2pc);
     if (size) {
         if (index >= size) return;
@@ -486,6 +487,8 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
         if (dc2pc) return;
         if (!dc2dm && bank == 100 && index == 49)
             write_variable(99, 11, value);
+        if (is_ds && bank == 3 && index == 41)
+            write_variable(94, uint16_t(read_variable(100, 55)), value);
         return;
     }
     if (dc2pc) {
@@ -497,15 +500,9 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
         if (index < 20) variables_[{bank, index}] = value;
         return;
     }
-    const bool is_ds = mes_ && (mes_->version & 0xFFFF) == 0x9F9A;
-    if (is_ds && bank == 3 && index == 41) {
-        variables_[{bank, index}] = value;
-        int char_id = read_variable(100, 55);
-        write_variable(94, uint16_t(char_id), value);
-        return;
-    }
     if (is_ds && (bank == 94 || bank == 95)) {
         variables_[{bank, index}] = value;
+        if (dalsegno_audio_observer_) dalsegno_audio_observer_(bank, index);
         return;
     }
     if (bank == 94 || bank == 95) {
@@ -526,6 +523,7 @@ void MesVm::write_variable(uint16_t bank, uint16_t index, int32_t value) {
     if (index == 224) value = value > 0;
     if (index == 225 && value > 100) value = 100;
     variables_[{bank, index}] = value;
+    if (is_ds && dalsegno_audio_observer_) dalsegno_audio_observer_(bank, index);
     // The original falls through and mirrors this text-speed setting.
     if (index == 10) variables_[{uint16_t(99), uint16_t(214)}] = value == 2;
 }

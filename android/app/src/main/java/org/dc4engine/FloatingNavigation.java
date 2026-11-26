@@ -27,7 +27,7 @@ final class FloatingNavigation {
     private final BooleanSupplier blocked;
     private final AccessibilityManager accessibility;
     private final int slop;
-    private boolean autoHide, hidden, active, touching, galleryPreviewActive;
+    private boolean autoHide, hidden, active, touching, galleryPreviewActive, galleryReplacesBack;
     private float downX, downY, startX, startY;
     private float controlOffsetX, controlOffsetY, edgeFraction, edgeStartFraction;
     private float edgeTop, edgeBottom;
@@ -84,11 +84,15 @@ final class FloatingNavigation {
 
     void setDescription(String description) { edge.setContentDescription(description); }
 
-    void setGalleryPreviewActive(boolean visible) {
+    void setGalleryPreviewActive(boolean visible, boolean replacesBack) {
         if (galleryPreviewActive == visible) return;
         galleryPreviewActive = visible;
+        galleryReplacesBack = visible && replacesBack;
         if (visible) show();
-        else galleryBack.setVisibility(View.GONE);
+        else {
+            galleryBack.setVisibility(View.GONE);
+            if (replacesBack && back != null) back.setVisibility(hidden ? View.INVISIBLE : View.VISIBLE);
+        }
     }
 
     void setAutoHide(boolean enabled) {
@@ -157,7 +161,7 @@ final class FloatingNavigation {
         hidden = false;
         edge.setVisibility(View.GONE);
         bubble.setVisibility(View.VISIBLE);
-        if (back != null) back.setVisibility(View.VISIBLE);
+        if (back != null) back.setVisibility(galleryReplacesBack ? View.INVISIBLE : View.VISIBLE);
         galleryBack.setVisibility(galleryPreviewActive ? View.VISIBLE : View.GONE);
         clamp.run();
         if (restoreFocus) bubble.requestFocus();

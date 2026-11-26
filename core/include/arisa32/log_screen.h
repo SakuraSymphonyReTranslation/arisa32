@@ -93,11 +93,12 @@ private:
                     int dx, int dy, std::vector<uint8_t>* frame) const;
     void draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
                    int x, int baseline, std::vector<uint8_t>* frame, int size = 22,
-                   const dc4scene::Image* inline_dash = nullptr) const;
+                   const dc4scene::Image* inline_dash = nullptr,
+                   const dc4scene::Image* inline_note = nullptr) const;
     int face_id(const std::u16string& name, const std::string& script = {}) const;
 
     dc4scene::Image back_, chip_;
-    dc4scene::Image inline_bar_;
+    dc4scene::Image inline_bar_, inline_note_;
     std::vector<std::u16string> face_names_;
     std::vector<std::pair<std::u16string, int>> alias_names_;
     bool latin_mode_ = false;

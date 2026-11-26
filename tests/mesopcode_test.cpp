@@ -279,8 +279,10 @@ void dal_segno_profile() {
     raw.kind = dc4::CmdKind::Param2;
     raw.op = 0x0B;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::WAIT_INPUT);
-    raw.op = 0x12;
+    raw.op = 0x10;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::UNKNOWN);
+    raw.op = 0x12;
+    CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::STOP_BGM);
     raw.op = 0x13;
     CHECK(dc4::mes_engine_command(raw).opcode() == dc4::Opcode::WAIT);
 

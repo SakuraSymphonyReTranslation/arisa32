@@ -301,7 +301,22 @@ void blit(const dc4scene::Image& image, const Rect& src, const Rect& dst, std::v
         }
     }
 }
-void gallery_bitmap(const dc4scene::Image& image, int width, int height, std::vector<uint8_t>* frame) {
+} // namespace
+} // namespace dc4ui
+
+void dc4scene::fit_gallery_image(const Image& image, int width, int height, std::vector<uint8_t>* frame) {
+    if (width == image.w && height == image.h) {
+        *frame = image.rgba;
+        for (size_t i = 0; i < frame->size(); i += 4) {
+            auto* pixel = frame->data() + i;
+            const int alpha = pixel[3];
+            if (alpha == 255) continue;
+            for (int channel = 0; channel < 3; ++channel)
+                pixel[channel] = uint8_t((pixel[channel] * alpha + 127) / 255);
+            pixel[3] = 255;
+        }
+        return;
+    }
     frame->assign(size_t(width)*height*4, 0);
     for (size_t i=3; i<frame->size(); i+=4) (*frame)[i]=255;
     const double scale=std::min(double(width)/image.w,double(height)/image.h);
@@ -329,6 +344,10 @@ void gallery_bitmap(const dc4scene::Image& image, int width, int height, std::ve
         }
     }
 }
+
+namespace dc4ui {
+namespace {
+using dc4scene::fit_gallery_image;
 struct DC2PCGalleryRows {
     std::string source;
     int width=0, source_width=0, source_height=0, offset_x=0;
@@ -804,7 +823,7 @@ struct SystemMenu::Impl {
                 auto& canvas = gallery_previous_canvas;
                 if (canvas.name != gallery_previous || canvas.w != width || canvas.h != height) {
                     if (dc2pc) dc2pc_gallery_bitmap(*source,width,height,gallery_previous_x,gallery_previous_y,&canvas.rgba);
-                    else gallery_bitmap(*source,width,height,&canvas.rgba);
+                    else fit_gallery_image(*source,width,height,&canvas.rgba);
                     canvas.name=gallery_previous; canvas.w=width; canvas.h=height;
                 }
                 previous = &canvas;
@@ -2017,7 +2036,7 @@ bool SystemMenu::draw_gallery(int width, int height, std::vector<uint8_t>* frame
     auto& canvas=p_->gallery_canvas;
     if (canvas.name!=p_->background || canvas.w!=width || canvas.h!=height) {
         if (p_->dc2pc) dc2pc_gallery_bitmap(*source,width,height,p_->gallery_x,p_->gallery_y,&canvas.rgba,&p_->dc2pc_gallery_rows);
-        else gallery_bitmap(*source,width,height,&canvas.rgba);
+        else fit_gallery_image(*source,width,height,&canvas.rgba);
         canvas.name=p_->background; canvas.w=width; canvas.h=height;
     }
     *frame=canvas.rgba;

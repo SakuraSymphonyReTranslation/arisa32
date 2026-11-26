@@ -28,6 +28,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ std::u16string sjis_to_utf16(const std::string& s);
 
 struct Image;
 constexpr char16_t kInlineDash = u'\u2014';
+constexpr char16_t kInlineMusicNote = u'\u266a';
 
 // stb_truetype wrapper rasterizing one UTF-16 line into an RGBA buffer.
 class FontRenderer {
@@ -68,13 +70,14 @@ public:
                         bool wide = false, uint32_t outline_rgb = 0,
                         bool fixed_grid = false, int tracking = 0,
                         float raster_size = 0, float output_scale = 1,
-                        bool outlined = true, const Image* inline_dash = nullptr) const;
+                        bool outlined = true, const Image* inline_dash = nullptr,
+                        const Image* inline_note = nullptr) const;
     int glyph_advance(char16_t ch, float pixel_size = 0, bool wide = false,
                       bool fixed_grid = false, int tracking = 0,
-                      const Image* inline_dash = nullptr) const;
+                      const Image* inline_dash = nullptr, const Image* inline_note = nullptr) const;
     int text_width(const std::u16string& text, float pixel_size = 0, bool wide = false,
                    bool fixed_grid = false, int tracking = 0,
-                   const Image* inline_dash = nullptr) const;
+                   const Image* inline_dash = nullptr, const Image* inline_note = nullptr) const;
     std::pair<int, int> text_vertical_bounds(const std::u16string& text, float pixel_size = 0) const;
 
 private:
@@ -104,6 +107,8 @@ struct Image {
     int native_alpha = 255;
     bool valid() const { return !rgba.empty(); }
 };
+
+void fit_gallery_image(const Image& image, int width, int height, std::vector<uint8_t>* frame);
 
 struct SakuraSystem {
     struct Particle {
@@ -269,6 +274,15 @@ struct MesWinLayout {
     int gear_x = 36, gear_y = 0, gear_w = 32, gear_h = 32;
 };
 
+struct DalSegnoPlayback {
+    int character_interval_ms;
+    int auto_delay_ms;
+    bool wait_for_voice;
+    bool stop_auto_at_choice;
+    bool stop_skip_at_choice;
+    bool skip_unread;
+};
+
 class SceneRunner {
 public:
     explicit SceneRunner(const std::string& data_dir);
@@ -279,13 +293,10 @@ public:
         textbox_font_ = textbox_font ? textbox_font : font;
     }
     void set_debug(bool on) { debug_ = on; }
-    void set_audio(dc4::AudioEngine* audio, dc4::VoiceArchive* voice) {
-        audio_ = audio;
-        voice_ = voice;
-        scene_audio_.set_engine(audio, voice);
-    }
+    void set_audio(dc4::AudioEngine* audio, dc4::VoiceArchive* voice);
 
     bool load_script(const std::string& mes_path, const std::string& entry_label = {});
+    bool open_dalsegno_title(int reveal_chars = -1);
     // Seed the first authored DC2DM transition after load_script, before advance.
     bool seed_dc2dm_presentation(const std::vector<uint8_t>& rgba);
     bool start_dc2ty_title_exit(const std::vector<uint8_t>& outgoing);
@@ -305,7 +316,8 @@ public:
     // Hosts keep updating while a script wait is pending, then advance once
     // script_ready() is true. Input can finish a skippable wait/credit sequence.
     bool waiting_for_time() const { return script_wait_pending_ && script_wait_ms_ != 0; }
-    bool script_ready() const { return !sidebar_visible_ && !reviewing_dialogue() && script_wait_pending_ && script_wait_ms_ == 0; }
+    bool script_ready() const { return !sidebar_visible_ && !reviewing_dialogue() &&
+        !dalsegno_confirmation_active() && script_wait_pending_ && script_wait_ms_ == 0; }
     void finish_script_wait();
     bool credits_active() const { return credits_active_ || dc2dm_ending_.active; }
     bool effect_pck_active() const { return effect_pck_.active; }
@@ -338,10 +350,10 @@ public:
     bool scene_ended() const { return scene_end_; }
     const std::string& next_script() const { return next_script_; }
     const std::string& last_error() const { return last_error_; }
-    bool waiting_for_choice() const { return vm_.waiting_for_choice(); }
+    bool waiting_for_choice() const { return ds_modal_buttons_.empty() && vm_.waiting_for_choice(); }
     const std::vector<dc4::MesChoice>& choices() const { return vm_.choices(); }
     bool choose(size_t index) {
-        if (sidebar_visible_ || reviewing_dialogue()) return false;
+        if (sidebar_visible_ || reviewing_dialogue() || !waiting_for_choice()) return false;
         bool ok = vm_.choose(index);
         if (ok) scene_dirty_ = true;
         return ok;
@@ -358,6 +370,15 @@ public:
     const std::string& dalsegno_given_name() const { return ds_given_name_; }
     bool set_dalsegno_name(const std::string& family, const std::string& given);
     bool handle_dalsegno_action(const std::string& action);
+    bool dalsegno_replay_active() const { return ds_replay_active_; }
+    bool dalsegno_confirmation_active() const { return !ds_modal_buttons_.empty(); }
+    bool dalsegno_gallery_active() const { return ds_gallery_image_.valid(); }
+    const Image& dalsegno_gallery_image() const { return ds_gallery_image_; }
+    uint32_t dalsegno_gallery_revision() const { return ds_gallery_revision_; }
+    bool advance_dalsegno_gallery();
+    void close_dalsegno_gallery();
+    const std::vector<uint8_t>& dalsegno_gallery_frame(int width, int height);
+    void recover_dalsegno_progress(const std::set<std::string>& read_lines, const std::string& save_dir);
     bool open_dalsegno_config();
     bool resume_dalsegno_config();
     bool load_dalsegno_system(const std::string& path, std::string* error = nullptr);
@@ -370,6 +391,8 @@ public:
     const std::vector<std::string>& dalsegno_music_titles() const { return ds_music_titles_; }
     bool dalsegno_music_checked(int track) const { return track >= 0 && track < 42 && ds_music_checks_[size_t(track)]; }
     void sync_audio_from_slider(int bank, int index, int val);
+    DalSegnoPlayback dalsegno_playback() const;
+    float dalsegno_movie_gain() const;
     std::u16string visible_text() const;
     size_t visible_text_length() const;
     void set_pointer(int x, int y, bool down) {
@@ -413,6 +436,7 @@ public:
     void set_variable(uint16_t bank, uint16_t index, int value) {
         vm_.write_variable(bank, index, value);
         if (dc2dm_ui_ && bank == 9 && index == 7 && value != 0) sidebar_visible_ = false;
+        if (is_dalsegno_profile_ && bank == 8) scene_dirty_ = true;
     }
 
     // Loads the message-window UI script (MES/win_size.mes) and the sheets it
@@ -516,6 +540,7 @@ private:
     void snapshot_dc2dm_transition();
     void finish_dc2dm_transition();
     void draw_dc2dm_transition();
+    bool particle_effects_visible() const;
     void update_sakura(uint32_t elapsed_ms);
     void draw_sakura();
     bool dispatch_dc4_effect_command(const dc4::MesCommand& c);
@@ -529,15 +554,29 @@ private:
     bool dispatch_dalsegno_ui(const dc4::MesCommand& c);
     void load_dalsegno_upper_menu();
     void draw_dalsegno_name();
+    void draw_dalsegno_character_counters();
     std::string dalsegno_text(const std::string& text) const;
     void draw_dalsegno_captions();
     void draw_dalsegno_confirmation();
+    void start_dalsegno_break();
+    void finish_dalsegno_break();
+    void draw_dalsegno_break();
+    void show_dalsegno_confirmation(int x, int y, int message, const std::string& yes, const std::string& no);
+    void load_dalsegno_catalogue();
+    void award_dalsegno_scene(const std::string& script);
+    void award_dalsegno_cg(const std::string& name);
+    bool open_dalsegno_gallery(const std::string& action);
+    bool select_dalsegno_gallery_image(size_t index, size_t candidates);
     void reset_dalsegno_ui();
     bool dispatch_dalsegno_music(const dc4::MesCommand& c);
     bool play_dalsegno_music();
     void step_dalsegno_music(int direction);
     void refresh_dalsegno_music();
     void draw_dalsegno_music();
+    int dalsegno_window_alpha() const;
+    int dalsegno_audio_level(int enable_index, int volume_index) const;
+    void sync_dalsegno_audio();
+    void sync_dalsegno_audio_setting(uint16_t bank, uint16_t index);
     void update_dalsegno_music();
     bool touch_dalsegno_music_scroll(int action, int x, int y);
     bool restore_dc2pc_pc_save(const std::vector<uint8_t>& bytes, std::string* error, bool ty = false);
@@ -667,7 +706,19 @@ private:
     std::array<bool, 42> ds_music_checks_{};
     uint32_t ds_music_random_ = 0xD5A032;
     std::vector<uint8_t> ds_system_template_;
-    Image ds_inline_bar_;
+    std::vector<std::string> ds_cg_names_;
+    std::map<std::string, uint16_t> ds_cg_ids_, ds_scene_ids_;
+    bool ds_replay_active_ = false;
+    int ds_replay_route_ = 0, ds_replay_page_ = 0;
+    std::vector<uint16_t> ds_gallery_order_;
+    size_t ds_gallery_index_ = 0;
+    uint32_t ds_gallery_revision_ = 0;
+    Image ds_gallery_image_;
+    int ds_gallery_width_ = 0, ds_gallery_height_ = 0;
+    std::vector<uint8_t> ds_gallery_frame_;
+    Image ds_inline_bar_, ds_inline_note_;
+    int ds_face_x_ = 4, ds_face_y_ = 567;
+    unsigned ds_counter_ticks_ = 0;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
     bool dc2dm_ui_ = false;
@@ -701,7 +752,7 @@ private:
         double elapsed_ms = 0, duration_ms = 0;
     };
     std::vector<CameraMotion> camera_motion_;
-    std::vector<CameraMotion> ds_background_motion_;
+    std::map<int, CameraMotion> ds_background_motion_;
     struct DsCameraLayer {
         float base_x = 0, base_y = 0, base_scale = 1;
         CameraMotion motion;
@@ -727,6 +778,18 @@ private:
     bool transition_active_ = false;
     bool transition_pending_ = false;
     double transition_elapsed_ms_ = 0, transition_duration_ms_ = 0;
+    struct DsBreakTile {
+        int vx = 0, vy = 0, life = 0;
+    };
+    struct DsBreakTransition {
+        static constexpr int tile_size = 32, ticks = 24;
+        static constexpr double tick_ms = 1000.0 / 60;
+        std::vector<uint8_t> source;
+        std::vector<DsBreakTile> tiles;
+        Image atlas;
+        double elapsed_ms = 0;
+        bool active() const { return !source.empty(); }
+    } ds_break_;
     // DC2PC raw0D presents a pending composition. Keep the displayed pixels
     // separately: raw30 must not replace the source of an outgoing fade.
     std::vector<uint8_t> dc2pc_displayed_frame_, dc2pc_transition_target_;

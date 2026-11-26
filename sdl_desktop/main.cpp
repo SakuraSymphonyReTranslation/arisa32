@@ -1190,7 +1190,14 @@ int run(const Options& o) {
         status.clear();update_title();
     };
     auto return_title = [&]() {
-        if (system_menu.is_dc2ty() && scene && !scene->script_name().empty()) {
+        if (scripted_dalsegno && scene) {
+            auto_mode = skip_mode = mouse_down = false;
+            if (scene->open_dalsegno_title()) {
+                movie.close(); movie_from_scene = false;
+                advance_script();
+                animation_tick = SDL_GetTicks();
+            } else notify(scene->last_error());
+        } else if (system_menu.is_dc2ty() && scene && !scene->script_name().empty()) {
             std::vector<uint8_t> outgoing;
             if (menu_open) system_menu.draw(-1,-1,false,font,&outgoing);
             else if (movie.active()) movie.draw_rgba(&outgoing,dc4scene::kScreenW,dc4scene::kScreenH);

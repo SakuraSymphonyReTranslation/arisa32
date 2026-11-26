@@ -15,6 +15,8 @@ namespace dc4ui {
 
 namespace {
 
+constexpr int kDalSegnoBackX = 1234, kDalSegnoBackY = 672;
+
 bool read_crx(const std::string& data_dir, const char* rel, dc4scene::Image* out,
               const char* subdir = "/SYSTEM") {
     const std::string dir = data_dir + "/GRP" + subdir;
@@ -183,11 +185,14 @@ std::vector<std::u16string> LogScreen::text_lines(const std::u16string& text, bo
 }
 
 bool LogScreen::load(const std::string& data_dir) {
-    back_={};chip_={};inline_bar_={};
+    back_={};chip_={};inline_bar_={};inline_note_={};
     dc4::MesFile main;
     dc2dm_=main.load_file(data_dir+"/MES/main.mes") && main.dialect==dc4::MesDialect::ClassicDM;
     dalsegno_ = dc4::is_dalsegno_game(data_dir);
-    if (dalsegno_) read_crx(data_dir, "bar.CRX", &inline_bar_, "");
+    if (dalsegno_) {
+        read_crx(data_dir, "bar.CRX", &inline_bar_, "");
+        read_crx(data_dir, "onp.CRX", &inline_note_, "");
+    }
     if ((main.version & 0xFFFF) == 0x9F9A && !dalsegno_) return false;
     dc2dm_text_rgb_ = 0xC8A0DC;
     dc2dm_selected_rgb_ = 0xFFFFFF;
@@ -283,15 +288,17 @@ void LogScreen::blit(const dc4scene::Image& img, int sx, int sy, int sw, int sh,
 // window. Rasterizes a tight bounds buffer like the shell's overlay_text.
 void LogScreen::draw_text(const dc4scene::FontRenderer& font, const std::u16string& text,
                           int x, int baseline, std::vector<uint8_t>* frame, int size,
-                          const dc4scene::Image* inline_dash) const {
+                          const dc4scene::Image* inline_dash, const dc4scene::Image* inline_note) const {
     if (text.empty()) return;
-    const int measured = inline_dash ? font.text_width(text, float(size), false, false, 0, inline_dash) : text_width(text, size);
+    const int measured = inline_dash || inline_note
+        ? font.text_width(text, float(size), false, false, 0, inline_dash, inline_note)
+        : text_width(text, size);
     const int width = std::min(measured + 8, dc4scene::kScreenW - x + 2);
     if (width <= 0) return;
     const int height = size + 16;
     std::vector<uint8_t> pixels(size_t(width) * height * 4, 0);
     font.rasterize_line(text, 2, size + 8, &pixels, width, height, float(size),
-                        0xFFFFFF, false, 0, false, 0, 0, 1, true, inline_dash);
+                        0xFFFFFF, false, 0, false, 0, 0, 1, true, inline_dash, inline_note);
     const int top = baseline - size - 8;
     for (int py = 0; py < height; ++py) {
         for (int px = 0; px < width; ++px) {
@@ -413,7 +420,8 @@ void LogScreen::draw(const std::vector<LogRow>& rows, int scroll, bool thumbnail
 }
 
 bool LogScreen::back_hit(int x, int y) const {
-    if (dalsegno_) return x >= 1200 && x < 1270 && y >= 635 && y < 710;
+    if (dalsegno_) return x >= kDalSegnoBackX - 20 && x < dc4scene::kScreenW &&
+                          y >= kDalSegnoBackY - 20 && y < dc4scene::kScreenH;
     if (dc2dm_) return dm_hit(x, y, 936, 504, 84, 68);
     return x >= 1100 && x < 1216 && y >= 672 && y < 712;
 }
@@ -514,17 +522,25 @@ void LogScreen::draw_dalsegno(const std::vector<LogRow>& rows, int scroll,
         draw_text(font,row.name,150,top + 26,frame,22);
         std::u16string line;
         int baseline = top + 34;
-        const auto flush = [&] {draw_text(font,line,310,baseline,frame,22,&inline_bar_); line.clear(); baseline += 28;};
+        int width = 0;
+        const auto flush = [&] {
+            draw_text(font, line, 310, baseline, frame, 22, &inline_bar_, &inline_note_);
+            line.clear();
+            width = 0;
+            baseline += 28;
+        };
         for (char16_t ch : row.text) {
             if (ch == u'\r') continue;
             if (ch == u'\n') {flush(); if (baseline > top + 105) break; continue;}
             line += ch;
-            if (font.text_width(line,22,false,false,0,&inline_bar_) > 735) {
+            width += font.glyph_advance(ch, 22, false, false, 0, &inline_bar_, &inline_note_);
+            if (width > 735) {
                 size_t split = line.find_last_of(u' ');
                 if (split == std::u16string::npos || split == 0) split = line.size()-1;
                 const auto tail = line.substr(split + (line[split] == u' ' ? 1 : 0));
                 line.resize(split); flush(); line = tail;
                 if (baseline > top + 105) {line.clear();break;}
+                width = font.text_width(line, 22, false, false, 0, &inline_bar_, &inline_note_);
             }
         }
         if (!line.empty()) flush();
@@ -532,7 +548,8 @@ void LogScreen::draw_dalsegno(const std::vector<LogRow>& rows, int scroll,
         blit(chip_,0,jump ? 48 : 0,145,48,0,top + 32,frame);
         if (!row.voice.empty()) blit(chip_,148,0,64,50,208,top + 32,frame);
     }
-    blit(chip_,back_hit(mouse_x,mouse_y) ? 48 : 0,103,45,37,1215,654,frame);
+    blit(chip_, back_hit(mouse_x, mouse_y) ? 48 : 0, 96, 46, 44,
+         kDalSegnoBackX, kDalSegnoBackY, frame);
     if (rows.size() > 5) {
         const int center = 93 + int(588.0 * scroll / last_scroll(rows.size()));
         blit(chip_,216,thumb_hit(mouse_x,mouse_y,scroll,rows.size()) ? 32 : 0,30,30,1115,center-15,frame);

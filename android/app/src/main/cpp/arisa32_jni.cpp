@@ -158,6 +158,10 @@ void sync_progress(Engine* e) {
 void apply_config(Engine* e) {
     const auto c = e->menu.config();
     e->menu.set_visual_effects_enabled(g_config.visual_effects_enabled);
+    if (e->scene && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A) {
+        e->scene->set_visual_effects_enabled(g_config.visual_effects_enabled);
+        return;
+    }
     e->audio.set_master_volume(c.master_enabled ? c.master_volume : 0);
     e->audio.set_user_volume(dc4::AudioGroup::Bgm, c.music_enabled ? c.music_volume : 0);
     e->audio.set_user_volume(dc4::AudioGroup::Se, c.se_enabled ? c.se_volume : 0);
@@ -257,6 +261,7 @@ void begin_line(Engine* e) {
     e->fully_revealed = false;
     e->line_key = e->scene->script_name() + ":" + std::to_string(e->scene->script_position());
     e->current_was_read = e->read_lines.count(e->line_key) != 0;
+    if (e->scene->dalsegno_replay_active()) e->line_key.clear();
 }
 
 int reveal_count(Engine* e) {
@@ -264,7 +269,9 @@ int reveal_count(Engine* e) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - e->line_start).count();
     static constexpr int timing[] = {120,100,80,65,50,40,30,24,18,12,6,0};
     const int speed = std::clamp(e->menu.config().text_speed,0,11);
-    const size_t count = speed >= 11 ? e->text_length : size_t(elapsed / timing[speed]);
+    const int interval = (e->scene->save_format_version() & 0xFFFF) == 0x9F9A
+        ? e->scene->dalsegno_playback().character_interval_ms : timing[speed];
+    const size_t count = interval == 0 ? e->text_length : size_t(elapsed / interval);
     if (count >= e->text_length) { e->fully_revealed = true; return -1; }
     return int(count);
 }
@@ -307,6 +314,7 @@ bool play_system_voice(Engine* e, int event_id) {
 // index (the same mechanism the desktop shell uses). Rows after the jump
 // point are discarded; advancing re-accumulates them.
 std::string jump_to_row(Engine* e, int row_index) {
+    if (e->scene->dalsegno_replay_active()) return "Scene jump unavailable during scene replay";
     if (row_index < 0 || size_t(row_index) >= e->log_rows.size()) return "Invalid history row";
     const dc4ui::LogRow& row = e->log_rows[size_t(row_index)];
     if (row.snapshot.empty()) return "This older history row no longer has a rewind snapshot";
@@ -325,7 +333,8 @@ std::string jump_to_row(Engine* e, int row_index) {
 
 bool advance_scene(Engine* e) {
     if (!e->scene->pending_movie().empty() || e->scene->waiting_for_time()) return true;
-    if (!e->line_key.empty() && e->read_lines.size() < 100000) e->read_lines.insert(e->line_key);
+    if (!e->scene->dalsegno_replay_active() && !e->line_key.empty() && e->read_lines.size() < 100000)
+        e->read_lines.insert(e->line_key);
     // Current core follows 0x4F/0x50 transfers itself, preserving scene/audio.
     // Keep the existing next_script fallback for an ended runner, checking
     // every load and preventing an unbounded no-dialogue transfer loop.
@@ -627,6 +636,15 @@ void return_to_title_now(Engine* e) {
     if (e->menu.is_dc2dm()) e->movie_from_scene = false;
     e->movie_suspended = false;
     e->scene->finish_movie();
+    if (!e->menu.loaded() && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A &&
+            e->scene->open_dalsegno_title(reveal_count(e))) {
+        e->menu_open = false;
+        e->in_game = true;
+        advance_scene(e);
+        save_profile(e);
+        e->tick = Clock::now();
+        return;
+    }
     e->audio.stop_all();
     e->current_bgm.clear();
     save_profile(e);
@@ -781,7 +799,7 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
         }
         if (env) {
             jclass cls = env->GetObjectClass(e->activity);
-            jmethodID play_method = env->GetMethodID(cls, "playMovie", "(Ljava/lang/String;)V");
+            jmethodID play_method = env->GetMethodID(cls, "playMovie", "(Ljava/lang/String;F)V");
             if (play_method) {
                 if (!is_kotori) {
                     if (!e->audio.channel_playing(0) || from_scene) {
@@ -792,7 +810,10 @@ bool play_movie_resource(Engine* e, const std::string& asset, bool from_scene, s
                 jstring jpath = env->NewStringUTF(full_path.c_str());
                 // Startup runs on the UI thread, where Java can complete synchronously.
                 e->movie_playing_in_java = true;
-                env->CallVoidMethod(e->activity, play_method, jpath);
+                const float gain = is_kotori ? 0.0f :
+                    (e->scene && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A)
+                        ? e->scene->dalsegno_movie_gain() : 1.0f;
+                env->CallVoidMethod(e->activity, play_method, jpath, jfloat(gain));
                 const bool failed = env->ExceptionCheck();
                 if (failed) {
                     env->ExceptionClear();
@@ -966,6 +987,8 @@ void tick_engine(Engine* e) {
         return;
     }
     if (!e->in_game) return;
+    if (e->scene->dalsegno_replay_active() && e->scene->dalsegno_confirmation_active())
+        e->line_start += std::chrono::milliseconds(delta);
     e->scene->update(elapsed);
     if (e->scene->script_ready()) advance_scene(e);
     if (e->scene->quit_requested()) return;
@@ -1241,6 +1264,7 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
             const auto path=directory+"/system-profile.dat";
             if (std::filesystem::is_regular_file(path) && !e->scene->load_dalsegno_profile(path,&err)) LOGE("Dal Segno profile: %s",err.c_str());
         }
+        e->scene->recover_dalsegno_progress(e->read_lines, e->save_dir);
     }
     if (menu_ok) {
         apply_config(e);
@@ -1297,6 +1321,11 @@ Java_org_dc4engine_Dc4Activity_dc4OpenMenu(JNIEnv* env,jobject,jstring name) {
     if (!e) return env->NewStringUTF("Engine is not running");
     if (e->presentation.active()) return env->NewStringUTF("");
     const auto page = jstr_to_std(env,name);
+    if (e->scene && e->scene->dalsegno_gallery_active() && page == "back") {
+        e->scene->close_dalsegno_gallery();
+        return env->NewStringUTF("");
+    }
+    if (e->scene && e->scene->dalsegno_replay_active() && page == "title") return env->NewStringUTF("");
     if (e->scene && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A && page == "config") {
         if (!e->scene->open_dalsegno_config()) return env->NewStringUTF(e->scene->last_error().c_str());
         begin_line(e);
@@ -1393,6 +1422,7 @@ JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Dc4Activity_dc4RequestConfirm(JNIEnv* env,jobject,jstring requested) {
     Engine* e=g_engine;if(!e||e->paused||e->presentation.active())return env->NewStringUTF("");
     const auto action=jstr_to_std(env,requested);
+    if (action == "title" && e->scene->dalsegno_replay_active()) return env->NewStringUTF("");
     if ((action=="quick-save" || action=="quick-load") && !e->scene->save_load_allowed())
         return env->NewStringUTF("");
     dc4ui::ConfirmKind kind;
@@ -1464,11 +1494,14 @@ Java_org_dc4engine_Dc4Activity_dc4PlaybackSettings(JNIEnv* env,jobject) {
     Engine* e = g_engine;
     if (!e) return env->NewStringUTF("");
     const auto c = e->menu.config();
-    const int delay = (21-std::clamp(c.auto_wait,0,20))*100 + int(e->text_length)*(12-std::clamp(c.auto_speed,0,11))*8;
-    const std::string result = std::to_string(delay) + ";" +
-        (c.wait_for_voice ? "1" : "0") + ";" + (c.stop_auto_at_choice ? "1" : "0") + ";" +
-        (c.stop_skip_at_choice ? "1" : "0") + ";" +
-        ((c.skip_unread || e->current_was_read) ? "1" : "0");
+    const bool ds = (e->scene->save_format_version() & 0xFFFF) == 0x9F9A;
+    const auto playback = ds ? e->scene->dalsegno_playback() : dc4scene::DalSegnoPlayback{
+        0, (21-std::clamp(c.auto_wait,0,20))*100 + int(e->text_length)*(12-std::clamp(c.auto_speed,0,11))*8,
+        c.wait_for_voice, c.stop_auto_at_choice, c.stop_skip_at_choice, c.skip_unread};
+    const std::string result = std::to_string(playback.auto_delay_ms) + ";" +
+        (playback.wait_for_voice ? "1" : "0") + ";" + (playback.stop_auto_at_choice ? "1" : "0") + ";" +
+        (playback.stop_skip_at_choice ? "1" : "0") + ";" +
+        ((playback.skip_unread || e->current_was_read) ? "1" : "0");
     return env->NewStringUTF(result.c_str());
 }
 
@@ -1477,6 +1510,7 @@ JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4Advance(JNIEnv*, jobject) {
     Engine* e = g_engine;
     if (!e || !e->scene || e->paused || e->menu_open || e->presentation.active()) return JNI_FALSE;
+    if (e->scene->dalsegno_confirmation_active() || e->scene->dalsegno_gallery_active()) return JNI_TRUE;
     if (e->scene->sidebar_visible()) { e->scene->set_sidebar_visible(false); return JNI_TRUE; }
     if (e->scene->reviewing_dialogue()) { e->scene->return_to_dialogue(); return JNI_TRUE; }
     if (e->movie.active()) {
@@ -1574,7 +1608,7 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
                 // The title script draws Load's background; Java supplies its slots.
                 message = ":dl";
             } else if (e->scene->handle_dalsegno_action(*tag)) {
-                begin_line(e);
+                if (e->pressed_action != ":dsreplayno") begin_line(e);
             } else if (*tag == ":voice" || *tag == ":torisetu" || *tag == ":t") {
                 message = e->scene->replay_voice() ? ":voice" : "No voice on this line";
             } else if (*tag == ":sidebar") {
@@ -1742,7 +1776,9 @@ Java_org_dc4engine_Dc4Activity_dc4SkipAdvance(JNIEnv*, jobject) {
     if (!e || !e->scene || e->paused || e->presentation.active()) return JNI_FALSE;
     if (e->scene->sidebar_visible() || e->scene->reviewing_dialogue()) return JNI_TRUE;
     if (e->menu_open || e->movie.active() || e->scene->waiting_for_time()) return JNI_TRUE;
-    if (!e->menu.config().skip_unread && !e->current_was_read) return JNI_FALSE;
+    const bool skip_unread = (e->scene->save_format_version() & 0xFFFF) == 0x9F9A
+        ? e->scene->dalsegno_playback().skip_unread : e->menu.config().skip_unread;
+    if (!skip_unread && !e->current_was_read) return JNI_FALSE;
     if (e->scene->scene_ended()) return JNI_FALSE;
     if (!e->scene->message_visible()) {
         e->scene->set_message_visible(true);
@@ -2130,8 +2166,20 @@ Java_org_dc4engine_Arisa32Activity_dc4MenuActive(JNIEnv* env, jobject thiz) {
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4GalleryPreviewActive(JNIEnv*, jobject) {
     Engine* e = g_engine;
-    return e && !e->paused && e->menu_open && !e->presentation.active() &&
-        !e->menu.confirming() && e->menu.gallery_preview_active();
+    return e && !e->paused && !e->presentation.active() &&
+        ((e->scene && e->scene->dalsegno_gallery_active()) ||
+            (e->menu_open && !e->menu.confirming() && e->menu.gallery_preview_active()));
+}
+JNIEXPORT jlong JNICALL
+Java_org_dc4engine_Arisa32Activity_dc4DalSegnoGalleryFrameInfo(JNIEnv* env, jobject thiz) {
+    Engine* e = g_engine;
+    if (!Java_org_dc4engine_Arisa32Activity_dc4GalleryPreviewActive(env, thiz) ||
+        !e->scene || !e->scene->dalsegno_gallery_active()) return 0;
+    tick_engine(e);
+    const auto& image = e->scene->dalsegno_gallery_image();
+    if (!image.valid() || image.w < 1 || image.h < 1 || image.w > 8192 || image.h > 8192) return 0;
+    return jlong(uint64_t(e->scene->dalsegno_gallery_revision()) << 32 |
+                 uint64_t(image.w) << 16 | uint64_t(image.h));
 }
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Arisa32Activity_dc4GalleryFrame(JNIEnv* env, jobject thiz, jobject bitmap) {
@@ -2141,6 +2189,11 @@ Java_org_dc4engine_Arisa32Activity_dc4GalleryFrame(JNIEnv* env, jobject thiz, jo
         info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return JNI_FALSE;
     Engine* e = g_engine;
     tick_engine(e);
+    if (e->scene->dalsegno_gallery_active()) {
+        const auto& frame = e->scene->dalsegno_gallery_frame(info.width, info.height);
+        e->save_frame_visible = false;
+        return blit_rgba(env, bitmap, frame, info.width, info.height);
+    }
     std::vector<uint8_t> frame;
     if (!e->menu.draw_gallery(info.width, info.height, &frame)) return JNI_FALSE;
     e->save_frame_visible = false;
@@ -2212,7 +2265,13 @@ Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, 
     const auto ds_back = e->scene->dalsegno_back_action();
     if (!ds_back.empty()) {
         if (resume_dalsegno_config(e)) return env->NewStringUTF("");
-        if (e->scene->handle_dalsegno_action(ds_back)) { save_profile(e); return env->NewStringUTF(""); }
+        if (e->scene->handle_dalsegno_action(ds_back)) {
+            e->pointer_down = false;
+            e->pressed_action.clear(); e->pressed_widget = false; e->pressed_choice = -1;
+            e->scene->set_pointer(-1, -1, false);
+            save_profile(e);
+            return env->NewStringUTF("");
+        }
         if (ds_back == ":nameedit") return env->NewStringUTF(":nameedit");
         e->pointer_down = false;
         e->scene->handle_slider_touch(3, -1, -1);

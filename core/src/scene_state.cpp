@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <charconv>
 #include <ctime>
 #include <cstring>
 #include <filesystem>
@@ -81,6 +82,31 @@ bool resource_name(const std::string& name, bool allow_separator = true) {
         name.find("..") != std::string::npos || name[0] == '/' || name[0] == '\\') return false;
     if (!allow_separator && name.find_first_of("/\\") != std::string::npos) return false;
     return true;
+}
+bool dalsegno_save_position(const dc4::MesFile& mes, const std::vector<uint8_t>& bytes, bool empty_dialogue,
+                           bool* automatic_save) {
+    const auto resume = Reader{bytes, 0x83C}.u32(), id = Reader{bytes, 0x840}.u32();
+    const auto index = Reader{bytes, 0x844}.u32(), pc = Reader{bytes, 0x848}.u32();
+    dc4::MesStream scan(mes);
+    dc4::MesCommand command;
+    bool boundary = false, automatic = false, text_boundary = false, in_checkpoint = false;
+    uint32_t checkpoint_end = 0;
+    while (scan.next(&command)) {
+        if (command.op == 3) {
+            in_checkpoint = (unsigned(command.p1) | unsigned(command.p2) << 8) == index;
+            if (in_checkpoint) checkpoint_end = command.pos + uint32_t(command.size);
+        }
+        if (command.pos == pc && command.kind == dc4::CmdKind::Text && command.op != 0x60 && in_checkpoint)
+            text_boundary = true;
+        if (command.op == 0x1A && command.pos + command.size == resume) automatic = true;
+        if (command.pos == resume || command.pos + command.size == resume) boundary = true;
+    }
+    const bool checkpoint = index < mes.labels.size() && mes.labels[index].id == id &&
+        mes.labels[index].offset == checkpoint_end && (pc == checkpoint_end || text_boundary);
+    // Native automatic saves retain the previous dialogue's table fields.
+    automatic = automatic && empty_dialogue && pc == resume;
+    if (automatic_save) *automatic_save = automatic;
+    return (checkpoint || automatic) && boundary && resume >= pc;
 }
 bool valid_saved_chip(const UiChip& chip) {
     if (chip.w<0 || chip.w>16384 || chip.h<0 || chip.h>16384 || chip.sheet<0 || chip.sheet>255) return false;
@@ -202,12 +228,13 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.u32(uint32_t(item.stamp));
             out.str(item.text);
         }
-        const bool save_effects = is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
+        const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
+        const bool save_effects = ds ? fairy_lights_.active :
+            is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
             (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || fairy_lights_.active || sheets_.count(28));
         const bool save_priority = std::any_of(sprites_.begin(), sprites_.end(),
             [](const BstSprite& sprite) { return sprite.priority != 50; });
         const bool ty = mes_.version == 0x5F69;
-        const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
         const bool save_motion = ty || ds || dc4_message_faces() || std::any_of(sprites_.begin(), sprites_.end(),
             [](const BstSprite& sprite) { return sprite.moving(); });
         const bool extended = save_priority || save_effects || save_motion;
@@ -296,7 +323,8 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
                 out.number(image.native_scale); out.u32(image.native_alpha);
             }
             out.u32(uint32_t(ds_background_motion_.size()));
-            for (const auto& motion : ds_background_motion_) {
+            for (const auto& [slot, motion] : ds_background_motion_) {
+                out.u32(slot);
                 out.number(motion.from_x); out.number(motion.from_y);
                 out.number(motion.to_x); out.number(motion.to_y);
                 out.number(motion.elapsed_ms); out.number(motion.duration_ms);
@@ -314,7 +342,7 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
         if (out.bytes.size() > kMaxSave) throw std::runtime_error("save exceeds size limit");
         Writer header;
         header.bytes.insert(header.bytes.end(), kMagic, kMagic + 8);
-        header.u32(ds ? 14 : ty ? 12 : save_motion ? 11 : save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
+        header.u32(ds ? 15 : ty ? 12 : save_motion ? 11 : save_effects ? 9 : save_priority ? 8 : dc2dm_ending_reference_valid_ ? 6 : 5);
         header.u32(uint32_t(out.bytes.size())); header.u64(checksum(out.bytes));
         header.bytes.insert(header.bytes.end(), out.bytes.begin(), out.bytes.end());
         *bytes = std::move(header.bytes);
@@ -625,9 +653,12 @@ bool SceneRunner::load_dalsegno_system(const std::string& path, std::string* err
             if (enabled<0 || enabled>1 || volume<0 || volume>100) throw std::runtime_error("invalid Dal Segno character volume");
             values[{95,i}]=enabled; values[{94,i}]=volume;
         }
-        for (const auto& value:values) set_variable(value.first.first,value.first.second,value.second);
+        for (const auto& [key, value] : values) {
+            const auto [bank, index] = key;
+            if ((bank == 97 || bank == 98) && variable(bank, index)) continue;
+            set_variable(bank, index, value);
+        }
         ds_system_template_=std::move(bytes);
-        for (int index:{225,7,8,9,207}) sync_audio_from_slider(99,index,variable(99,index));
         if (error) error->clear(); return true;
     } catch (const std::exception& e) { if (error) *error=e.what(); return false; }
 }
@@ -655,11 +686,14 @@ bool SceneRunner::load_dalsegno_profile(const std::string& path, std::string* er
         const auto track=in.count(41), scroll=in.count(36), repeat=in.count(2); const bool playlist=in.flag();
         std::array<bool,42> checks; for (auto& checked:checks) checked=in.flag();
         if (in.at!=bytes.size()) throw std::runtime_error("unexpected Dal Segno profile data");
-        for (const auto& value:values) set_variable(value.first.first,value.first.second,value.second);
+        for (const auto& [key, value] : values) {
+            const auto [bank, index] = key;
+            if ((bank == 97 || bank == 98) && variable(bank, index)) continue;
+            set_variable(bank, index, value);
+        }
         vm_.set_personal_names(family,given); ds_family_name_=family; ds_given_name_=given;
         ds_music_track_=track; ds_music_scroll_=scroll; ds_music_repeat_=repeat; ds_music_checks_=checks;
         set_variable(7,98,track); set_variable(9,60,scroll); set_variable(9,30,repeat); set_variable(3,29,playlist);
-        for (int index:{225,7,8,9,207}) sync_audio_from_slider(99,index,variable(99,index));
         if (error) error->clear(); return true;
     } catch (const std::exception& e) { if (error) *error=e.what(); return false; }
 }
@@ -690,6 +724,75 @@ bool SceneRunner::save_dalsegno_profile(const std::string& directory, std::strin
         }
         if (error) error->clear(); return true;
     } catch (const std::exception& e) { if (error) *error=e.what(); return false; }
+}
+
+void SceneRunner::recover_dalsegno_progress(const std::set<std::string>& read_lines, const std::string& save_dir) {
+    if (!is_dalsegno_profile_) return;
+    load_dalsegno_catalogue();
+    std::map<std::string, std::set<uint32_t>> positions;
+    const auto scenario_key = [](const std::string& name) {
+        auto key = dc4::save_lower(name);
+        if (key.size() > 4 && key.substr(key.size() - 4) == ".mes") key.resize(key.size() - 4);
+        return key;
+    };
+    for (const auto& line : read_lines) {
+        const auto separator = line.rfind(':');
+        if (separator == std::string::npos) continue;
+        const auto script = scenario_key(line.substr(0, separator));
+        if (!ds_scene_ids_.count(script)) continue;
+        uint32_t position = 0;
+        const auto end = line.data() + line.size();
+        const auto result = std::from_chars(line.data() + separator + 1, end, position);
+        if (result.ec == std::errc{} && result.ptr == end) positions[script].insert(position);
+    }
+    const auto load_scenario = [&](const std::string& script, dc4::MesFile* mes) {
+        return mes->load_file(dc4::resolve_asset(data_ + "/MES/" + script + ".mes")) &&
+            (mes->version & 0xFFFF) == 0x9F9A;
+    };
+    for (const auto& [script, seen] : positions) {
+        dc4::MesFile mes;
+        if (!load_scenario(script, &mes)) continue;
+        dc4::MesStream scan(mes);
+        dc4::MesCommand command;
+        std::vector<std::string> backgrounds;
+        while (scan.next(&command)) {
+            const auto opcode = dc4::mes_engine_command(command).opcode();
+            // A recorded line proves the straight-line background commits
+            // that lead to it. Branch joins can bypass the preceding commits.
+            if (opcode == dc4::Opcode::SCOPE || opcode == dc4::Opcode::LABEL ||
+                opcode == dc4::Opcode::TRANSFER || opcode == dc4::Opcode::TRANSFER_ALT ||
+                opcode == dc4::Opcode::JUMP || opcode == dc4::Opcode::CHOICE)
+                backgrounds.clear();
+            if (opcode == dc4::Opcode::BACKGROUND) backgrounds.push_back(command.str);
+            if (opcode != dc4::Opcode::DIALOGUE && opcode != dc4::Opcode::TEXT) continue;
+            if (seen.count(scan.pos())) {
+                award_dalsegno_scene(script);
+                for (const auto& name : backgrounds) award_dalsegno_cg(name);
+            }
+            backgrounds.clear();
+        }
+    }
+    if (save_dir.empty()) return;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator file(save_dir, ec), end; !ec && file != end; file.increment(ec)) {
+        const auto filename = dc4::save_lower(file->path().filename().string());
+        if (filename != "dsao00.dat" && filename != "dsao01.dat" &&
+            (filename.rfind("dsao", 0) != 0 || dc4::save_slot_number(filename, mes_.version) < 0)) continue;
+        std::vector<uint8_t> bytes;
+        if (!read_bytes(file->path().string(), &bytes) || bytes.size() != 0x11AF8 || bytes[0x4318 + 9 * 100 + 7])
+            continue;
+        const auto field = [&](size_t offset, size_t size) {
+            const auto* begin = reinterpret_cast<const char*>(bytes.data() + offset);
+            const auto* end = std::find(begin, begin + size, '\0');
+            return end == begin + size ? std::string{} : std::string(begin, end);
+        };
+        const auto script = scenario_key(field(8, 160));
+        dc4::MesFile mes;
+        if (!ds_scene_ids_.count(script) || !load_scenario(script, &mes) ||
+            !dalsegno_save_position(mes, bytes, bytes[0x117F8] == 0, nullptr)) continue;
+        award_dalsegno_scene(script);
+        award_dalsegno_cg(field(0xD8, 48));
+    }
 }
 
 bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, std::string* capture_error) {
@@ -779,14 +882,33 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             number(at+0xB8,x); number(at+0xBC,y); number(at+0xC0,scale*100);
         };
         for (const auto& item : layers_) {
-            if (item.first != 1) throw std::runtime_error("unsupported Dal Segno background layer");
+            const int slot = item.first;
+            if (slot != 1 && (slot < 16 || slot > 18)) throw std::runtime_error("unsupported Dal Segno background layer");
+            const int record = slot == 1 ? 0 : slot - 13;
+            const size_t at = 0x4C4C + record * 0x1B0;
             const auto& image=item.second;
             const float scale=image.native_placement?image.native_scale:std::max(1280.f/image.w,720.f/image.h)*camera_scale_;
             const float x=image.native_placement?image.native_x:-(camera_scale_-1)*camera_x_;
             const float y=image.native_placement?image.native_y:-(camera_scale_-1)*camera_y_;
             // Native zero pivots scale around the image centre.
             const float raw_x=x-image.w/2.f*(1-scale),raw_y=y-image.h/2.f*(1-scale);
-            name(0xA8+48,48,image.name); renderer(0,image,raw_x,raw_y,scale,image.native_alpha,0,0,0);
+            name(0xA8 + slot * 48, 48, image.name);
+            renderer(record, image, raw_x, raw_y, scale, image.native_alpha, 0, 0, 0);
+            u32(at+0x1AC, 1);
+            const auto pan = ds_background_motion_.find(slot);
+            if (pan != ds_background_motion_.end()) {
+                const auto& motion = pan->second;
+                const float target_x = raw_x + motion.to_x - x;
+                const float target_y = raw_y + motion.to_y - y;
+                const double frames = motion.duration_ms * 60.0 / 1000;
+                number(at+0x18, target_x); number(at+0x1C, target_y);
+                number(at+0x88, target_x); number(at+0x8C, target_y);
+                number(at+0x90, float((motion.to_x - motion.from_x) / frames));
+                number(at+0x94, float((motion.to_y - motion.from_y) / frames));
+                u32(at+0xC8, x != motion.to_x);
+                u32(at+0xCC, y != motion.to_y);
+            }
+            if (slot != 1) continue;
             const auto camera=ds_camera_layers_.find(-1);
             if(camera!=ds_camera_layers_.end()) {
                 const auto& base=camera->second;
@@ -846,25 +968,9 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
         if (script.find('.')==std::string::npos) script+=".mes";
         SceneRunner candidate(data_);
         if (!candidate.load_script(data_+"/MES/"+script) || (candidate.mes_.version & 0xFFFF)!=0x9F9A) throw std::runtime_error("saved Dal Segno scenario is unavailable");
-        const auto index=integer(0x844), id=integer(0x840), pc=integer(0x848), resume=integer(0x83C);
-        dc4::MesStream scan(candidate.mes_); dc4::MesCommand c;
-        bool checkpoint=false, boundary=false, automatic=false, text_boundary=false;
-        uint32_t checkpoint_end=0; bool in_checkpoint=false;
-        while (scan.next(&c)) {
-            if (c.op==3) {
-                in_checkpoint=(unsigned(c.p1)|unsigned(c.p2)<<8)==index;
-                if (in_checkpoint) checkpoint_end=c.pos+uint32_t(c.size);
-            }
-            if (c.pos==pc && c.kind==dc4::CmdKind::Text && c.op!=0x60 && in_checkpoint) text_boundary=true;
-            if (c.op==0x1A && c.pos+uint32_t(c.size)==resume) automatic=true;
-            if (c.pos==resume || c.pos+uint32_t(c.size)==resume) boundary=true;
-        }
-        checkpoint=index<candidate.mes_.labels.size() && candidate.mes_.labels[index].id==id &&
-            candidate.mes_.labels[index].offset==checkpoint_end && (pc==checkpoint_end || text_boundary);
-        // Native automatic saves retain the previous dialogue's table fields.
-        const bool empty_dialogue=text(0x117F8,260).empty();
-        automatic=automatic && empty_dialogue && pc==resume;
-        if ((!checkpoint && !automatic) || !boundary || resume<pc)
+        const auto resume=integer(0x83C);
+        bool automatic = false;
+        if (!dalsegno_save_position(candidate.mes_, bytes, text(0x117F8,260).empty(), &automatic))
             throw std::runtime_error("invalid Dal Segno checkpoint table or resume position");
         dc4::MesVmSnapshot current; std::string error;
         if (vm_.capture_snapshot(&current,&error)) for (const auto& item:current.variables)
@@ -875,17 +981,20 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
         if (candidate.current_line_.empty() && !automatic) candidate.current_line_=text(0x119F4,260);
         candidate.speaker_=text(0x118FC,128);
         candidate.vm_.seek_to_pc(resume);
-        const auto background=name(0xA8+48,48);
-        if (!background.empty()) {
-            candidate.load_layer(1,background);
-            if (!candidate.layers_.count(1)) throw std::runtime_error("saved Dal Segno background is unavailable");
-            auto& image=candidate.layers_[1]; const size_t at=0x4C4C;
+        for (const int slot : {1, 16, 17, 18}) {
+            const auto background = name(0xA8 + slot * 48, 48);
+            if (background.empty()) continue;
+            const size_t at = 0x4C4C + (slot == 1 ? 0 : slot - 13) * 0x1B0;
+            if (slot != 1 && (!integer(at+0x1AC) || !integer(at+0x80))) continue;
+            candidate.load_layer(slot, background);
+            if (!candidate.layers_.count(slot)) throw std::runtime_error("saved Dal Segno background is unavailable");
+            auto& image = candidate.layers_[slot];
             image.native_placement=true; image.native_x=number(at)+number(at+0xC); image.native_y=number(at+4)+number(at+0x10);
             image.native_scale=number(at+0x54)/100; image.native_alpha=int(std::lround(std::clamp(number(at+0x50),0.f,1.f)*255));
             if (image.native_scale<=0 || std::abs(number(at+0x58)/100-image.native_scale)>0.001f || number(at+0x5C)!=0)
                 throw std::runtime_error("unsupported Dal Segno background transform");
             image.native_x+=image.w/2.f*(1-image.native_scale); image.native_y+=image.h/2.f*(1-image.native_scale);
-            if(integer(at+0xC4)) {
+            if (slot == 1 && integer(at+0xC4)) {
                 DsCameraLayer camera; camera.base_scale=number(at+0xC0)/100;
                 camera.base_x=number(at+0xB8)+image.w/2.f*(1-camera.base_scale);
                 camera.base_y=number(at+0xBC)+image.h/2.f*(1-camera.base_scale);
@@ -893,6 +1002,18 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
                 candidate.ds_camera_layers_.emplace(-1,camera);
             }
             if (!integer(at+0x80)) image.native_alpha=0;
+            const float vx = integer(at+0xC8) ? number(at+0x90) : 0;
+            const float vy = integer(at+0xCC) ? number(at+0x94) : 0;
+            if (vx || vy) {
+                CameraMotion motion;
+                motion.from_x = image.native_x; motion.from_y = image.native_y;
+                motion.to_x = vx ? number(at+0x88) + image.w/2.f*(1-image.native_scale) : motion.from_x;
+                motion.to_y = vy ? number(at+0x8C) + image.h/2.f*(1-image.native_scale) : motion.from_y;
+                const double x_frames = vx ? (motion.to_x - motion.from_x) / vx : 0;
+                const double y_frames = vy ? (motion.to_y - motion.from_y) / vy : 0;
+                motion.duration_ms = std::max(x_frames, y_frames) * 1000.0 / 60;
+                if (motion.duration_ms > 0) candidate.ds_background_motion_.emplace(slot, motion);
+            }
         }
         for (int i=0;i<10;++i) {
             const int index=i<8?i:i==8?12:13, slot=i<8?i+2:i==8?19:23, record=i<4?(i+1)*10:i<8?(i-3)*10+2:i==8?65:51;
@@ -942,7 +1063,7 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
 }
 
 bool SceneRunner::save_load_allowed() const {
-    if (minigame_active()) return false;
+    if (ds_replay_active_ || dalsegno_gallery_active() || minigame_active()) return false;
     if (dc2dm_ui_ || mes_.dialect == dc4::MesDialect::ClassicDM)
         return variable(9, 7) == 0;
     if (dc2pc_ui_ || dc4::mes_uses_classic_dc2(mes_.dialect, mes_.version))
@@ -1571,7 +1692,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         if (std::memcmp(bytes.data(), kMagic, 8)) throw std::runtime_error("not a dc4engine save");
         Reader header{bytes, 8};
         const auto version = header.u32();
-        if (version < 1 || version > 14)
+        if (version < 1 || version > 15)
             throw std::runtime_error("unsupported save version");
         if (header.u32() != bytes.size() - 24) throw std::runtime_error("invalid save payload length");
         const uint64_t expected_checksum = header.u64();
@@ -1580,7 +1701,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         Reader in{payload};
         const std::string script = in.str(255);
         if (!resource_name(script, false)) throw std::runtime_error("invalid saved scenario path");
-        const auto vm = read_vm(in);
+        auto vm = read_vm(in);
         const std::string line = in.str(), speaker = in.str(1024);
         const bool ended = in.flag(), message_visible = in.flag(), preserve_scene = in.flag();
         const int transition = in.integer(); const double camera_scale = in.number();
@@ -1757,8 +1878,9 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             ending_reference_elapsed < 0 || ending_reference_elapsed > 500000))
             throw std::runtime_error("invalid saved ending timer");
         if (has_effects) {
-            if (!is_dc4_or_dc4ph_ || (candidate.mes_.version != 0xAAB6 && candidate.mes_.version != 0xABB6))
-                throw std::runtime_error("saved effects require the DC4 profile");
+            const bool ds = is_dalsegno_profile_ && (candidate.mes_.version & 0xFFFF) == 0x9F9A;
+            const bool dc4 = is_dc4_or_dc4ph_ && (candidate.mes_.version == 0xAAB6 || candidate.mes_.version == 0xABB6);
+            if (!ds && !dc4) throw std::runtime_error("saved particle effects do not match the game profile");
             for (auto* image : {&candidate.mask_, &candidate.screen_effect_atlas_, &candidate.sakura_sheet_}) {
                 const auto name = in.str(255);
                 if (name.empty()) continue;
@@ -1934,8 +2056,12 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
             }
         }
         if (version >= 14) {
-            const auto count = in.count(1);
+            const auto count = in.count(version >= 15 ? 4 : 1);
             for (uint32_t i = 0; i < count; ++i) {
+                const int slot = version >= 15 ? in.integer() : 1;
+                if ((slot != 1 && (slot < 16 || slot > 18)) || !candidate.layers_.count(slot) ||
+                    candidate.ds_background_motion_.count(slot))
+                    throw std::runtime_error("invalid Dal Segno background animation layer");
                 CameraMotion motion;
                 motion.from_x = float(in.number()); motion.from_y = float(in.number());
                 motion.to_x = float(in.number()); motion.to_y = float(in.number());
@@ -1945,7 +2071,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                     motion.duration_ms <= 0 || motion.duration_ms > 65539.0 * 250 ||
                     motion.elapsed_ms < 0 || motion.elapsed_ms >= motion.duration_ms)
                     throw std::runtime_error("invalid Dal Segno background animation");
-                candidate.ds_background_motion_.push_back(motion);
+                candidate.ds_background_motion_.emplace(slot, motion);
             }
             const auto cameras = in.count(5);
             for (uint32_t i = 0; i < cameras; ++i) {
@@ -1971,11 +2097,24 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         }
         if (in.at != payload.size()) throw std::runtime_error("unexpected trailing save data");
         if (!scene_audio_.restore_snapshot(audio, false, &error)) throw std::runtime_error(error);
+        if ((candidate.mes_.version & 0xFFFF) == 0x9F9A) {
+            if ((mes_.version & 0xFFFF) == 0x9F9A) {
+                for (int index : kDalSegnoSettings) vm.variables[{99, index}] = variable(99, index);
+                for (uint16_t bank : {94, 95}) for (uint16_t index = 0; index <= 50; ++index)
+                    vm.variables[{bank, index}] = variable(bank, index);
+                vm.variables[{100, 49}] = variable(100, 49);
+            }
+            for (uint16_t bank : {97, 98}) for (uint16_t index = 0; index < dalsegno_profile_bank_size(bank); ++index) {
+                const int unlocked = variable(bank, index);
+                if (unlocked) vm.variables[{bank, index}] = unlocked;
+            }
+        }
         comu_visible_ = restored_comu_visible;
         comu_group_ = false;
         comu_items_ = std::move(restored_comu);
         mes_ = std::move(candidate.mes_);
         vm_.reset(); vm_.bind(mes_); vm_.restore_snapshot(vm);
+        sync_dalsegno_audio();
         layers_.swap(candidate.layers_); sprites_.swap(candidate.sprites_);
         scene_dirty_ = true;
         script_name_ = script; current_line_ = line; speaker_ = speaker; transition_type_ = transition;
@@ -2004,6 +2143,11 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         }
         dc2dm_ending_reference_valid_ = has_ending_reference;
         dc2dm_ending_reference_elapsed_ms_ = ending_reference_elapsed;
+        if ((mes_.version & 0xFFFF) == 0x9F9A) {
+            award_dalsegno_scene(dc4::save_lower(std::filesystem::path(script_name_).stem().string()));
+            const auto background = layers_.find(1);
+            if (background != layers_.end()) award_dalsegno_cg(background->second.name);
+        }
         if (restore_error) restore_error->clear();
         return true;
     } catch (const std::exception& error) {
@@ -2030,6 +2174,7 @@ void SceneRunner::reset_restore_transients() {
     fairy_lights_ = {}; fairy_light_sheet_ = {};
     screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
+    ds_break_ = {};
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;
     dc2ty_draw_pending_ = false;
     dc2pc_displayed_frame_.clear(); dc2pc_transition_target_.clear();
@@ -2052,6 +2197,7 @@ void SceneRunner::reset_restore_transients() {
         taskbar_visible_ = true;
     }
     reset_dalsegno_ui();
+    ds_replay_active_ = false;
     reset_dialogue_history();
 }
 } // namespace dc4scene

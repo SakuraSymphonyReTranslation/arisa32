@@ -8,7 +8,11 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.opengl.GLES20;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
+import android.view.PixelCopy;
 import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -16,6 +20,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 final class GlesFrameChecks {
     private final Instrumentation host;
@@ -26,6 +32,7 @@ final class GlesFrameChecks {
 
     int run() throws Exception {
         pixels();
+        stillFrames();
         geometry();
         window();
         return checks;
@@ -40,7 +47,7 @@ final class GlesFrameChecks {
 
     private Bitmap render(GlesFrameRenderer renderer, Bitmap source, RectF dest, int mode) {
         renderer.begin();
-        check(renderer.draw(source, dest, mode) == mode, "GLES applies mode " + mode);
+        check(renderer.draw(source, dest, mode, false) == mode, "GLES applies mode " + mode);
         return read(renderer.width(), renderer.height());
     }
 
@@ -67,7 +74,7 @@ final class GlesFrameChecks {
             Field failed = GlesFrameRenderer.class.getDeclaredField("fxaaFailed"); failed.setAccessible(true);
             failed.setBoolean(renderer, true);
             renderer.begin();
-            check(renderer.draw(original, dest, FrameFilter.FXAA) == FrameFilter.BILINEAR, "Shader failure reports bilinear");
+            check(renderer.draw(original, dest, FrameFilter.FXAA, false) == FrameFilter.BILINEAR, "Shader failure reports bilinear");
             Bitmap fallback = read(101, 101);
             check(fallback.sameAs(bilinear), "Shader failure uses real bilinear pixels"); fallback.recycle();
             nearest.recycle(); bilinear.recycle(); fxaa.recycle();
@@ -81,6 +88,38 @@ final class GlesFrameChecks {
                 check(result.getPixel(36, 20) == Color.GREEN, "New EGL context recreates textures and programs");
                 result.recycle(); color.recycle();
             }
+        }
+    }
+
+    private void stillFrames() {
+        Bitmap first = Bitmap.createBitmap(20, 10, Bitmap.Config.ARGB_8888);
+        Bitmap next = Bitmap.createBitmap(20, 10, Bitmap.Config.ARGB_8888);
+        first.eraseColor(Color.RED);
+        next.eraseColor(Color.BLUE);
+        RectF destination = new RectF(0, 0, 40, 20);
+        try (GlesFrameRenderer renderer = new GlesFrameRenderer(40, 20)) {
+            renderer.begin();
+            renderer.draw(first, destination, FrameFilter.BILINEAR, true);
+            first.eraseColor(Color.GREEN);
+            renderer.begin();
+            renderer.draw(first, destination, FrameFilter.BILINEAR, true);
+            Bitmap cached = read(40, 20);
+            check(cached.getPixel(20, 10) == Color.RED, "Repeated CG uses the uploaded texture");
+            cached.recycle();
+
+            renderer.begin();
+            renderer.draw(next, destination, FrameFilter.BILINEAR, true);
+            Bitmap replaced = read(40, 20);
+            check(replaced.getPixel(20, 10) == Color.BLUE, "Next CG replaces the uploaded texture");
+            replaced.recycle();
+
+            next.eraseColor(Color.GREEN);
+            Bitmap dynamic = render(renderer, next, destination, FrameFilter.BILINEAR);
+            check(dynamic.getPixel(20, 10) == Color.GREEN, "Mutable rendering resumes uploads after CG");
+            dynamic.recycle();
+        } finally {
+            first.recycle();
+            next.recycle();
         }
     }
 
@@ -119,7 +158,7 @@ final class GlesFrameChecks {
                 Bitmap overlay = Bitmap.createBitmap(1280,720,Bitmap.Config.ARGB_8888);
                 Paint tint = new Paint(); tint.setColor(0x80ff0000);
                 new Canvas(overlay).drawRect(0,0,640,360,tint);
-                renderer.begin(); renderer.draw(source,new RectF(0,0,w,h),FrameFilter.FXAA);
+                renderer.begin(); renderer.draw(source,new RectF(0,0,w,h),FrameFilter.FXAA,false);
                 renderer.overlay(overlay,new RectF(0,0,w,h));
                 Bitmap blended=read(w,h);
                 int pixel=blended.getPixel(w/16,h/16);
@@ -151,18 +190,19 @@ final class GlesFrameChecks {
             for(int lifecycle=0;lifecycle<3;lifecycle++) {
                 try(SurfaceFrameRenderer renderer=new SurfaceFrameRenderer(view[0].getHolder(),true,overlay)) {
                     for(int mode:new int[]{0,1,2,0,2}) {
-                        check(renderer.draw(source,false,true,mode,true)==mode,"Window applies mode across lifecycle");
+                        check(renderer.draw(source,false,true,mode,true,false)==mode,"Window applies mode across lifecycle");
                         check(renderer.usesGles(),"Window uses GLES, not Canvas fallback");
                     }
                     if(lifecycle==0) {
+                        checkGalleryFit(renderer, view[0], true);
                         Field field=SurfaceFrameRenderer.class.getDeclaredField("gl");field.setAccessible(true);
                         ((GlesFrameRenderer)field.get(renderer)).close();
-                        check(renderer.draw(source,false,true,2,true)==2 && renderer.usesGles(),"Window recovers lost EGL resources");
+                        check(renderer.draw(source,false,true,2,true,false)==2 && renderer.usesGles(),"Window recovers lost EGL resources");
                     }
                     Bitmap shot = null;
                     int pixel = 0;
                     for (int attempt = 0; attempt < 20; attempt++) {
-                        renderer.draw(source, false, true, FrameFilter.FXAA, true);
+                        renderer.draw(source, false, true, FrameFilter.FXAA, true, false);
                         SystemClock.sleep(100);
                         if (shot != null) shot.recycle();
                         shot = host.getUiAutomation().takeScreenshot();
@@ -192,19 +232,55 @@ final class GlesFrameChecks {
                 }
             }
             try(SurfaceFrameRenderer renderer=new SurfaceFrameRenderer(view[0].getHolder(),true,overlay)) {
-                renderer.draw(source,false,true,2,false);
+                renderer.draw(source,false,true,2,false,false);
                 Field field=SurfaceFrameRenderer.class.getDeclaredField("gl");field.setAccessible(true);
                 ((GlesFrameRenderer)field.get(renderer)).close();
                 Field recovered=SurfaceFrameRenderer.class.getDeclaredField("recovered");recovered.setAccessible(true);recovered.setBoolean(renderer,true);
-                check(renderer.draw(source,false,true,1,false)==1 && !renderer.usesGles(),"Repeated EGL failure falls back to Canvas");
-                check(renderer.draw(source,false,true,0,false)==0,"Canvas fallback remains switchable");
+                check(renderer.draw(source,false,true,1,false,false)==1 && !renderer.usesGles(),"Repeated EGL failure falls back to Canvas");
+                check(renderer.draw(source,false,true,0,false,false)==0,"Canvas fallback remains switchable");
             }
             try(SurfaceFrameRenderer renderer=new SurfaceFrameRenderer(view[0].getHolder(),false,overlay)) {
-                check(renderer.draw(source,false,true,1,false)==1,"Canvas fallback survives render-thread restart");
+                check(renderer.draw(source,false,true,1,false,false)==1,"Canvas fallback survives render-thread restart");
+                checkGalleryFit(renderer, view[0], false);
             }
         } finally {
             source.recycle();
             host.runOnMainSync(()->((ViewGroup)layer[0].getParent()).removeView(layer[0]));host.waitForIdleSync();
+        }
+    }
+
+    private void checkGalleryFit(SurfaceFrameRenderer renderer, SurfaceView view, boolean gles) throws Exception {
+        if (Build.VERSION.SDK_INT < 24) return;
+        int width = view.getHolder().getSurfaceFrame().width();
+        int height = view.getHolder().getSurfaceFrame().height();
+        boolean pillarbox = width >= height;
+        Bitmap cg = Bitmap.createBitmap(pillarbox ? 10 : 40, pillarbox ? 40 : 10, Bitmap.Config.ARGB_8888);
+        Bitmap shot = Bitmap.createBitmap(80, 80, Bitmap.Config.ARGB_8888);
+        cg.eraseColor(Color.YELLOW);
+        try {
+            int mode = renderer.draw(cg, false, true, FrameFilter.OFF, false, true);
+            check(mode == FrameFilter.BILINEAR && renderer.usesGles() == gles, "CG fit uses the requested backend");
+            Handler main = new Handler(Looper.getMainLooper());
+            for (int attempt = 0; attempt < 10; attempt++) {
+                CountDownLatch copied = new CountDownLatch(1);
+                int[] result = {PixelCopy.ERROR_UNKNOWN};
+                PixelCopy.request(view, shot, status -> {
+                    result[0] = status;
+                    copied.countDown();
+                }, main);
+                check(copied.await(2, TimeUnit.SECONDS), "CG surface readback completes");
+                if (result[0] == PixelCopy.SUCCESS && shot.getPixel(40, 40) == Color.YELLOW) {
+                    int start = pillarbox ? shot.getPixel(4, 40) : shot.getPixel(40, 4);
+                    int end = pillarbox ? shot.getPixel(75, 40) : shot.getPixel(40, 75);
+                    check(start == Color.BLACK && end == Color.BLACK, "CG keeps its aspect ratio with Stretch enabled");
+                    return;
+                }
+                SystemClock.sleep(20);
+            }
+            check(false, "CG appears in the center of the fitted surface");
+        } finally {
+            cg.recycle();
+            shot.recycle();
         }
     }
 

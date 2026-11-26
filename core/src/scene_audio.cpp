@@ -123,7 +123,7 @@ void SceneAudio::apply_character_volume(const std::string& name) {
         if (tag.size() >= 3 && std::isalpha((unsigned char)tag[0]) && std::isalpha((unsigned char)tag[1]) && std::isdigit((unsigned char)tag[2])) {
             std::string tag2 = tag.substr(0, 2);
             for (size_t i = 0; i < 8; ++i) {
-                if (tag2 == ds_actors[i]) {
+                if (tag2 == ds_actors[i] || (i == 7 && tag2 == "md")) {
                     actor = tag2;
                     voice_character_ = i;
                     break;
@@ -426,14 +426,7 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
 }
 
 bool SceneAudio::dispatch(const MesCommand& c) {
-    if (c.ds && c.kind == CmdKind::Str) {
-        // DSAO raw 46 completes without playback; raw 5C clears only on "-".
-        if (c.raw_op == 0x46) return true;
-        if (c.raw_op == 0x5C) {
-            if (c.str == "-") play_se(-2, false);
-            return true;
-        }
-    }
+    if (c.ds && c.kind == CmdKind::Str && c.raw_op == 0x46) return true;
     if (pending_bgm_fade_) {
         pending_bgm_fade_ = false;
         bool extension = c.kind == CmdKind::Words4 && c.opcode() == dc4::Opcode::CHIP;
@@ -473,8 +466,8 @@ bool SceneAudio::dispatch(const MesCommand& c) {
         state_.bgm_id = -1;
         state_.bgm_playing = false;
         state_.bgm_position_frames = 0;
-        pending_bgm_fade_ = c.p2 == 255;
-        if (audio_ && !pending_bgm_fade_) audio_->stop_group(AudioGroup::Bgm, 500);
+        pending_bgm_fade_ = !c.ds && c.p2 == 255;
+        if (audio_ && !pending_bgm_fade_) audio_->stop_group(AudioGroup::Bgm, c.ds ? 1000 : 500);
         return true;
     }
     if (c.kind == CmdKind::Param2 && c.opcode() == dc4::Opcode::BGM_VOLUME) {

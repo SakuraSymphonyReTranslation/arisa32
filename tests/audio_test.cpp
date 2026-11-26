@@ -83,16 +83,6 @@ static void dc2dm_voice_prefetch(bool ds = false) {
     check(headless.dispatch(command(0x36, "current")) && headless.dispatch(prefetch) &&
           headless.last_voice_name() == "current", "headless prefetch preserves explicit playback association");
     check(headless.dispatch(next_line) && headless.last_voice_name().empty(), "headless advance clears the voiced line");
-    if (ds) {
-        MesCommand clear; clear.ds = true; clear.kind = CmdKind::Str; clear.op = 0x5C; clear.str = ".";
-        check(scene.dispatch(command(0x36, "current")), "start Dal Segno sentinel voice");
-        render(audio, 2);
-        check(scene.dispatch(mes_engine_command(clear)) && scene.last_voice_name() == "current" &&
-              audio.channel_position(8) == 2, "Dal Segno dot sentinel preserves voice and replay");
-        clear.str = "-";
-        check(scene.dispatch(mes_engine_command(clear)) && !scene.voice_playing() && scene.last_voice_name().empty(),
-              "Dal Segno dash sentinel stops and clears voice");
-    }
     std::vector<uint8_t> script{1,0,0,0,3,0,0,0,0,0,0x72,0x9D,0};
     if (ds) script = {0,0,0,0,0x9A,0x9F,0};
     const auto voice_command = [&](uint8_t op, const std::string& name) {
@@ -106,7 +96,9 @@ static void dc2dm_voice_prefetch(bool ds = false) {
         script.insert(script.end(), {0,0x06,0,0});
     };
     voice_command(0x37, "next"); dialogue("FIRST");
-    voice_command(0x36, "current"); voice_command(0x37, "next"); dialogue("CURRENT");
+    voice_command(0x36, "current"); voice_command(0x37, "next");
+    if (ds) script.insert(script.end(), {0x5C,'.',0,0x5C,'-',0});
+    dialogue("CURRENT");
     voice_command(0x37, "next"); dialogue("NARRATION");
     script.push_back(ds ? 0x60 : 0x4E);
     for (unsigned char ch : std::string("Yoshiyuki")) script.push_back(uint8_t(ch - 0x20));
@@ -132,7 +124,8 @@ static void dc2dm_voice_prefetch(bool ds = false) {
     check(runner.advance_to_next_text() && runner.current_line() == "FIRST" &&
           runner.last_voice().empty() && !runner.voice_playing(), "runner ignores narration prefetch");
     check(runner.advance_to_next_text() && runner.current_line() == "CURRENT" &&
-          runner.last_voice() == "current" && runner.voice_playing(), "runner retains played voice through prefetch");
+          runner.last_voice() == "current" && runner.voice_playing(),
+          "runner retains played voice through prefetch and Dal Segno portrait commands");
     check(dc4ui::capture_log_row(runner,1).voice == "current", "backlog retains the played voice rather than the preload");
     render(sequence_audio, 8);
     check(!runner.voice_playing() && runner.last_voice() == "current" && runner.replay_voice(),

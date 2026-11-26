@@ -84,13 +84,16 @@ int SceneRunner::effect_random(int range) {
 }
 
 bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
-    if (!is_dc4_or_dc4ph_ || c.dc2dm || c.classic_dc2() ||
-        (mes_.version != 0xAAB6 && mes_.version != 0xABB6)) return false;
+    if (c.ds) {
+        if (!is_dalsegno_profile_ || c.opcode() != dc4::Opcode::EFFECT_SETUP ||
+            (c.p1 != 0 && c.p1 != 13)) return false;
+    } else if (!is_dc4_or_dc4ph_ || c.dc2dm || c.classic_dc2() ||
+               (mes_.version != 0xAAB6 && mes_.version != 0xABB6)) return false;
     if (c.opcode() == dc4::Opcode::SCREEN_EFFECT) {
         start_screen_effect(c.p1, c.p2);
         return true;
     }
-    // Native 0x28 uses the same five particle layers for petals and fairy lights.
+    // Petals and fairy lights share five particle layers.
     if (c.p1 == 7 || c.p1 == 16) return false;
     sakura_ = {};
     sakura_sheet_ = {};
@@ -225,15 +228,20 @@ void SakuraSystem::draw(std::vector<uint8_t>& frame, const Image& sheet) const {
                           0, 0, p.scale, 0, p.alpha / 255.f);
 }
 
+bool SceneRunner::particle_effects_visible() const {
+    return animation_enabled_ && effects_enabled_ && visual_effects_enabled_ &&
+        (!is_dalsegno_profile_ || variable(99, 10) != 0);
+}
+
 void SceneRunner::update_sakura(uint32_t elapsed_ms) {
-    if ((!sakura_.active && !fairy_lights_.active) || !animation_enabled_ || !effects_enabled_ || !visual_effects_enabled_) return;
+    if ((!sakura_.active && !fairy_lights_.active) || !particle_effects_visible()) return;
     sakura_.update(elapsed_ms, effect_random_state_);
     fairy_lights_.update(elapsed_ms, effect_random_state_);
     scene_dirty_ = true;
 }
 
 void SceneRunner::draw_sakura() {
-    if (!animation_enabled_ || !effects_enabled_ || !visual_effects_enabled_) return;
+    if (!particle_effects_visible()) return;
     sakura_.draw(frame_, sakura_sheet_);
     fairy_lights_.draw(frame_, fairy_light_sheet_);
 }

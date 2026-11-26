@@ -586,8 +586,18 @@ Toolbar checks cover all authored shell actions, voice replay, collapse/reopen,
 Config return, native save restoration, and hidden textbox hit targets. The
 intro can animate while its buttons remain usable, so the test does not require
 all animation to stop before tapping it. Menu checks verify that title Load opens
-the host slot screen, Back preserves the title, and scenarios 03/05/06 return to
-the same clean title pixels. These cases still use isolated profiles and saves.
+the host slot screen and Back preserves the title. They capture the Start Game
+breakup before name entry and the confirmed Return to Title breakup from saves
+03/05/06, then compare the final title pixels with the initial title. These
+cases use isolated profiles and saves.
+
+Use `--cases extras-fresh extras-imported extras-legacy` to verify Dal Segno's
+Scenario, CG, and Music modes. Pass `--legacy-saves` with a copied Android
+profile containing `system.dat`, `system-profile.dat`, `read-lines.txt`, and its
+`DSAO##.dat` slots. The checks cover locked tiles on a fresh profile, unlocked
+previews on both save formats, replay confirmation and Back, blocked Save/Load
+and Upper Menu during replay, CG variants and aspect ratio, and Music row
+dividers. `--saves` supplies the PC `system.dat` for the imported-profile case.
 
 Use `--cases transitions` for the Dal Segno date screen. The harness derives a
 DS_1201A_CM start fixture from a copy of the automatic DSAO01.dat checkpoint

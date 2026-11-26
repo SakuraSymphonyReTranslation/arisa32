@@ -17,11 +17,15 @@ def main():
     parser.add_argument('--data', required=True, help='Read-only device AdvData directory')
     parser.add_argument('--font', type=Path, help='Explicit font override; omit to use the production game default')
     parser.add_argument('--serial', required=True)
-    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog', 'toolbar', 'menus', 'transitions'],
+    parser.add_argument('--legacy-saves', type=Path, help='Copied Android profile for extras-legacy')
+    parser.add_argument('--cases', nargs='+', choices=['name', 'name-restart', 'saves', 'backlog', 'toolbar', 'config', 'menus', 'transitions',
+                                                       'extras-fresh', 'extras-imported', 'extras-legacy', 'render-timing'],
                         default=['name', 'name-restart', 'saves', 'backlog'])
     args = parser.parse_args()
     if 'name-restart' in args.cases and 'name' not in args.cases:
         parser.error('name-restart requires name earlier in the same run')
+    if 'extras-legacy' in args.cases and args.legacy_saves is None:
+        parser.error('extras-legacy requires --legacy-saves')
     sdk = Path(os.environ.get('ANDROID_HOME', str(Path.home() / 'AppData/Local/Android/Sdk')))
     jdk = Path(os.environ.get('JAVA_HOME', 'C:/Program Files/Android/Android Studio/jbr'))
     suffix = '.exe' if os.name == 'nt' else ''
@@ -54,10 +58,30 @@ def main():
         subprocess.run(adb + ['push', str(file), device + '/' + file.name], capture_output=True, check=True)
     if args.font:
         subprocess.run(adb + ['push', str(args.font), device + '/font.ttc'], capture_output=True, check=True)
-    for slot in ('00', '01', '02', '03', '05', '06'):
-        name = 'DSAO' + slot + '.dat'
-        subprocess.run(adb + ['push', str(args.saves / name), device + '/input/' + name],
-                       capture_output=True, check=True)
+    if any(not mode.startswith('extras-') for mode in args.cases):
+        for slot in ('00', '01', '02', '03', '05', '06'):
+            name = 'DSAO' + slot + '.dat'
+            subprocess.run(adb + ['push', str(args.saves / name), device + '/input/' + name],
+                           capture_output=True, check=True)
+    for mode in ('extras-imported', 'extras-legacy'):
+        if mode not in args.cases:
+            continue
+        target = device + '/profile-' + mode
+        subprocess.run(adb + ['shell', shlex.join(['mkdir', '-p', target])], check=True)
+        if mode == 'extras-imported':
+            progress = bytearray((args.saves / 'system.dat').read_bytes())
+            flag_offset = 0x2F0
+            progress[flag_offset + 274:flag_offset + 415] = bytes(141)
+            for cg in (274, 276, 284):
+                progress[flag_offset + cg] = 1
+            fixture = out / 'system.dat'
+            fixture.write_bytes(progress)
+            files = [fixture]
+        else:
+            files = [args.legacy_saves / name for name in ('system.dat', 'system-profile.dat', 'read-lines.txt')]
+            files += sorted(args.legacy_saves.glob('DSAO[0-9][0-9].dat'))
+        for file in files:
+            subprocess.run(adb + ['push', str(file), target + '/' + file.name], capture_output=True, check=True)
     if 'transitions' in args.cases:
         checkpoint = bytearray((args.saves / 'DSAO01.dat').read_bytes())
         if len(checkpoint) != 0x11AF8 or int.from_bytes(checkpoint[0x83C:0x840], 'little') != 348:

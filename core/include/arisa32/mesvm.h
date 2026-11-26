@@ -5,6 +5,7 @@
 #include "arisa32/messtream.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -66,6 +67,9 @@ public:
     // System bank 99 holds host state; absent services read as zero.
     int32_t read_variable(uint16_t bank, uint16_t index) const;
     void write_variable(uint16_t bank, uint16_t index, int32_t value);
+    void set_dalsegno_audio_observer(std::function<void(uint16_t, uint16_t)> observer) {
+        dalsegno_audio_observer_ = std::move(observer);
+    }
     void reset_dalsegno_settings();
     bool set_personal_names(const std::string& family, const std::string& given);
     const std::string& family_name() const { return family_name_; }
@@ -92,6 +96,7 @@ private:
     std::unique_ptr<MesStream> stream_;
     std::map<std::string, uint32_t> labels_;
     std::map<std::pair<uint16_t, uint16_t>, int32_t> variables_;
+    std::function<void(uint16_t, uint16_t)> dalsegno_audio_observer_;
     std::vector<MesChoice> choices_;
     std::string entry_label_;
     std::string error_;

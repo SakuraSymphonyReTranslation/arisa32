@@ -58,6 +58,7 @@ final class GlesFrameRenderer implements AutoCloseable {
     private final int[] size = new int[1];
     private final int[] textures = new int[2];
     private final int[] textureWidths = new int[2], textureHeights = new int[2];
+    private Bitmap uploadedStillFrame;
     private int copyProgram, fxaaProgram, width, height;
     private boolean fxaaFailed;
 
@@ -111,7 +112,7 @@ final class GlesFrameRenderer implements AutoCloseable {
     int width() { return width; }
     int height() { return height; }
 
-    int draw(Bitmap bitmap, RectF destination, int requested) {
+    int draw(Bitmap bitmap, RectF destination, int requested, boolean stillFrame) {
         int mode = FrameFilter.normalize(requested);
         if (mode == FrameFilter.FXAA && fxaaProgram == 0 && !fxaaFailed) {
             try { fxaaProgram = program(FXAA); }
@@ -121,7 +122,8 @@ final class GlesFrameRenderer implements AutoCloseable {
             }
         }
         if (mode == FrameFilter.FXAA && fxaaFailed) mode = FrameFilter.BILINEAR;
-        drawTexture(bitmap, destination, 0, mode);
+        drawTexture(bitmap, destination, 0, mode, !stillFrame || bitmap != uploadedStillFrame);
+        uploadedStillFrame = stillFrame ? bitmap : null;
         return mode;
     }
 
@@ -129,7 +131,7 @@ final class GlesFrameRenderer implements AutoCloseable {
         // Android bitmap colors are premultiplied, including translucent overlay text.
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-        drawTexture(bitmap, destination, 1, FrameFilter.BILINEAR);
+        drawTexture(bitmap, destination, 1, FrameFilter.BILINEAR, true);
         GLES20.glDisable(GLES20.GL_BLEND);
     }
 
@@ -138,7 +140,7 @@ final class GlesFrameRenderer implements AutoCloseable {
         require(EGL14.eglSwapBuffers(display, surface), "present EGL frame");
     }
 
-    private void drawTexture(Bitmap bitmap, RectF rect, int slot, int mode) {
+    private void drawTexture(Bitmap bitmap, RectF rect, int slot, int mode, boolean upload) {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textures[slot]);
         int filter = mode == FrameFilter.OFF ? GLES20.GL_NEAREST : GLES20.GL_LINEAR;
@@ -149,8 +151,7 @@ final class GlesFrameRenderer implements AutoCloseable {
         if (textureWidths[slot] != bitmap.getWidth() || textureHeights[slot] != bitmap.getHeight()) {
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
             textureWidths[slot] = bitmap.getWidth(); textureHeights[slot] = bitmap.getHeight();
-        } else {
-            // JNI writes can reuse the same Bitmap; upload each completed native frame.
+        } else if (upload) {
             GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bitmap);
         }
         int shader = mode == FrameFilter.FXAA ? fxaaProgram : copyProgram;

@@ -69,6 +69,19 @@ final class FloatingNavigationChecks {
             check(bubble.getWidth() >= dp(48) && bubble.getX() >= layout.getPaddingLeft(), "visible 48dp control clears insets");
             check(back == null || back.getY()+back.getHeight() <= layout.getHeight(), "Back fits 180dp height");
             check(edge.getVisibility() == View.GONE, "handle absent while shown");
+            if (profile.equals("dal_segno")) {
+                View gallery = (View) get("galleryBack");
+                invoke("updateGalleryBack", new Class<?>[]{boolean.class}, true);
+                check(gallery.getVisibility() == View.VISIBLE && back.getVisibility() == View.INVISIBLE,
+                        "Dal Segno gallery preview replaces Back / Upper menu");
+                navigation.hide();
+                navigation.show();
+                check(gallery.getVisibility() == View.VISIBLE && back.getVisibility() == View.INVISIBLE,
+                        "revealing gallery controls keeps Back / Upper menu hidden");
+                invoke("updateGalleryBack", new Class<?>[]{boolean.class}, false);
+                check(gallery.getVisibility() == View.GONE && back.getVisibility() == View.VISIBLE,
+                        "closing Dal Segno gallery preview restores Back / Upper menu");
+            }
         });
         positions(profile);
         capture(profile + "-shown");

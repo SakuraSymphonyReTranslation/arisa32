@@ -41,6 +41,9 @@ public:
     bool dispatch(const MesCommand& command);
     bool replay_voice();
     bool voice_playing() const { return audio_ && audio_->voice_playing(); }
+    bool character_voice_enabled() const {
+        return voice_character_ >= character_volume_.size() || character_volume_[voice_character_] > 0;
+    }
     void reset_state();
     // MES 0x52 stops BGM/SE/voice, leaving native system SE channels 6/7.
     void stop_for_movie();

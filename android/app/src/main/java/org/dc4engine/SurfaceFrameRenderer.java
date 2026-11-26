@@ -26,15 +26,16 @@ final class SurfaceFrameRenderer implements AutoCloseable {
 
     boolean usesGles() { return useGles; }
 
-    int draw(Bitmap frame, boolean movie, boolean stretch, int mode, boolean showOverlays) {
+    int draw(Bitmap frame, boolean movie, boolean stretch, int mode, boolean showOverlays, boolean stillGallery) {
+        if (stillGallery && mode == FrameFilter.OFF) mode = FrameFilter.BILINEAR;
         if (useGles) {
-            try { return drawGles(frame, movie, stretch, mode, showOverlays); }
+            try { return drawGles(frame, movie, stretch, mode, showOverlays, stillGallery); }
             catch (RuntimeException failure) {
                 releaseGles();
                 if (!holder.getSurface().isValid()) throw failure;
                 if (!recovered) {
                     recovered = true;
-                    try { return drawGles(frame, movie, stretch, mode, showOverlays); }
+                    try { return drawGles(frame, movie, stretch, mode, showOverlays, stillGallery); }
                     catch (RuntimeException retryFailure) { releaseGles(); }
                 }
                 Log.w("arisa32", "GLES presentation unavailable; using Canvas", failure);
@@ -51,8 +52,9 @@ final class SurfaceFrameRenderer implements AutoCloseable {
             if (canvas == null) canvas = holder.lockCanvas();
             if (canvas == null) return -1;
             canvas.drawColor(Color.BLACK);
-            RectF vp = ScreenViewport.frame(canvas.getWidth(), canvas.getHeight(), stretch);
-            RectF dest = movie ? ScreenViewport.movie(vp, frame.getWidth(), frame.getHeight(), stretch) : vp;
+            RectF vp = ScreenViewport.frame(canvas.getWidth(), canvas.getHeight(), stretch || stillGallery);
+            RectF dest = (movie || stillGallery)
+                    ? ScreenViewport.movie(vp, frame.getWidth(), frame.getHeight(), stretch && !stillGallery) : vp;
             int applied = canvasFilter.draw(canvas, frame, dest, mode);
             if (showOverlays) overlays.draw(canvas, vp, dest, movie);
             return applied;
@@ -61,12 +63,14 @@ final class SurfaceFrameRenderer implements AutoCloseable {
         }
     }
 
-    private int drawGles(Bitmap frame, boolean movie, boolean stretch, int mode, boolean showOverlays) {
+    private int drawGles(Bitmap frame, boolean movie, boolean stretch, int mode, boolean showOverlays,
+                         boolean stillGallery) {
         if (gl == null) gl = new GlesFrameRenderer(holder.getSurface());
         gl.begin();
-        RectF vp = ScreenViewport.frame(gl.width(), gl.height(), stretch);
-        RectF dest = movie ? ScreenViewport.movie(vp, frame.getWidth(), frame.getHeight(), stretch) : vp;
-        int applied = gl.draw(frame, dest, mode);
+        RectF vp = ScreenViewport.frame(gl.width(), gl.height(), stretch || stillGallery);
+        RectF dest = (movie || stillGallery)
+                ? ScreenViewport.movie(vp, frame.getWidth(), frame.getHeight(), stretch && !stillGallery) : vp;
+        int applied = gl.draw(frame, dest, mode, stillGallery);
         if (showOverlays) {
             if (overlayBitmap == null) {
                 overlayBitmap = Bitmap.createBitmap(ScreenViewport.WIDTH, ScreenViewport.HEIGHT, Bitmap.Config.ARGB_8888);

@@ -113,6 +113,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private native String dc4OpenMenu(String name);
     private native boolean dc4MenuActive();
     private native boolean dc4GalleryPreviewActive();
+    private native long dc4DalSegnoGalleryFrameInfo();
     private native boolean dc4GalleryFrame(Bitmap bitmap);
     private native boolean dc4MenuFrame(Bitmap bitmap);
     private native String dc4MenuTouch(int action, int x, int y);
@@ -180,7 +181,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         return lower.contains("kotori_uta01") || lower.contains("kotori_uta02");
     }
 
-    public void playMovie(final String path) {
+    public void playMovie(final String path, final float gain) {
         runOnUiThread(() -> {
             if (destroyed || gameLayout == null) {
                 dc4MovieCompleted();
@@ -239,7 +240,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 return true;
             });
 
-            startMediaPlayer(file, path);
+            startMediaPlayer(file, path, gain);
         });
     }
 
@@ -267,7 +268,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         movieTextureView.setTransform(matrix);
     }
 
-    private void startMediaPlayer(File file, String path) {
+    private void startMediaPlayer(File file, String path, float gain) {
         if (movieContainer == null) return;
         movieTextureView = new TextureView(this);
         movieContainer.addView(movieTextureView, new FrameLayout.LayoutParams(
@@ -276,12 +277,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 Gravity.CENTER));
 
         if (movieTextureView.isAvailable()) {
-            startMediaPlayerInternal(movieTextureView.getSurfaceTexture(), file, path);
+            startMediaPlayerInternal(movieTextureView.getSurfaceTexture(), file, path, gain);
         } else {
             movieTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
                 @Override
                 public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int width, int height) {
-                    startMediaPlayerInternal(surfaceTexture, file, path);
+                    startMediaPlayerInternal(surfaceTexture, file, path, gain);
                 }
 
                 @Override
@@ -303,7 +304,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
     }
 
-    private void startMediaPlayerInternal(SurfaceTexture surfaceTexture, File file, String path) {
+    private void startMediaPlayerInternal(SurfaceTexture surfaceTexture, File file, String path, float gain) {
         try {
             if (movieSurface != null) {
                 try { movieSurface.release(); } catch (Throwable ignored) {}
@@ -321,11 +322,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         .build();
                 movieMediaPlayer.setAudioAttributes(aa);
             }
-            if (isKotoriSongMovie(path)) {
-                movieMediaPlayer.setVolume(0.0f, 0.0f);
-            } else {
-                movieMediaPlayer.setVolume(1.0f, 1.0f);
-            }
+            movieMediaPlayer.setVolume(gain, gain);
             movieMediaPlayer.setOnVideoSizeChangedListener((player, w, h) -> {
                 adjustTextureViewAspectRatio(w, h);
             });
@@ -1162,10 +1159,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         updateCursorActivity();
         firstFramePending = launchOverlay != null;
         final View pendingOverlay = launchOverlay;
+        final boolean dalSegno = isDalSegno();
         renderThread = new Thread(() -> {
             SurfaceFrameRenderer renderer = new SurfaceFrameRenderer(surface.getHolder(), !canvasOnlySurface,
                     (canvas, vp, dest, movie) -> drawOverlays(canvas, vp, getActiveFrameInVp(movie, dest, vp)));
             Bitmap movieBitmap = null;
+            long dalSegnoGalleryFrameInfo = 0;
             boolean cursorMovie = false;
             final CursorOverlay renderingCursor = cursorOverlay;
             long fpsLastTime = SystemClock.uptimeMillis();
@@ -1191,17 +1190,36 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         pollPersonalName();
                         Bitmap displayBitmap = frame;
                         boolean galleryRendered = false;
+                        boolean fitDalSegnoGallery = false;
                         if (dc4GalleryPreviewActive() && !dc4ConfirmActive()) {
-                            Rect bounds = surface.getHolder().getSurfaceFrame();
-                            RectF viewport = ScreenViewport.frame(bounds.width(), bounds.height(), stretchToScreen);
-                            int units = Math.max(1, Math.min(240,
-                                    (int) Math.ceil(Math.max(viewport.width() / 16, viewport.height() / 9))));
-                            int width = units * 16, height = units * 9;
-                            if (galleryFrame == null || galleryFrame.getWidth() != width || galleryFrame.getHeight() != height)
-                                galleryFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-                            galleryRendered = dc4GalleryFrame(galleryFrame);
+                            if (dalSegno) {
+                                long info = dc4DalSegnoGalleryFrameInfo();
+                                if (info != 0 && (galleryFrame == null || info != dalSegnoGalleryFrameInfo)) {
+                                    int width = (int) (info >>> 16) & 0xffff;
+                                    int height = (int) info & 0xffff;
+                                    Bitmap next = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                                    if (dc4GalleryFrame(next)) {
+                                        galleryFrame = next;
+                                        dalSegnoGalleryFrameInfo = info;
+                                    }
+                                }
+                                galleryRendered = info != 0 && info == dalSegnoGalleryFrameInfo && galleryFrame != null;
+                                fitDalSegnoGallery = galleryRendered;
+                            } else {
+                                Rect bounds = surface.getHolder().getSurfaceFrame();
+                                RectF viewport = ScreenViewport.frame(bounds.width(), bounds.height(), stretchToScreen);
+                                int units = Math.max(1, Math.min(240,
+                                        (int) Math.ceil(Math.max(viewport.width() / 16, viewport.height() / 9))));
+                                int width = units * 16, height = units * 9;
+                                if (galleryFrame == null || galleryFrame.getWidth() != width || galleryFrame.getHeight() != height)
+                                    galleryFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                                galleryRendered = dc4GalleryFrame(galleryFrame);
+                            }
                             if (galleryRendered) displayBitmap = galleryFrame;
-                        } else galleryFrame = null;
+                        } else {
+                            galleryFrame = null;
+                            dalSegnoGalleryFrameInfo = 0;
+                        }
                         if (!galleryRendered) {
                             if (dc4ConfirmActive()) dc4ConfirmFrame(frame);
                             else if (dc4MenuActive()) dc4MenuFrame(frame);
@@ -1232,7 +1250,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                             });
                         }
                         int applied = renderer.draw(displayBitmap, isMovie, stretchToScreen, textureFilter,
-                                autoMode || skipMode || showFps);
+                                autoMode || skipMode || showFps, fitDalSegnoGallery && !isMovie);
                         canvasOnlySurface = !renderer.usesGles();
                         if (applied >= 0 && firstFramePending) {
                             firstFramePending = false;
@@ -1311,7 +1329,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final String out = dc4Touch(touch.action, touch.x, touch.y);
         if (out == null) return;
         if ("quit".equals(out) || ":quit".equals(out) || "end".equals(out)) {
-            runOnUiThread(() -> leaveGame(true));
+            handleOriginalAction("quit");
         } else if (out.startsWith(":")) {
             shellAction(out);
         } else if (!out.isEmpty()) {
@@ -1914,7 +1932,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void pollStatus() {
         if (quitAfterMenuVoice) {
             if ("quit".equals(dc4OpenMenu("quit-poll"))) {
-                runOnUiThread(() -> leaveGame(true));
+                handleOriginalAction("quit");
             }
             return;
         }
@@ -1932,7 +1950,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final String[] parts = status.split(";", 10);
         if (parts.length < 7) return;
         if (parts.length > 9 && "1".equals(parts[9])) {
-            runOnUiThread(this::finish);
+            handleOriginalAction("quit");
             return;
         }
         try {
@@ -1960,7 +1978,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void driveModes(long now) {
         if (!autoMode && !skipMode) return;
         if (stReviewing || stSidebar) { autoMode = skipMode = false; return; }
-        if (skipMode && !skipAllowed) skipMode = false;
         if (backlogOpen || slotMenuOpen || dc4MenuActive() || dc4ConfirmActive()) return;
         if (stEnded) {
             if (!wasEnded) {
@@ -1982,6 +1999,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             return;
         }
         choiceNotified = false;
+        if (skipMode && !skipAllowed) skipMode = false;
         if (skipMode) {
             if (now - lastSkipTick >= 100) {
                 lastSkipTick = now;
@@ -3080,7 +3098,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final Button button = galleryBack;
         runOnUiThread(() -> {
             if (button != null && button == galleryBack) {
-                if (navigation != null) navigation.setGalleryPreviewActive(galleryPreviewActive);
+                if (navigation != null) navigation.setGalleryPreviewActive(galleryPreviewActive,
+                        org.dc4engine.profile.DalSegnoProfile.ID.equals(currentProfile().getId()));
                 else button.setVisibility(View.GONE);
             }
         });
@@ -3145,7 +3164,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         setting(body, fullscreenTitle(), fullscreenName(selected.fullscreen), () -> chooseFullscreen(selected));
         setting(body, cursorTitle(), fullscreenName(selected.cursorEnabled) + ". " + cursorHelp(),
                 () -> chooseCursorMode(selected));
-        if (isDc4DisplaySettings(selected))
+        if (supportsVisualEffects(currentProfile().getId()))
             setting(body, visualEffectTitle(), selected.visualEffectsEnabled ? "On" : "Off", () -> chooseVisualEffect(selected));
         addSessionSetting(body);
         addTextureFilterSetting(body);
@@ -3189,13 +3208,18 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             case "title-confirmed": closeMenus(); notifyUser(dc4OpenMenu("title")); break;
             case "quit-confirmed": handleOriginalAction(dc4OpenMenu("quit-voice")); break;
             case "quit-wait": autoMode = skipMode = false; quitAfterMenuVoice = true; break;
-            case "quit": runOnUiThread(() -> leaveGame(true)); break;
+            case "quit":
+                runOnUiThread(() -> {
+                    if (!inLibrary) leaveGame(true);
+                });
+                break;
             case "close": closeMenus(); break;
             default: notifyUser(action); break;
         }
     }
     private void showGameSettings(GameLibrary.Entry game) {
-        boolean dc4 = isDc4DisplaySettings(game);
+        String profileId = GameProfileRegistry.resolveProfile(new File(game.path), game.title).getId();
+        boolean dc4 = isDc4DisplaySettings(profileId);
         ArrayList<String> items = new ArrayList<>(Arrays.asList(tr("Game language: ", "Bahasa game: ", "ゲーム言語：") + contentName(game.language),
                         tr("Import language pack", "Impor paket bahasa", "翻訳パックを追加"),
                         tr("Choose dialogue font", "Pilih font dialog", "台詞フォントを選択"),
@@ -3207,8 +3231,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (dc4) {
             items.add(4, tr("Dialogue font size: ", "Ukuran font dialog: ", "台詞フォントサイズ：")
                     + game.fontSize);
-            items.add(5, visualEffectTitle() + ": " + (game.visualEffectsEnabled ? "On" : "Off"));
         }
+        final int visualEffectIndex = dc4 ? 5 : items.size();
+        if (supportsVisualEffects(profileId))
+            items.add(visualEffectIndex, visualEffectTitle() + ": " + (game.visualEffectsEnabled ? "On" : "Off"));
         final int fullscreenIndex = items.size();
         items.add(fullscreenTitle() + ": " + fullscreenName(game.fullscreen));
         final int screenModeIndex = items.size();
@@ -3221,7 +3247,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     if (which == screenModeIndex) { chooseScreenMode(game); return; }
                     if (which == fullscreenIndex) { chooseFullscreen(game); return; }
                     if (dc4 && which == 4) { chooseDialogueFontSize(game); return; }
-                    if (dc4 && which == 5) { chooseVisualEffect(game); return; }
+                    if (which == visualEffectIndex) { chooseVisualEffect(game); return; }
                     if (dc4 && which > 5) which -= 2;
                     switch (which) {
                         case 0: chooseContent(game); break;
@@ -3311,9 +3337,11 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
     }
 
-    private boolean isDc4DisplaySettings(GameLibrary.Entry game) {
-        String id = GameProfileRegistry.resolveProfile(new File(game.path), game.title).getId();
+    private boolean isDc4DisplaySettings(String id) {
         return "dc4".equals(id) || "dc4ph".equals(id);
+    }
+    private boolean supportsVisualEffects(String id) {
+        return isDc4DisplaySettings(id) || org.dc4engine.profile.DalSegnoProfile.ID.equals(id);
     }
     private void chooseDialogueFontSize(GameLibrary.Entry game) {
         settingsDialog = dialog().setTitle(tr("Dialogue font size (next launch)", "Ukuran font dialog (buka ulang game)", "台詞フォントサイズ（次回起動時）"))

@@ -113,7 +113,9 @@ void camera(const fs::path& root) {
     dc4scene::SceneRunner scene(root.string()); start(scene,root);
     scene.draw(-1); const auto base = scene.frame();
     std::vector<uint8_t> legacy;
-    CHECK(scene.capture_state(&legacy)); CHECK(legacy[8] == 14);
+    CHECK(scene.capture_state(&legacy)); CHECK(legacy[8] == 15);
+    legacy[8] = 14;
+    CHECK(scene.restore_state(legacy)); scene.draw(-1); CHECK(scene.frame() == base);
     legacy.resize(legacy.size() - 8); legacy[8] = 13; seal(legacy);
     CHECK(scene.restore_state(legacy)); scene.draw(-1); CHECK(scene.frame() == base);
     CHECK(scene.advance_to_next_text()); CHECK(scene.animating());

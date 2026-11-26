@@ -1,3 +1,4 @@
+#include "arisa32/names.h"
 #include "arisa32/scene.h"
 #include "arisa32/save_paths.h"
 #include "arisa32/resource.h"
@@ -1991,6 +1992,13 @@ void dalsegno_music_regressions(const fs::path& data) {
     CHECK(scene.dalsegno_music_titles().size() == 42);
     CHECK(scene.dalsegno_music_titles().front() == "Main Theme - A Beginning");
     CHECK(scene.dalsegno_music_titles().back() == "The Future Goes On");
+    scene.draw(-1);
+    for (int row = 0; row < 5; ++row) {
+        const auto offset = size_t((305 + 64 * row) * 1280 + 600) * 4;
+        const auto& frame = scene.frame();
+        CHECK(frame[offset] == 130 && frame[offset + 1] == 208 && frame[offset + 2] == 234);
+        CHECK(!std::equal(frame.begin() + offset, frame.begin() + offset + 3, frame.begin() + offset + 1280 * 4));
+    }
     const auto click = [&](const std::string& action) {
         auto b = std::find_if(scene.buttons().begin(),scene.buttons().end(),[&](const auto& b) { return b.action == action; });
         CHECK(b != scene.buttons().end()); if (b == scene.buttons().end()) return;
@@ -2129,6 +2137,239 @@ void dalsegno_native_save_regressions(const fs::path& data) {
     std::cout<<"Dal Segno settings and native system overlay checked\n";
 }
 
+void dalsegno_extras_regressions(const fs::path& data, const fs::path& legacy) {
+    dc4scene::SceneRunner scene(data.string());
+    dc4scene::FontRenderer font;
+    CHECK(font.load((data / "GRP/mplus-1c-heavy.ttf").string(), 0, 28));
+    scene.set_font(&font);
+    scene.set_use_system_menu(false);
+    scene.set_animation_enabled(false);
+    const auto load = [&](const std::string& script) {
+        CHECK(scene.load_script((data / "MES" / (script + ".mes")).string()));
+        scene.advance_to_next_text();
+        CHECK(scene.last_error().empty());
+    };
+    const auto click = [&](int x, int y, const std::string& expected) {
+        const auto* hit = scene.hit_test(x, y);
+        CHECK(hit && *hit == expected);
+        if (!hit) return;
+        const auto action = *hit;
+        if (!scene.handle_dalsegno_action(action)) {
+            CHECK(scene.jump_to_label(action));
+            scene.advance_to_next_text();
+        }
+        CHECK(scene.last_error().empty());
+    };
+    const auto on_script = [&](const std::string& script) {
+        return dc4::save_lower(scene.script_name()) == script + ".mes";
+    };
+    const auto run_until = [&](const auto& ready, int limit) {
+        for (int step = 0; step < limit && !ready() && scene.last_error().empty(); ++step) {
+            if (scene.waiting_for_choice()) CHECK(scene.choose(0));
+            if (!scene.pending_movie().empty()) scene.finish_movie();
+            scene.update(250);
+            if (scene.waiting_for_time()) scene.finish_script_wait();
+            scene.advance_to_next_text();
+        }
+        if (!ready()) std::cerr << scene.script_name() << ':' << scene.script_position()
+            << " wait=" << scene.waiting_for_time() << " ended=" << scene.scene_ended()
+            << " line=" << scene.current_line() << ' ' << scene.last_error() << '\n';
+        CHECK(ready());
+    };
+
+    scene.set_variable(3, 5, 5);
+    load("sce_cm");
+    CHECK(!scene.hit_test(455, 190) && !scene.variable(98, 219));
+    scene.draw(-1);
+    const auto locked = scene.frame();
+    load("cg_hm");
+    CHECK(!scene.hit_test(500, 180) && !scene.variable(97, 274));
+    CHECK(scene.handle_dalsegno_action("cg274") && !scene.dalsegno_gallery_active());
+
+    if (!legacy.empty()) {
+        std::ifstream history(legacy / "read-lines.txt");
+        CHECK(bool(history));
+        std::set<std::string> read_lines;
+        for (std::string line; std::getline(history, line);) read_lines.insert(line);
+        dc4scene::SceneRunner old(data.string());
+        old.recover_dalsegno_progress(read_lines, "");
+        CHECK(old.variable(98, 219));
+        CHECK(!old.variable(98, 273));
+        dc4::GameNames names;
+        std::ifstream names_file(data / "GRP/NAMES.DAT", std::ios::binary);
+        CHECK(dc4::decode_game_names({std::istreambuf_iterator<char>(names_file), {}}, &names));
+        const auto cg = std::find_if(names.cg.begin(), names.cg.end(), [](const auto& name) {
+            return dc4::save_lower(name) == "bg\\ev_io02i";
+        });
+        CHECK(cg != names.cg.end());
+        dc4scene::SceneRunner old_slots(data.string());
+        old_slots.recover_dalsegno_progress({}, legacy.string());
+        CHECK(old_slots.variable(98, 219));
+        if (cg != names.cg.end()) CHECK(old_slots.variable(97, uint16_t(cg - names.cg.begin())));
+        CHECK(!old_slots.variable(98, 273));
+    }
+
+    CHECK(scene.load_dalsegno_system((data / "savedata/system.dat").string()));
+    CHECK(scene.variable(98, 219) && scene.variable(97, 274));
+    if (!legacy.empty()) {
+        CHECK(scene.load_dalsegno_system((legacy / "system.dat").string()));
+        CHECK(scene.load_dalsegno_profile((legacy / "system-profile.dat").string()));
+        CHECK(scene.variable(98, 219) && scene.variable(97, 274));
+    }
+    load("sce_cm");
+    scene.draw(-1);
+    CHECK(scene.frame() != locked);
+    click(455, 190, "sce219");
+    CHECK(scene.dalsegno_confirmation_active() && !scene.dalsegno_replay_active());
+    click(715, 270, "menu");
+    CHECK(on_script("sce_cm") && !scene.dalsegno_confirmation_active());
+    click(455, 190, "sce219");
+    click(540, 270, "sce_set");
+    run_until([&] { return !scene.current_line().empty(); }, 60);
+    CHECK(on_script("ds_1129b_cm") && scene.dalsegno_replay_active());
+    CHECK(!scene.save_load_allowed() && !scene.set_sidebar_visible(true));
+    CHECK(scene.handle_dalsegno_action(":ds") && scene.handle_dalsegno_action(":dl"));
+    const auto line = scene.current_line();
+    CHECK(scene.handle_dalsegno_action(scene.dalsegno_back_action()));
+    CHECK(scene.dalsegno_confirmation_active() && scene.dalsegno_back_action() == ":dsreplayno");
+    CHECK(!scene.advance_to_next_text() && !scene.choose(0));
+    click(715, 270, ":dsreplayno");
+    CHECK(scene.current_line() == line && scene.dalsegno_replay_active());
+    CHECK(scene.handle_dalsegno_action(scene.dalsegno_back_action()));
+    click(540, 270, ":dsreplayyes");
+    run_until([&] { return !scene.dalsegno_replay_active(); }, 60);
+    CHECK(on_script("sce_cm") && scene.variable(3, 6) == 0);
+
+    click(455, 190, "sce219");
+    click(540, 270, "sce_set");
+    run_until([&] { return !scene.dalsegno_replay_active(); }, 500);
+    CHECK(on_script("sce_cm") && scene.variable(3, 6) == 0);
+
+    scene.set_variable(98, 231, 1);
+    click(870, 656, "page++");
+    CHECK(scene.variable(3, 6) == 1);
+    click(455, 190, "sce231");
+    click(540, 270, "sce_set");
+    run_until([&] { return !scene.current_line().empty(); }, 60);
+    CHECK(scene.handle_dalsegno_action(scene.dalsegno_back_action()));
+    click(540, 270, ":dsreplayyes");
+    run_until([&] { return !scene.dalsegno_replay_active(); }, 60);
+    CHECK(on_script("sce_cm") && scene.variable(3, 6) == 1);
+    const auto* restored_tile = scene.hit_test(455, 190);
+    CHECK(restored_tile && *restored_tile == "sce231");
+
+    CHECK(scene.jump_to_label(scene.dalsegno_back_action()));
+    run_until([&] { return on_script("main"); }, 60);
+    const auto* scenario_button = scene.hit_test(475, 704);
+    CHECK(scenario_button && *scenario_button == "scemode");
+
+    for (int id = 274; id <= 414; ++id) scene.set_variable(97, id, id == 274 || id == 276 || id == 284);
+    load("cg_hm");
+    scene.draw(-1);
+    const auto menu = scene.frame();
+    click(500, 180, "cg274");
+    CHECK(scene.dalsegno_gallery_active());
+    const auto first_revision = scene.dalsegno_gallery_revision();
+    const auto first = scene.dalsegno_gallery_frame(1920, 720);
+    CHECK(scene.dalsegno_gallery_revision() == first_revision);
+    CHECK(first.size() == 1920 * 720 * 4);
+    if (!first.empty()) {
+        const auto alpha_black = [](const auto& frame, int x, int y) {
+            const auto pixel = frame.data() + (y * 1920 + x) * 4;
+            return pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255;
+        };
+        CHECK(alpha_black(first, 0, 360) && alpha_black(first, 1919, 360));
+    }
+    click(-1, -1, ":dscgnext");
+    const auto second = scene.dalsegno_gallery_frame(1920, 720);
+    CHECK(second != first && scene.dalsegno_gallery_revision() == first_revision + 1);
+    click(900, 360, ":dscgnext");
+    const auto third = scene.dalsegno_gallery_frame(1920, 720);
+    CHECK(third != first && third != second && scene.dalsegno_gallery_revision() == first_revision + 2);
+    click(900, 360, ":dscgnext");
+    CHECK(scene.dalsegno_gallery_frame(1920, 720) == first);
+    CHECK(scene.dalsegno_gallery_revision() == first_revision + 3);
+    CHECK(scene.handle_dalsegno_action(scene.dalsegno_back_action()));
+    scene.draw(-1);
+    CHECK(!scene.dalsegno_gallery_active() && on_script("cg_hm") && scene.frame() == menu);
+
+    scene.set_variable(97, 276, 0);
+    scene.set_variable(97, 284, 0);
+    click(500, 180, "cg274");
+    CHECK(scene.dalsegno_gallery_active());
+    const auto only_revision = scene.dalsegno_gallery_revision();
+    click(900, 360, ":dscgnext");
+    CHECK(scene.dalsegno_gallery_frame(1920, 720) == first);
+    CHECK(scene.dalsegno_gallery_revision() == only_revision);
+}
+
+void dalsegno_character_overlays(const fs::path& root) {
+    const auto data = root / "dalsegno-character-overlays";
+    const std::vector<uint8_t> header{0,0,0,0,0x9A,0x9F,0};
+    Script ui;
+    ui.bytes = header;
+    ui.bytes.push_back(0x3B);
+    ui.bytes.push_back(3);
+    const std::string atlas = "SYSTEM\\EFFCHARCOUNTER";
+    ui.bytes.insert(ui.bytes.end(), atlas.begin(), atlas.end());
+    ui.bytes.push_back(0);
+    ui.words(0x7F,12,559,0,0);
+    ui.bytes.push_back(0);
+    write_file(data / "MES/start.mes", ui.bytes);
+    write_image(data / "GRP/SYSTEM/EFFCHARCOUNTER.CRX",320,320);
+    write_image(data / "GRP/BST/HM_TEST.CRX",64,36);
+    write_image(data / "GRP/BST/AM_TEST.CRX",64,36);
+    write_image(data / "GRP/FACE/AM_TEST.CRX",8,8);
+
+    Script scenario;
+    scenario.bytes = header;
+    auto load = [&](uint8_t slot, const std::string& asset) {
+        scenario.bytes.push_back(0x3A);
+        scenario.string(slot, asset);
+    };
+    auto line = [&](const std::string& value) {
+        scenario.bytes.push_back(0x61);
+        for (unsigned char ch : value) scenario.bytes.push_back(uint8_t(ch - 0x20));
+        scenario.bytes.insert(scenario.bytes.end(), {0,0x06,0,0});
+    };
+    scenario.words(0x7E,200,25,0,0);
+    load(2,"BST\\HM_TEST");
+    load(23,"FACE\\AM_TEST");
+    line("HIMARI");
+    load(2,"BST\\AM_TEST");
+    scenario.string(0x5C,"-");
+    line("AME");
+    scenario.bytes.push_back(0);
+    const auto script = data / "MES/main.mes";
+    write_file(script, scenario.bytes);
+    auto marker = header;
+    marker.push_back(0);
+    write_file(data / "MES/DS_1129B_CM.mes", marker);
+
+    dc4scene::SceneRunner scene(data.string());
+    scene.set_animation_enabled(true);
+    CHECK(scene.load_ui_script((data / "MES/start.mes").string()));
+    CHECK(scene.load_script(script.string()));
+    CHECK(scene.advance_to_next_text() && scene.current_line() == "HIMARI");
+    scene.set_variable(8, 0, 12);
+    scene.set_variable(8, 99, 1);
+    scene.draw(-1);
+    auto pixel = [&](int x, int y, int color) { return scene.frame()[(y * 1280 + x) * 4 + color]; };
+    CHECK(pixel(12,559,0) == 240 && pixel(20,559,0) == 0);
+    CHECK(pixel(216,113,0) == 240 && pixel(248,113,0) == 240);
+    CHECK(pixel(216,113,2) == 40);
+    scene.update(850);
+    scene.draw(-1);
+    CHECK(pixel(216,113,2) == 240 && !scene.animating());
+    scene.set_variable(8, 99, 0);
+    scene.draw(-1);
+    CHECK(pixel(216,113,0) == 0);
+    scene.set_variable(8, 99, 1);
+    CHECK(scene.advance_to_next_text() && scene.current_line() == "AME");
+    scene.draw(-1);
+    CHECK(pixel(216,113,0) == 0 && pixel(12,559,0) == 0);
+}
+
 void dalsegno_identity_regressions(const fs::path& root) {
     const auto data = root / "renamed/MES";
     const std::vector<uint8_t> script{0,0,0,0,0x9A,0x9F,0,0};
@@ -2160,6 +2401,11 @@ int main(int argc, char** argv) {
             std::cout << (failures ? "Dal Segno music FAILED\n" : "Dal Segno music passed\n");
             return failures ? 1 : 0;
         }
+        if (argc > 2 && std::string(argv[1]) == "--dalsegno-extras") {
+            dalsegno_extras_regressions(argv[2], argc > 3 ? argv[3] : "");
+            std::cout << (failures ? "Dal Segno Extras FAILED\n" : "Dal Segno Extras passed\n");
+            return failures ? 1 : 0;
+        }
         if (argc > 2 && std::string(argv[1]) == "--dalsegno-transitions") {
             dalsegno_transition_regressions(argv[2]);
             return failures ? 1 : 0;
@@ -2179,6 +2425,7 @@ int main(int argc, char** argv) {
         }
         fixture_round_trip(root); graphics_and_text_regressions(root); chip_regressions(root); animation_regressions(root); memory_snapshot_regressions(root); font_regression();
         dalsegno_identity_regressions(root);
+        dalsegno_character_overlays(root);
         dialogue_size_regressions(root);
         dc2pc_dialogue_regressions(root);native_save_regressions(root);native_sprite_placement_regressions(root);
         dc4_sprite_priority_regressions(root);

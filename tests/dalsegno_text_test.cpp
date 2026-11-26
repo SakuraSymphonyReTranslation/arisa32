@@ -100,10 +100,15 @@ void bitmap(const dc4scene::FontRenderer& font) {
 }
 void dialogue_and_log(const fs::path& root, const dc4scene::FontRenderer& font) {
     crx(root / "GRP/BaR.cRx",bar());
-    const std::string raw = "The island#h#b#h\n#q #H #";
+    dc4scene::Image note;
+    note.w = 14; note.h = 22; note.rgba.assign(14u*22u*4u, 0);
+    const size_t note_pixel = (10u * note.w + 6) * 4;
+    note.rgba[note_pixel] = note.rgba[note_pixel+3] = 255;
+    crx(root / "GRP/OnP.cRx", note);
+    const std::string raw = "The island#h#b#h#o\n#q #H #";
     script(root,raw);
     dc4scene::SceneRunner scene(root.string()); start(scene,root,font);
-    const std::u16string visible = u"The island\u2014\u2014\u2014\n#q #H #";
+    const std::u16string visible = u"The island\u2014\u2014\u2014\u266a\n#q #H #";
     CHECK(scene.current_line() == raw);
     CHECK(scene.visible_text() == visible);
     CHECK(scene.visible_text_length() == visible.size()-1);
@@ -117,6 +122,8 @@ void dialogue_and_log(const fs::path& root, const dc4scene::FontRenderer& font) 
     CHECK(render(root,"#h#bW",font,2) == render(root,"#h#b",font));
     CHECK(render(root,"@cr#h@cwW",font) == render(root,"#hW",font));
     CHECK(render(root,"#hW",font) == render(root,"#bW",font));
+    CHECK(render(root,"#oW",font,1) == render(root,"#o",font));
+    CHECK(render(root,"#o",font) != render(root,"#o",font,0));
     const auto other = root / "other";
     script(other,"#h#b",false);
     dc4scene::SceneRunner modern(other.string()); start(modern,other,font);
@@ -125,22 +132,33 @@ void dialogue_and_log(const fs::path& root, const dc4scene::FontRenderer& font) 
     dc4scene::Image background; background.w = 1280; background.h = 720;
     background.rgba.assign(1280u*720u*4u,0);
     crx(root / "GRP/SYSTEM/LOGBACK.CRX",background);
-    background.w = 256; background.h = 160; background.rgba.assign(256u*160u*4u,0);
-    crx(root / "GRP/SYSTEM/LOGCHIP.CRX",background);
+    dc4scene::Image chips;
+    chips.w = 248; chips.h = 140; chips.rgba.assign(248u*140u*4u, 0);
+    const size_t back_pixel = (103u * chips.w + 4) * 4;
+    chips.rgba[back_pixel] = chips.rgba[back_pixel+3] = 255;
+    chips.rgba[back_pixel+48*4+1] = chips.rgba[back_pixel+48*4+3] = 255;
+    crx(root / "GRP/SYSTEM/LOGCHIP.CRX", chips);
     dc4ui::LogScreen log; CHECK(log.load(root.string()));
-    dc4ui::LogRow row; row.text = u"\u2014\u2014W";
+    CHECK(log.back_hit(1260, 695) && !log.back_hit(1210, 654));
+    dc4ui::LogRow row; row.text = u"\u2014\u266aW";
     std::vector<uint8_t> actual(1280u*720u*4u,0), expected = actual;
+    const size_t back_position = (679u * 1280 + 1238) * 4;
     log.draw({row},0,false,-1,-1,font,&actual);
     const auto image = bar();
-    font.rasterize_line(row.text,310,109,&expected,1280,720,22,0xFFFFFF,false,0,false,0,0,1,true,&image);
+    font.rasterize_line(row.text,310,109,&expected,1280,720,22,0xFFFFFF,false,0,false,0,0,1,true,&image,&note);
+    expected[back_position] = expected[back_position+3] = 255;
     for (size_t at = 0; at < actual.size(); at += 4) for (int c = 0; c < 3; ++c)
         CHECK(actual[at+c] == int(expected[at+c])*expected[at+3]/255);
+    actual.assign(actual.size(),0);
+    log.draw({row},0,false,1260,695,font,&actual);
+    CHECK(actual[back_position] == 0 && actual[back_position+1] == 255);
     row.text = std::u16string(40,dc4scene::kInlineDash);
     actual.assign(actual.size(),0);
     log.draw({row},0,false,-1,-1,font,&actual);
     expected.assign(expected.size(),0);
     font.rasterize_line(std::u16string(38,dc4scene::kInlineDash),310,109,&expected,1280,720,22,0xFFFFFF,false,0,false,0,0,1,true,&image);
     font.rasterize_line(u"\u2014\u2014",310,137,&expected,1280,720,22,0xFFFFFF,false,0,false,0,0,1,true,&image);
+    expected[back_position] = expected[back_position+3] = 255;
     for (size_t at = 0; at < actual.size(); at += 4) for (int c = 0; c < 3; ++c)
         CHECK(actual[at+c] == int(expected[at+c])*expected[at+3]/255);
 }
