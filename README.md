@@ -58,7 +58,7 @@ Pada game asli D.C. II P.C. (DC2PC) dan D.C. II To You (DC2TY), panah atas/bawah
 - `D.S. -Dal Segno-`
 - `D.S. i.F. -Dal Segno- in Future`
 
-Kompatibilitas D.S. -Dal Segno- edisi MangaGamer dengan terjemahan Inggris resmi masih eksperimental. v0.7.5 mencakup pemulihan sprite, alur Save/Load dan Backlog, serta EXTRA dengan Scenario Replay, CG Mode, dan Music Mode. Seluruh rute, ending, dan unlock masih perlu divalidasi. [Catatan rilis Dal Segno](docs/releases/v0.7.5/id.md)
+Arisa32 mendukung D.S. -Dal Segno- edisi MangaGamer dengan terjemahan Inggris resmi mulai v0.7.5. Dukungan mencakup Save/Load, Backlog, Scenario Replay, CG Mode, dan Music Mode. Seluruh rute, ending, dan unlock masih perlu divalidasi. [Catatan rilis Dal Segno](docs/releases/v0.7.5/id.md)
 
 Edisi Standard, Limited, Deluxe, dan Download dikelompokkan ke judul utamanya. Game yang memakai engine lain, seperti D.C.4 Fortunate Departures, tidak didukung.
 

@@ -58,7 +58,7 @@ In the original D.C. II P.C. (DC2PC) and D.C. II To You (DC2TY), the up/down arr
 - `D.S. -Dal Segno-`
 - `D.S. i.F. -Dal Segno- in Future`
 
-Compatibility for the MangaGamer edition of D.S. -Dal Segno- with its official English translation remains experimental. v0.7.5 covers sprite restoration, Save/Load and Backlog, and EXTRA with Scenario Replay, CG Mode, and Music Mode. Full routes, endings, and unlocks still require validation. [Dal Segno release notes](docs/releases/v0.7.5/en.md)
+Arisa32 supports the MangaGamer edition of D.S. -Dal Segno- with the official English translation as of v0.7.5. Support covers Save/Load, Backlog, Scenario Replay, CG Mode, and Music Mode. Full routes, endings, and unlocks still require validation. [Dal Segno release notes](docs/releases/v0.7.5/en.md)
 
 Standard, Limited, Deluxe, and Download editions are grouped under their main title. Games that use another engine, such as D.C.4 Fortunate Departures, are not supported.
 

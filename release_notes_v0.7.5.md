@@ -2,7 +2,7 @@
 
 # Arisa32 v0.7.5 - Pembaruan profil Dal Segno MangaGamer
 
-Rilis 26 November 2026 ini menggabungkan dua kelanjutan pengembangan Dal Segno dengan perbaikan terbaru pada EXTRA, CONFIG, audio, dan tampilan adegan. Dukungan untuk **D.S. -Dal Segno- edisi MangaGamer dengan terjemahan Inggris resmi** masih eksperimental.
+Mulai rilis 26 November 2026, **D.S. -Dal Segno- edisi MangaGamer dengan terjemahan Inggris resmi** masuk dalam daftar profil yang didukung Arisa32. v0.7.5 menggabungkan hasil kedua handoff Dal Segno dengan perbaikan terbaru pada EXTRA, CONFIG, audio, dan tampilan adegan.
 
 ### Mulai permainan dan navigasi
 
