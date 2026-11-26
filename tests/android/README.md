@@ -605,6 +605,7 @@ DS_1201A_CM start fixture from a copy of the automatic DSAO01.dat checkpoint
 absence of cached toolbar hit targets, a background tap reaching the next
 dialogue, and toolbar restoration. The source save remains unchanged.
 
-Load checks advance through authored input waits with a bounded retry. Save
-round trips wait for host animation idle and clean-preview pixels to remain
-stable for 300 ms; Dal Segno's transient crossfade is outside the host status bit.
+Load checks advance through authored input waits with a bounded retry. The save
+probe compares the preview before saving with the first preview after restoring,
+before advancing the animation clock. It also checks that the automatic
+checkpoint restores the fairy-light layer.

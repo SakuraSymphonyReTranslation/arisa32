@@ -13,6 +13,7 @@ import org.dc4engine.profile.GameFonts;
 /** Exercises the packaged Dal Segno JNI with isolated profiles and copied saves. */
 public final class Arisa32Activity {
     private native void dc4Configure(String saves,String overlay,String encoding,String font,String language);
+    private native void dc4ConfigureDisplay(int fontSize,boolean visualEffects);
     private native boolean dc4Init(String data);
     private native void dc4Quit();
     private native boolean dc4Advance();
@@ -175,15 +176,24 @@ public final class Arisa32Activity {
     }
     private void saves(File input,File output,File captures,Bitmap frame) throws Exception {
         for (String slot:new String[]{"00","01","02","03","05","06"}) {
-            load(new File(input,"DSAO"+slot+".dat"),frame);
+            loadDialogue(new File(input,"DSAO"+slot+".dat"),frame);
             String line=dc4CurrentLine(),speaker=dc4Speaker();
             dc4RenderPreview(frame); int[] original=pixels(frame);
+            if (slot.equals("01")) {
+                dc4ConfigureDisplay(22,false);
+                dc4RenderPreview(frame);
+                check(!Arrays.equals(original,pixels(frame)),"automatic checkpoint restores the fairy-light layer");
+                dc4ConfigureDisplay(22,true);
+                dc4RenderPreview(frame);
+            }
             png(frame,new File(captures,"save-"+slot+".png"));
             File saved=new File(output,"roundtrip-"+slot+".dat");
             check(dc4Save(saved.getAbsolutePath()).isEmpty(),"save "+slot);
             check(new File(output,"roundtrip-"+slot+".arisa.dat").isFile(),"companion written "+slot);
-            load(saved,frame);
+            String error=dc4Load(saved.getAbsolutePath());
+            check(error.isEmpty(),"reload "+slot+": "+error);
             check(line.equals(dc4CurrentLine()) && speaker.equals(dc4Speaker()),"roundtrip dialogue "+slot);
+            // Capture the restored effect phase before dc4Render advances the clock.
             dc4RenderPreview(frame);
             png(frame,new File(captures,"save-"+slot+"-restored.png"));
             check(Arrays.equals(original,pixels(frame)),"roundtrip scene pixels "+slot);
