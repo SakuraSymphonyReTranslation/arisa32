@@ -89,6 +89,7 @@ bool MesFile::load(const uint8_t* data, size_t size, std::string* err) {
         labels[i].flags = raw >> 24;
         labels[i].id = ids ? rd_u16(ids + i * 2) : uint16_t(i);
     }
+    dc2pc_story_controls = false;
     code.assign(data + table_end, data + size);
     code_base = table_end;
     return true;

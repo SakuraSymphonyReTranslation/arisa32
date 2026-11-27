@@ -152,6 +152,16 @@ void SceneRunner::award_dalsegno_cg(const std::string& name) {
     if (id != ds_cg_ids_.end() && !variable(97, id->second)) set_variable(97, id->second, 1);
 }
 
+void SceneRunner::start_dalsegno_wipe(int parameter) {
+    const bool wipe = visual_effects_enabled_ && variable(99, 10) && mask_.valid();
+    if (wipe && animation_enabled_ && effects_enabled_ && !transition_pending_ && !scene_frame_.empty()) {
+        transition_snap_ = scene_frame_;
+        transition_pending_ = true;
+    }
+    transition_type_ = 21;
+    start_transition(wipe ? 12 * parameter : 0, false);
+}
+
 bool SceneRunner::open_dalsegno_gallery(const std::string& action) {
     if (catalogue_key(script_name_).rfind("cg_", 0) != 0 || action.rfind("cg", 0) != 0 ||
         action.size() <= 2 || !std::all_of(action.begin() + 2, action.end(),
@@ -165,9 +175,22 @@ bool SceneRunner::open_dalsegno_gallery(const std::string& action) {
     dc4::MesCommand command;
     size_t start = 0;
     bool found = false;
+    bool numeric_entry = false, wipe_routine = false;
     // The PC's cg_next table follows the numeric display labels in script order.
     while (stream.next(&command)) {
-        if (command.str.rfind("cg", 0) != 0 || dc4::mes_engine_command(command).opcode() != dc4::Opcode::LABEL) continue;
+        const auto op = dc4::mes_engine_command(command).opcode();
+        if (op != dc4::Opcode::LABEL) {
+            if (numeric_entry && op == dc4::Opcode::JUMP && command.str == "cg_draw2")
+                ds_gallery_order_.back().wipe = true;
+            if (wipe_routine && op == dc4::Opcode::LOAD_SLOT && command.p1 == 16)
+                ds_gallery_mask_ = command.str;
+            if (wipe_routine && op == dc4::Opcode::TRANSITION && command.p1 == 21)
+                ds_gallery_wipe_parameter_ = command.p2;
+            continue;
+        }
+        numeric_entry = false;
+        wipe_routine = command.str == "cg_draw2";
+        if (command.str.rfind("cg", 0) != 0) continue;
         if (command.str == "cg_next") break;
         const char* end = command.str.data() + command.str.size();
         uint16_t id = 0;
@@ -177,7 +200,8 @@ bool SceneRunner::open_dalsegno_gallery(const std::string& action) {
             start = ds_gallery_order_.size();
             found = true;
         }
-        ds_gallery_order_.push_back(id);
+        numeric_entry = true;
+        ds_gallery_order_.push_back({id, false});
     }
     if (!found || !select_dalsegno_gallery_image(start, ds_gallery_order_.size()))
         close_dalsegno_gallery();
@@ -187,10 +211,15 @@ bool SceneRunner::open_dalsegno_gallery(const std::string& action) {
 bool SceneRunner::select_dalsegno_gallery_image(size_t index, size_t candidates) {
     for (size_t offset = 0; offset < candidates; ++offset) {
         const size_t position = (index + offset) % ds_gallery_order_.size();
-        const uint16_t id = ds_gallery_order_[position];
+        const auto [id, wipe] = ds_gallery_order_[position];
         if (!variable(97, id)) continue;
         Image image;
         if (!load_grp_crx(ds_cg_names_[id], &image, nullptr) || !image.valid()) continue;
+        if (wipe && ds_gallery_wipe_parameter_ > 0 && visual_effects_enabled_ && variable(99, 10)) {
+            snapshot_for_transition();
+            load_slot(16, ds_gallery_mask_);
+            start_dalsegno_wipe(ds_gallery_wipe_parameter_);
+        }
         ds_gallery_index_ = position;
         ds_gallery_image_ = std::move(image);
         ++ds_gallery_revision_;
@@ -202,13 +231,17 @@ bool SceneRunner::select_dalsegno_gallery_image(size_t index, size_t candidates)
 
 bool SceneRunner::advance_dalsegno_gallery() {
     if (!dalsegno_gallery_active()) return false;
+    if (transition_active_) { finish_transition(); return true; }
     select_dalsegno_gallery_image(ds_gallery_index_ + 1, ds_gallery_order_.size() - 1);
     return true;
 }
 
 void SceneRunner::close_dalsegno_gallery() {
+    if (dalsegno_gallery_wiping()) finish_transition();
     ds_gallery_image_ = {};
     ds_gallery_order_.clear();
+    ds_gallery_mask_.clear();
+    ds_gallery_wipe_parameter_ = 0;
     ds_gallery_width_ = ds_gallery_height_ = 0;
     ds_gallery_frame_.clear();
 }
@@ -525,12 +558,18 @@ bool SceneRunner::dispatch_dalsegno_ui(const dc4::MesCommand& c) {
         ds_pending_caption_ = {};
         ds_pending_caption_.x = int16_t(c.words[0]);
         ds_pending_caption_.y = int16_t(c.words[1]);
+        if (c.raw_op == 0x69) {
+            ds_pending_caption_.button = int(buttons_.size()) - 1;
+            ds_pending_caption_.state = c.words[3];
+        }
         ds_pending_caption_.preview = c.raw_op == 0x7A && c.words[2] > 0;
         ds_has_caption_ = true;
         return true;
     }
     if (ds_has_caption_ && (c.raw_op == 0x54 || c.raw_op == 0x62)) {
         ds_pending_caption_.text = c.str;
+        if (ds_pending_caption_.text.compare(0, 2, "@s") == 0)
+            ds_pending_caption_.text.erase(0, 2);
         std::replace(ds_pending_caption_.text.begin(), ds_pending_caption_.text.end(), '$', ' ');
         if (!c.str.empty()) ds_captions_.push_back(ds_pending_caption_);
         ds_has_caption_ = false;
@@ -608,11 +647,12 @@ bool SceneRunner::handle_dalsegno_action(const std::string& action) {
         }
         if (action == ":dsreplayyes" || action == ":dsreplayno") {
             if (ds_modal_buttons_.empty() || ds_modal_buttons_.front().action != ":dsreplayyes") return true;
+            const bool end_replay = action == ":dsreplayyes";
             ds_modal_buttons_.clear();
             ds_modal_chips_.clear();
             ds_focus_ = -1;
             scene_dirty_ = true;
-            if (action == ":dsreplayyes") {
+            if (end_replay) {
                 if (load_script(data_ + "/MES/sc_end.mes")) advance_to_next_text();
             }
             return true;
@@ -774,9 +814,11 @@ void SceneRunner::load_dalsegno_upper_menu() {
     sidebar_buttons_.push_back(back);
 }
 
-void SceneRunner::draw_dalsegno_captions() {
+void SceneRunner::draw_dalsegno_captions(int active_button, int state) {
     if (!font_) return;
     for (const auto& caption : ds_captions_) {
+        if (caption.state != 99 && (caption.button < 0 ||
+            caption.state != (caption.button == active_button ? state : 0))) continue;
         std::u16string text = sjis_to_utf16(caption.text);
         if (caption.preview && animation_enabled_) {
             const auto playback = dalsegno_playback();

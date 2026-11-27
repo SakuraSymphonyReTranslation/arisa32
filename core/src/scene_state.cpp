@@ -229,7 +229,7 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
             out.str(item.text);
         }
         const bool ds = (mes_.version & 0xFFFF) == 0x9F9A;
-        const bool save_effects = ds ? fairy_lights_.active :
+        const bool save_effects = ds ? (fairy_lights_.active || mask_.valid() || !ds_petals_.name.empty()) :
             is_dc4_or_dc4ph_ && (mes_.version == 0xAAB6 || mes_.version == 0xABB6) &&
             (mask_.valid() || screen_effect_atlas_.valid() || sakura_.active || fairy_lights_.active || sheets_.count(28));
         const bool save_priority = std::any_of(sprites_.begin(), sprites_.end(),
@@ -245,7 +245,9 @@ bool SceneRunner::capture_state(std::vector<uint8_t>* bytes, std::string* captur
         }
         if (!save_effects && dc2dm_ending_reference_valid_) out.number(dc2dm_ending_reference_elapsed_ms_);
         if (save_effects) {
-            for (const auto* image : {&mask_, &screen_effect_atlas_, &sakura_sheet_}) out.str(image->name);
+            out.str(mask_.name);
+            out.str(ds ? ds_petals_.name : screen_effect_atlas_.name);
+            out.str(sakura_sheet_.name);
             const auto pending = sheets_.find(28);
             out.str(pending == sheets_.end() ? "" : pending->second.name);
             out.u32(effect_random_state_);
@@ -881,6 +883,8 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             number(at+0x60,pivot_x); number(at+0x64,pivot_y); u32(at+0x1A8,uint32_t(priority));
             number(at+0xB8,x); number(at+0xBC,y); number(at+0xC0,scale*100);
         };
+        if (mask_.valid()) name(0xA8 + 16 * 48, 48, mask_.name);
+        if (!ds_petals_.name.empty()) name(0xA8 + 17 * 48, 48, ds_petals_.name);
         for (const auto& item : layers_) {
             const int slot = item.first;
             if (slot != 1 && (slot < 16 || slot > 18)) throw std::runtime_error("unsupported Dal Segno background layer");
@@ -985,7 +989,10 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
             const auto background = name(0xA8 + slot * 48, 48);
             if (background.empty()) continue;
             const size_t at = 0x4C4C + (slot == 1 ? 0 : slot - 13) * 0x1B0;
-            if (slot != 1 && (!integer(at+0x1AC) || !integer(at+0x80))) continue;
+            if (slot != 1 && (!integer(at+0x1AC) || !integer(at+0x80))) {
+                if (slot == 16 || slot == 17) candidate.load_slot(slot, background);
+                continue;
+            }
             candidate.load_layer(slot, background);
             if (!candidate.layers_.count(slot)) throw std::runtime_error("saved Dal Segno background is unavailable");
             auto& image = candidate.layers_[slot];
@@ -1886,6 +1893,12 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
                 if (name.empty()) continue;
                 if (!resource_name(name) || !candidate.load_grp_crx(name, image, &error))
                     throw std::runtime_error("saved effect asset is unavailable: " + name);
+                if (ds && image == &candidate.screen_effect_atlas_) {
+                    if (!candidate.ds_petals_.load(*image)) throw std::runtime_error("invalid saved petal atlas");
+                    candidate.ds_petals_.name = name;
+                    *image = {};
+                    continue;
+                }
                 image->name = name;
             }
             const auto pending = in.str(255);
@@ -2130,6 +2143,7 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
         sprite_wave_frames_ = candidate.sprite_wave_frames_; sprite_wave_axis_ = candidate.sprite_wave_axis_;
         if (!animation_enabled_ || !effects_enabled_) finish_animations();
         mask_ = std::move(candidate.mask_); screen_effect_atlas_ = std::move(candidate.screen_effect_atlas_);
+        ds_petals_ = std::move(candidate.ds_petals_);
         sakura_ = std::move(candidate.sakura_); sakura_sheet_ = std::move(candidate.sakura_sheet_);
         fairy_lights_ = std::move(candidate.fairy_lights_); fairy_light_sheet_ = std::move(candidate.fairy_light_sheet_);
         effect_random_state_ = candidate.effect_random_state_;
@@ -2157,6 +2171,9 @@ bool SceneRunner::restore_state(const std::vector<uint8_t>& bytes, std::string* 
 }
 
 void SceneRunner::reset_restore_transients() {
+    dc2pc_scene_buttons_.clear();
+    dc2pc_back_label_.clear();
+    dc2pc_button_wait_ = dc2pc_advmenu_call_ = false;
     minigame_.reset();
     dialogue_actions_.clear(); dialogue_batches_ = {}; dialogue_action_ms_ = 0;
     collecting_dialogue_batch_ = false; dialogue_batch_index_ = 0;
@@ -2172,7 +2189,9 @@ void SceneRunner::reset_restore_transients() {
     effect_pck_.clear();
     sakura_ = {}; sakura_sheet_ = {}; sheets_.erase(28);
     fairy_lights_ = {}; fairy_light_sheet_ = {};
+    ds_lens_ = {}; ds_lens_parameters_ = {};
     screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
+    ds_petals_ = {};
     transition_active_ = transition_pending_ = false; transition_snap_.clear();
     ds_break_ = {};
     dc2pc_transition_active_ = dc2pc_present_pending_ = dc2pc_black_ = false;

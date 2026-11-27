@@ -395,6 +395,16 @@ bool is_dc4_or_dc4ph_game(const std::string& data_dir) {
     return false;
 }
 
+bool is_dc2pc_game(const std::string& data_dir) {
+    if (data_dir.empty()) return false;
+    const auto mes = case_path(absolute_path(data_dir), "MES");
+    if (mes.empty()) return false;
+    std::error_code ec;
+    // Aisia and Erika have dedicated endings in Plus Communication.
+    return fs::is_regular_file(case_path(mes, "ed_ais.mes"), ec) &&
+           fs::is_regular_file(case_path(mes, "ed_erk.mes"), ec);
+}
+
 bool is_dalsegno_in_future_game(const std::string& data_dir) {
     const auto path = folded(data_dir);
     if (path.find("dsif") != std::string::npos || path.find("in future") != std::string::npos ||

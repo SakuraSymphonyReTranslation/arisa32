@@ -1811,6 +1811,7 @@ int run(const Options& o) {
                 }
                 if (event.button.button == SDL_BUTTON_RIGHT && event.type == SDL_MOUSEBUTTONDOWN) {
                     if (scene) {
+                        if (scene->handle_dc2pc_back()) { advance_script(); continue; }
                         const auto back = scene->dalsegno_back_action();
                         if (!back.empty()) { action(back); continue; }
                         if (scene->save_format_version() == 0x9D72 || scripted_dalsegno)
@@ -1939,6 +1940,7 @@ int run(const Options& o) {
                 if (SDL_SetWindowFullscreen(window.get(), full ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) < 0) notify(SDL_GetError());
             } else if (key == SDLK_ESCAPE) {
                 if (scene && scene->sidebar_visible()) scene->set_sidebar_visible(false);
+                else if (scene && scene->handle_dc2pc_back()) advance_script();
                 else if (scene && scene->reviewing_dialogue()) scene->return_to_dialogue();
                 else if (auto_mode || skip_mode) { auto_mode = skip_mode = false; update_title(); }
                 else prompt_quit();

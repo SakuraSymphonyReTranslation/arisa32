@@ -181,6 +181,7 @@ const auto dalsegno = [] {
         {0x1E, Opcode::SCOPE},
         {0x22, Opcode::CLEAR_LAYOUT},
         {0x27, Opcode::EFFECT_SETUP},
+        {0x37, Opcode::SCREEN_EFFECT},
 
         {0x3A, Opcode::LOAD_SLOT},
         {0x3B, Opcode::LOAD_SHEET},
@@ -227,6 +228,7 @@ const auto dalsegno = [] {
         {0x8E, Opcode::SPRITE_SLIDE},
         {0x90, Opcode::SPRITE_TRANSFORM},
         {0x91, Opcode::SPRITE_TRANSFORM},
+        {0x93, Opcode::LENS_PARAMETERS},
         {0x95, Opcode::PLAY_EFFECT},
         {0x96, Opcode::CAMERA_DURATION},
     };

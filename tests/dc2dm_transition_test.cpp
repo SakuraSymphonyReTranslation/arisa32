@@ -848,6 +848,56 @@ void recorded_checkpoint(const fs::path& data) {
     CHECK(!selector.waiting_for_time() && !selector.script_ready() && !selector.animating());
 }
 
+void selector_announcements(const fs::path& data) {
+    dc4::VoiceArchive voices;
+    CHECK(voices.open((data / "VOICE.DAT").string()));
+    dc4::AudioEngine mixer;
+    if (!mixer.init()) {
+        std::cout << "Audio output unavailable; skipping live DC2DM selector voices\n";
+        return;
+    }
+    CHECK(mixer.set_device_paused(true));
+    for (int style = 0; style < 4; ++style) {
+        for (int story = 0; story < 3; ++story) {
+            dc4scene::SceneRunner scene(data.string());
+            scene.set_audio(&mixer, &voices);
+            scene.set_animation_enabled(true);
+            CHECK(scene.load_script((data / "MES/sceselect.mes").string(),
+                                    "sce0" + std::to_string(story + 1)));
+            scene.set_variable(100, 56, style);
+            CHECK(!scene.advance_to_next_text());
+            if (style < 3) {
+                const auto name = "DM_SYS0" + std::to_string(story + 4) + char('A' + style);
+                const auto* entry = voices.find(name);
+                std::vector<uint8_t> blob;
+                dc4::AudioEngine reference;
+                CHECK(entry && voices.read_entry(*entry, &blob));
+                CHECK(reference.play_voice_blob(blob.data(), blob.size()));
+                CHECK(scene.waiting_for_time() && !scene.animating());
+                scene.finish_script_wait();
+                std::array<int16_t, 1024> heard{}, expected{};
+                bool identical = true;
+                while (reference.voice_playing()) {
+                    if (!scene.waiting_for_time() || scene.script_ready()) { identical = false; break; }
+                    mixer.render_pcm(heard.data(), heard.size() / 2);
+                    reference.render_pcm(expected.data(), expected.size() / 2);
+                    identical &= heard == expected;
+                    scene.update(34);
+                }
+                CHECK(identical);
+                CHECK(scene.script_ready() && !scene.voice_playing());
+                CHECK(!scene.advance_to_next_text());
+            }
+            CHECK(scene.animating() && scene.pending_movie().empty());
+            scene.finish_script_wait();
+            CHECK(!scene.advance_to_next_text());
+            if (story == 0) CHECK(scene.pending_movie().empty());
+            else CHECK(scene.pending_movie() == "DC2DM_OP0" + std::to_string(story + 1) + ".MPG");
+            mixer.stop_all();
+        }
+    }
+}
+
 void recorded_selectors(const fs::path& data) {
     dc4scene::FontRenderer font;
     CHECK(font.load("C:/Windows/Fonts/msgothic.ttc", 0, 15, false));
@@ -992,6 +1042,7 @@ int main(int argc, char** argv) {
         if (const char* data = std::getenv("DC2DM_DATA")) {
             if (*data) {
                 recorded_checkpoint(data);
+                selector_announcements(data);
                 recorded_selectors(data);
             }
         } else {

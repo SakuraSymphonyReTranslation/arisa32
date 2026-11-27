@@ -249,6 +249,13 @@ bool SceneAudio::play_bgm(int id, int mode, bool alternate) {
     state_.bgm_position_frames = 0;
     return true;
 }
+void SceneAudio::stop_looped_se() {
+    if (audio_) {
+        for (const auto& effect : state_.looped_se) audio_->stop_channel(effect.channel);
+    }
+    state_.looped_se.clear();
+}
+
 bool SceneAudio::play_se(int id, bool loop) {
     if (id == -2) {
         if (audio_) audio_->stop_group(AudioGroup::Voice);

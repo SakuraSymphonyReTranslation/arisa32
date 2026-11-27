@@ -748,6 +748,21 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             if (action == MotionEvent.ACTION_UP) v.performClick();
             return true;
         });
+        surface.setOnHoverListener((v, event) -> {
+            if (!running || !isDalSegno() || activePointerId >= 0) return false;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                touches.offer(new Touch(MotionEvent.ACTION_MOVE, -1, -1));
+            } else if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
+                RectF bounds = viewport(v.getWidth(), v.getHeight());
+                int x = ScreenViewport.gameX(bounds, event.getX(), event.getY());
+                int y = ScreenViewport.gameY(bounds, event.getX(), event.getY());
+                touches.offer(new Touch(MotionEvent.ACTION_MOVE, x, y));
+            } else {
+                return false;
+            }
+            return true;
+        });
         gameLayout.addView(surface, new FrameLayout.LayoutParams(-1, -1));
         cursorMovieFrame = false;
         cursorOverlay = new CursorOverlay(this, (action, x, y) -> touches.offer(new Touch(action, x, y)));

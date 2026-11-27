@@ -304,7 +304,7 @@ public:
     void draw_dc2ty_title_exit(std::vector<uint8_t>* outgoing);
     // After seeding presentation, adopt the title asset the host kept playing on channel 0.
     bool seed_dc2dm_bgm(const std::string& asset);
-    bool jump_to_label(const std::string& label);
+    bool jump_to_label(std::string label);
     bool has_label(const std::string& label) const { return vm_.has_label(label); }
     const std::string& script_name() const { return script_name_; }
     using CommandObserver = std::function<void(const dc4::MesCommand&, const std::string&)>;
@@ -315,9 +315,12 @@ public:
     void finish_movie() { pending_movie_.clear(); pending_movie_is_effect_ = false; }
     // Hosts keep updating while a script wait is pending, then advance once
     // script_ready() is true. Input can finish a skippable wait/credit sequence.
-    bool waiting_for_time() const { return script_wait_pending_ && script_wait_ms_ != 0; }
+    bool waiting_for_time() const {
+        return script_wait_pending_ && (script_wait_ms_ == kDc2dmVoiceWait
+            ? dc2dm_voice_audible() : script_wait_ms_ != 0);
+    }
     bool script_ready() const { return !sidebar_visible_ && !reviewing_dialogue() &&
-        !dalsegno_confirmation_active() && script_wait_pending_ && script_wait_ms_ == 0; }
+        !dalsegno_confirmation_active() && script_wait_pending_ && !waiting_for_time(); }
     void finish_script_wait();
     bool credits_active() const { return credits_active_ || dc2dm_ending_.active; }
     bool effect_pck_active() const { return effect_pck_.active; }
@@ -346,6 +349,7 @@ public:
     const std::string& displayed_line() const;
     const std::string& displayed_speaker() const;
     bool set_sidebar_visible(bool visible);
+    bool handle_dc2pc_back();
     bool sidebar_visible() const { return sidebar_visible_; }
     bool scene_ended() const { return scene_end_; }
     const std::string& next_script() const { return next_script_; }
@@ -373,6 +377,7 @@ public:
     bool dalsegno_replay_active() const { return ds_replay_active_; }
     bool dalsegno_confirmation_active() const { return !ds_modal_buttons_.empty(); }
     bool dalsegno_gallery_active() const { return ds_gallery_image_.valid(); }
+    bool dalsegno_gallery_wiping() const { return dalsegno_gallery_active() && transition_active_; }
     const Image& dalsegno_gallery_image() const { return ds_gallery_image_; }
     uint32_t dalsegno_gallery_revision() const { return ds_gallery_revision_; }
     bool advance_dalsegno_gallery();
@@ -524,6 +529,8 @@ private:
     // 0xB4/0x36/0x37 transition frame markers (see docs/vm-progress.md).
     void mark_transition_frame(int kind);
     void start_transition(int frames = 30, bool scale_speed = true);
+    void finish_transition();
+    void start_dalsegno_wipe(int parameter);
     void snapshot_for_transition();
     void draw_transition(uint8_t* dst);
     void compose_scene();
@@ -541,6 +548,8 @@ private:
     void finish_dc2dm_transition();
     void draw_dc2dm_transition();
     bool particle_effects_visible() const;
+    void start_dalsegno_lens(int density);
+    void draw_dalsegno_lens();
     void update_sakura(uint32_t elapsed_ms);
     void draw_sakura();
     bool dispatch_dc4_effect_command(const dc4::MesCommand& c);
@@ -556,7 +565,7 @@ private:
     void draw_dalsegno_name();
     void draw_dalsegno_character_counters();
     std::string dalsegno_text(const std::string& text) const;
-    void draw_dalsegno_captions();
+    void draw_dalsegno_captions(int active_button, int state);
     void draw_dalsegno_confirmation();
     void start_dalsegno_break();
     void finish_dalsegno_break();
@@ -599,6 +608,21 @@ private:
     Image sakura_sheet_;
     FairyLightSystem fairy_lights_;
     Image fairy_light_sheet_;
+    struct LensParameters {
+        int x = 0, y = 0;
+        int start_angle = 0, end_angle = -1;
+        uint32_t duration_ms = 0;
+    } ds_lens_parameters_;
+    struct LensReflection {
+        int radius_x, radius_y, source_x, size;
+        float scale, alpha;
+    };
+    struct {
+        LensParameters parameters;
+        uint32_t elapsed_ms = 0;
+        Image sheet;
+        std::vector<LensReflection> reflections;
+    } ds_lens_;
     uint32_t effect_random_state_ = 1;
     struct ScreenEffectSprite {
         float from_x = 0, to_x = 0, y = 0;
@@ -609,6 +633,14 @@ private:
         bool fade = false;
     };
     std::vector<ScreenEffectSprite> screen_effect_;
+    struct DsPetalAtlas {
+        static constexpr int width = 499, height = 360;
+        std::string name;
+        std::vector<uint8_t> alpha, coverage;
+        bool load(const Image& image);
+        void stamp(const ScreenEffectSprite& sprite, float progress);
+        void composite(std::vector<uint8_t>& frame) const;
+    } ds_petals_;
     EffectPck effect_pck_;
     std::string data_;
     std::string script_name_;
@@ -618,9 +650,12 @@ private:
     bool pending_movie_is_effect_ = false;
     bool is_dc4_or_dc4ph_ = false;
     bool is_dalsegno_profile_ = false;
+    bool is_dc2pc_profile_ = false;
     bool visual_effects_enabled_ = true;
     int dialogue_font_size_ = 22;
     bool dc4_replay_profile_ = false;
+    static constexpr double kDc2dmVoiceWait = -2;
+    bool dc2dm_voice_audible() const;
     double script_wait_ms_ = 0;
     std::unique_ptr<Dc2dmMinigame> minigame_;
     bool script_wait_pending_ = false;
@@ -682,6 +717,7 @@ private:
     bool pending_has_button_ = false;
     struct DalSegnoCaption {
         int x = 0, y = 0, size = 20;
+        int button = -1, state = 99;
         bool preview = false;
         std::string text;
         double elapsed_ms = 0;
@@ -710,7 +746,10 @@ private:
     std::map<std::string, uint16_t> ds_cg_ids_, ds_scene_ids_;
     bool ds_replay_active_ = false;
     int ds_replay_route_ = 0, ds_replay_page_ = 0;
-    std::vector<uint16_t> ds_gallery_order_;
+    struct DsGalleryEntry { uint16_t id; bool wipe; };
+    std::vector<DsGalleryEntry> ds_gallery_order_;
+    std::string ds_gallery_mask_;
+    int ds_gallery_wipe_parameter_ = 0;
     size_t ds_gallery_index_ = 0;
     uint32_t ds_gallery_revision_ = 0;
     Image ds_gallery_image_;
@@ -721,6 +760,10 @@ private:
     unsigned ds_counter_ticks_ = 0;
     MesWinLayout layout_;
     bool dc2pc_ui_ = false;
+    std::vector<UiButton> dc2pc_scene_buttons_;
+    std::string dc2pc_back_label_;
+    bool dc2pc_button_wait_ = false;
+    bool dc2pc_advmenu_call_ = false;
     bool dc2dm_ui_ = false;
     size_t dc2dm_toolbar_count_ = 0;
     bool sidebar_visible_ = false;
@@ -736,7 +779,7 @@ private:
     std::vector<ChoiceUi> dc2dm_toolbar_;
     int ui_bar_top_ = 690;
     Image meswin_;
-    Image mask_;           // 0x3C slot 21 wipe mask (MSK\*.crx), not rendered
+    Image mask_;           // Wipe texture in Dal Segno slot 16 or DC4/PH slot 21.
     Image screen_effect_atlas_; // 0x3C slot 22, animated by 0x38.
     std::vector<uint8_t> frame_;
     std::vector<uint8_t> scene_frame_;

@@ -1,4 +1,5 @@
 #include "arisa32/scene.h"
+#include "arisa32/save_paths.h"
 #include "arisa32/resource.h"
 #include "arisa32/mem_safe.h"
 #include "arisa32/names.h"
@@ -162,16 +163,29 @@ void blit(std::vector<uint8_t>* dst, int dst_w, int dst_h, int dx, int dy,
     if (sw <= 0 || sh <= 0) return;
     int x0 = std::max(dx, 0), y0 = std::max(dy, 0);
     int x1 = std::min(dx + sw, dst_w), y1 = std::min(dy + sh, dst_h);
+    if (x0 >= x1 || y0 >= y1) return;
     // UI sheets and unscaled sprites need no resampling. This path is also
     // pixel-identical to the filtered path at integer, unit-scale positions.
     if (scale == 1.0f) {
-        for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
-            const uint8_t* s = &src.rgba[(size_t(y - dy) * src.w + x - dx) * 4];
-            const int sa = int(s[3]) * alpha / 255;
-            if (!sa) continue;
-            uint8_t* d = &(*dst)[(size_t(y) * dst_w + x) * 4];
-            for (int k = 0; k < 3; ++k) d[k] = uint8_t((s[k] * sa + d[k] * (255 - sa)) / 255);
-            d[3] = uint8_t(sa + int(d[3]) * (255 - sa) / 255);
+        for (int y = y0; y < y1; ++y) {
+            const auto* s = src.rgba.data() + (size_t(y - dy) * src.w + x0 - dx) * 4;
+            const auto* end = s + (x1 - x0) * 4;
+            auto* d = dst->data() + (size_t(y) * dst_w + x0) * 4;
+            while (s < end) {
+                if (alpha == 255 && s[3] == 255) {
+                    const auto* begin = s;
+                    do { s += 4; } while (s < end && s[3] == 255);
+                    std::memcpy(d, begin, s - begin);
+                    d += s - begin;
+                    continue;
+                }
+                const int sa = int(s[3]) * alpha / 255;
+                if (sa) {
+                    for (int k = 0; k < 3; ++k) d[k] = uint8_t((s[k] * sa + d[k] * (255 - sa)) / 255);
+                    d[3] = uint8_t(sa + int(d[3]) * (255 - sa) / 255);
+                }
+                s += 4; d += 4;
+            }
         }
         return;
     }
@@ -476,6 +490,7 @@ SceneRunner::SceneRunner(const std::string& data_dir)
       scene_audio_(data_dir),
       is_dc4_or_dc4ph_(dc4::is_dc4_or_dc4ph_game(data_dir)),
       is_dalsegno_profile_(dc4::is_dalsegno_game(data_dir)),
+      is_dc2pc_profile_(dc4::is_dc2pc_game(data_dir)),
       dc4_replay_profile_(has_dc4_replay_profile(data_dir)) {
     frame_.assign(size_t(kScreenW) * kScreenH * 4, 0);
     set_latin_mode(dc4::is_latin());
@@ -589,6 +604,10 @@ bool SceneRunner::set_sidebar_visible(bool visible) {
         load_dc2pc_sidebar();
     if ((!dc2pc_ui_ && !dc2dm_ui_) || (visible && sidebar_buttons_.empty())) return false;
     sidebar_visible_ = visible;
+    if (!visible && dc2pc_advmenu_call_) {
+        dc2pc_advmenu_call_ = false;
+        script_wait_ms_ = 0;
+    }
     pointer_x_ = pointer_y_ = -1;
     pointer_down_ = false;
     return true;
@@ -609,6 +628,11 @@ bool SceneRunner::voice_playing() const {
         (!dalsegno_audio_level(203, 225) || !dalsegno_audio_level(5, 9) ||
          !scene_audio_.character_voice_enabled())) return false;
     return scene_audio_.voice_playing();
+}
+bool SceneRunner::dc2dm_voice_audible() const {
+    return audio_ && audio_->device_ready() && audio_->voice_playing() &&
+           audio_->master_volume() > 0 && audio_->user_volume(AudioGroup::Voice) > 0 &&
+           scene_audio_.character_voice_enabled();
 }
 void SceneRunner::set_window_opacity(int percent) { window_opacity_ = std::clamp(percent, 0, 100); }
 void SceneRunner::set_effects_enabled(bool enabled) {
@@ -705,6 +729,8 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
         last_error_ = "Dal Segno game data could not be verified";
         return false;
     }
+    mes_.dc2pc_story_controls = is_dc2pc_profile_ && mes_.dialect == dc4::MesDialect::ClassicDC2 &&
+                                mes_.version == 0x9969;
     if (!vm_.bind(mes_)) { last_error_ = vm_.error(); return false; }
     sync_dalsegno_audio();
     if (!entry_label.empty() && !vm_.jump(entry_label)) { last_error_ = vm_.error(); return false; }
@@ -713,8 +739,11 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
         sakura_ = {}; sakura_sheet_ = {};
         if (!is_dalsegno_profile_ || !preserving_dialogue_history_) {
             fairy_lights_ = {}; fairy_light_sheet_ = {};
+            ds_lens_ = {}; ds_lens_parameters_ = {};
         }
-        screen_effect_.clear(); screen_effect_atlas_ = {}; mask_ = {};
+        screen_effect_.clear(); screen_effect_atlas_ = {};
+        if (!is_dalsegno_profile_ || !preserving_dialogue_history_) ds_petals_ = {};
+        if (!is_dalsegno_profile_ || !preserving_dialogue_history_) mask_ = {};
     }
 
     finish_dc2pc_transition();
@@ -741,6 +770,9 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     std::string menu_name = std::filesystem::path(resolved).stem().string();
     for (char& ch : menu_name) ch = char(std::tolower((unsigned char)ch));
     if (is_dalsegno_profile_) {
+        if (menu_name == "sc_end" || menu_name == "gotitle" || menu_name == "main") {
+            scene_audio_.stop_looped_se();
+        }
         if (ds_replay_active_ && menu_name == "sc_end") {
             set_variable(3, 5, ds_replay_route_);
             set_variable(3, 6, ds_replay_page_);
@@ -761,6 +793,7 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
             menu_name == "save" || menu_name == "load")) {
         // System menus start a new graphics layout; story transfers retain it.
         fairy_lights_ = {}; fairy_light_sheet_ = {};
+        ds_lens_ = {}; ds_lens_parameters_ = {};
         layers_.clear();
         for (auto& sprite : sprites_) sprite = {};
         std::fill(pending_sprites_.begin(), pending_sprites_.end(), false);
@@ -780,6 +813,9 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     sidebar_visible_ = false;
     pending_movie_.clear();
     effect_movie_.clear();
+    dc2pc_scene_buttons_.clear();
+    dc2pc_back_label_.clear();
+    dc2pc_button_wait_ = dc2pc_advmenu_call_ = false;
     minigame_.reset();
     script_wait_pending_ = false;
     script_wait_ms_ = 0;
@@ -797,6 +833,8 @@ bool SceneRunner::load_script(const std::string& mes_path, const std::string& en
     input_skip_label_.clear();
     if (mes_.dialect == dc4::MesDialect::ClassicDM && mes_.version == 0x9D72)
         clear_dc2dm_scene_controls();
+    else if (is_dalsegno_profile_)
+        buttons_.clear();
     else
         buttons_.erase(
             std::remove_if(buttons_.begin(), buttons_.end(),
@@ -822,7 +860,12 @@ bool SceneRunner::seed_dc2dm_bgm(const std::string& asset) {
     return scene_audio_.adopt_playing_bgm(asset);
 }
 
-bool SceneRunner::jump_to_label(const std::string& label) {
+bool SceneRunner::handle_dc2pc_back() {
+    if (!waiting_for_time() || sidebar_visible_ || dc2pc_back_label_.empty()) return false;
+    return jump_to_label(dc2pc_back_label_);
+}
+
+bool SceneRunner::jump_to_label(std::string label) {
     if (ds_name_pending_) return false;
     if (!vm_.has_label(label)) return false;
     ds_focus_ = -1;
@@ -834,11 +877,20 @@ bool SceneRunner::jump_to_label(const std::string& label) {
             ds_replay_page_ = variable(3, 6);
             ds_replay_active_ = true;
             set_variable(9, 7, 1);
+            buttons_.clear();
+            ds_captions_.clear();
+            scene_chips_.clear();
+            scene_dirty_ = true;
         }
         ds_modal_buttons_.clear();
         ds_modal_chips_.clear();
     }
     if (!vm_.jump(label)) { last_error_ = vm_.error(); return false; }
+    if (dc2pc_button_wait_) {
+        dc2pc_scene_buttons_.clear();
+        dc2pc_button_wait_ = false;
+        dc2pc_back_label_.clear();
+    }
     minigame_.reset();
     finish_dalsegno_break();
     finish_dc2dm_transition();
@@ -902,6 +954,7 @@ void SceneRunner::minigame_key(Dc2dmMinigame::Key key) {
 
 void SceneRunner::finish_script_wait() {
     if (!script_wait_pending_ || !script_wait_skippable_) return;
+    ds_lens_.elapsed_ms = ds_lens_.parameters.duration_ms;
     if (dc2dm_ending_.active) finish_dc2dm_ending(true);
     if (dc2pc_transition_active_) finish_dc2pc_transition();
     finish_dc2dm_transition();
@@ -923,6 +976,25 @@ void SceneRunner::finish_script_wait() {
 }
 
 bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
+    // DC2DM raw 13 tests audio groups. Bit 1 waits for the current voice before the fade.
+    if (c.dc2dm && mes_.version == 0x9D72 && c.raw_op == 0x13 && (c.p1 & 2)) {
+        if (animation_enabled_ && dc2dm_voice_audible()) {
+            script_wait_pending_ = true;
+            script_wait_skippable_ = false;
+            script_wait_ms_ = kDc2dmVoiceWait;
+        }
+        return true;
+    }
+    if (mes_.dc2pc_story_controls && c.raw_op == 0x3B) {
+        dc2pc_back_label_ = c.str;
+        return true;
+    }
+    if (mes_.dc2pc_story_controls && c.raw_op == 0x2D && c.str == "advmenu" && set_sidebar_visible(true)) {
+        dc2pc_advmenu_call_ = script_wait_pending_ = true;
+        script_wait_skippable_ = false;
+        script_wait_ms_ = -1;
+        return true;
+    }
     if (dispatch_dalsegno_ui(c)) return true;
     if (collect_dialogue_command(c)) return true;
     if (dispatch_dc2dm_message_face(c)) return true;
@@ -942,6 +1014,8 @@ bool SceneRunner::dispatch_command(const MesCommand& c, size_t& transfers) {
                        {Opcode::TRANSITION, Opcode::COMMIT_TRANSITION, Opcode::RESET_TRANSITION});
         register_group(CmdKind::Param2, &SceneRunner::dispatch_dc4_effect_command,
                        {Opcode::EFFECT_SETUP, Opcode::SCREEN_EFFECT});
+        register_group(CmdKind::Words4, &SceneRunner::dispatch_dc4_effect_command,
+                       {Opcode::LENS_PARAMETERS});
         register_group(CmdKind::ParamStr, &SceneRunner::dispatch_layer_command,
                        {Opcode::LOAD_SLOT, Opcode::LEGACY_LOAD_SLOT, Opcode::LOAD_SHEET});
         register_group(CmdKind::Param2, &SceneRunner::dispatch_ui_chip_command,
@@ -1119,6 +1193,14 @@ bool SceneRunner::dispatch_timing_command(const dc4::MesCommand& c) {
         return true;
     }
     if (c.kind == K::Param2 && (c.opcode() == dc4::Opcode::WAIT_INPUT_ALT || c.opcode() == dc4::Opcode::WAIT_INPUT)) {
+        if (mes_.dc2pc_story_controls && c.raw_op == 0x0A && !dc2pc_scene_buttons_.empty()) {
+            dc2pc_button_wait_ = script_wait_pending_ = true;
+            script_wait_skippable_ = false;
+            script_wait_ms_ = -1;
+            dc2pc_present_pending_ = dc2pc_black_ = false;
+            scene_dirty_ = true;
+            return true;
+        }
         if (!buttons_.empty() || c.p1 == 0) {
             script_wait_pending_ = true;
             script_wait_ms_ = -1;
@@ -1195,6 +1277,8 @@ bool SceneRunner::dispatch_flow_command(const dc4::MesCommand& c, size_t& transf
 
 bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     using K = dc4::CmdKind;
+    const bool dc2pc = mes_.dc2pc_story_controls;
+    auto& controls = dc2pc ? dc2pc_scene_buttons_ : buttons_;
     if (c.ds && c.kind == K::Words4 && c.opcode() == dc4::Opcode::CHIP_ORIGIN) {
         // DSAO 0x40E4D0 stores only the destination origin.
         scene_chip_origin_x_ = int16_t(c.words[0]);
@@ -1226,6 +1310,11 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
     }
     if (c.kind == K::Param2) {
         if (c.opcode() == dc4::Opcode::CLEAR_LAYOUT) {
+            if (dc2pc) {
+                controls.clear();
+                scene_chips_.clear();
+                scene_dirty_ = true;
+            }
             if (c.dc2dm) {
                 buttons_.resize(std::min(buttons_.size(), dc2dm_toolbar_count_));
             } else if ((mes_.version & 0xFFFF) == 0x9F9A) {
@@ -1241,6 +1330,7 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
             return true;
         }
         if (c.opcode() == dc4::Opcode::END_CONTROL) {
+            if (dc2pc) controls.clear();
             pending_has_button_ = false;
             return true;
         }
@@ -1288,8 +1378,7 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
         pending_scene_chip_.w = c.words[0];
         pending_scene_chip_.h = c.words[1];
         pending_scene_chip_.sheet = c.words[2];
-        if (c.dc2ty && !pending_chip_is_button_ && !(c.words[2] & 0x40)) {
-            // TY raw53/raw52 stores source endpoints, except flag0x40.
+        if ((c.dc2ty || dc2pc) && !pending_chip_is_button_ && !(c.words[2] & 0x40)) {
             pending_scene_chip_.w -= pending_scene_chip_.src_x;
             pending_scene_chip_.h -= pending_scene_chip_.src_y;
         }
@@ -1325,9 +1414,9 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
             }
         }
         if (pending_chip_is_button_) {
-            if (!buttons_.empty() && state >= 0 && state < 3) {
-                buttons_.back().state[state] = pending_scene_chip_;
-                if (is_ds_chip) buttons_.back().layers[state].push_back(pending_scene_chip_);
+            if (!controls.empty() && state >= 0 && state < 3) {
+                controls.back().state[state] = pending_scene_chip_;
+                if (is_ds_chip || dc2pc) controls.back().layers[state].push_back(pending_scene_chip_);
             }
         } else {
             scene_chips_.push_back(pending_scene_chip_);
@@ -1338,18 +1427,19 @@ bool SceneRunner::dispatch_ui_chip_command(const dc4::MesCommand& c) {
         return true;
     }
     if (is_button_rect) {
-        const float scale = c.dc2dm ? 1.25f : 1.0f;
+        const float scale = dc2pc ? 1.2f : c.dc2dm ? 1.25f : 1.0f;
         pending_button_ = UiButton{};
         pending_button_.x = int(std::lround(int16_t(c.words[0]) * scale));
         pending_button_.y = int(std::lround(int16_t(c.words[1]) * scale));
         pending_button_.w = int(std::lround(int16_t(c.words[2]) * scale)) - pending_button_.x;
         pending_button_.h = int(std::lround(int16_t(c.words[3]) * scale)) - pending_button_.y;
+        if (dc2pc) pending_button_.x += 160;
         pending_has_button_ = true;
         return true;
     }
     if (is_button_target) {
         pending_button_.action = c.str;
-        buttons_.push_back(pending_button_);
+        controls.push_back(pending_button_);
         pending_has_button_ = false;
         return true;
     }
@@ -1376,8 +1466,12 @@ bool SceneRunner::dispatch_layer_command(const dc4::MesCommand& c) {
             start_dalsegno_break();
             return true;
         }
-        if (c.ds && c.p1 == 0) {
-            start_transition(54 * (int(c.p2) + 1));
+        if (c.ds && (c.p1 == 0 || c.p1 == 21)) {
+            if (c.p1 == 21) {
+                start_dalsegno_wipe(c.p2);
+            } else {
+                start_transition(54 * (int(c.p2) + 1));
+            }
             if (transition_active_) {
                 script_wait_ms_ = transition_duration_ms_;
                 script_wait_pending_ = script_wait_skippable_ = true;
@@ -2295,6 +2389,28 @@ void SceneRunner::load_layer(int layer, const std::string& path) {
 }
 
 void SceneRunner::load_slot(int slot, const std::string& raw) {
+    if (is_dalsegno_profile_ && slot == 17 && raw != "--") {
+        std::string path = dc4::save_lower(raw);
+        std::replace(path.begin(), path.end(), '\\', '/');
+        if (path == "system/effchangescreen" || path == "system/effchangescreen.crx") {
+            if (!ds_petals_.alpha.empty()) return;
+            sheets_.erase(slot);
+            Image image;
+            if (load_grp_crx(raw, &image, nullptr) && ds_petals_.load(image)) ds_petals_.name = raw;
+            return;
+        }
+        ds_petals_ = {};
+        screen_effect_.clear();
+    }
+    if (is_dalsegno_profile_ && slot == 16 && raw != "--") {
+        mask_ = {};
+        const auto dir = dc4::save_lower(raw.substr(0, 4));
+        if (dir == "msk\\" || dir == "msk/") {
+            sheets_.erase(slot);
+            if (load_grp_crx(raw, &mask_, nullptr)) mask_.name = raw;
+            return;
+        }
+    }
     if (raw.empty()) return;
     if (dc4_message_faces() && (slot == 31 || slot == 32)) {
         const int index = slot - 23;
@@ -2380,6 +2496,16 @@ void SceneRunner::load_slot(int slot, const std::string& raw) {
     // Native MES case 60 resets camera state when preparing slot 1 unless :n
     // is active; case 73 still releases old, unqueued character resources.
     if (slot <= 1 && !preserve_scene_) {
+        if (ds) {
+            // A new background may reuse both actors without repeating their 0x7E positions.
+            for (const auto& [index, camera] : ds_camera_layers_) {
+                if (index < 0) continue;
+                auto& actor = sprites_[index];
+                actor.cur_x = int(std::lround(camera.base_x));
+                actor.cur_y = int(std::lround(camera.base_y));
+                actor.scale = camera.base_scale;
+            }
+        }
         reset_camera();
         effect_pck_.clear();
         for (size_t i = 0; i < sprites_.size(); ++i) {
@@ -3560,7 +3686,10 @@ void SceneRunner::update(uint32_t elapsed_ms) {
     if (is_dalsegno_profile_ && animation_enabled_ && variable(8, 99)) {
         const auto previous = ds_counter_ticks_ / kDsCounterFrameTicks;
         ds_counter_ticks_ = (ds_counter_ticks_ + elapsed_ms % (kDsCounterLoopTicks / 3) * 3) % kDsCounterLoopTicks;
-        if (previous != ds_counter_ticks_ / kDsCounterFrameTicks) scene_dirty_ = true;
+        if (previous != ds_counter_ticks_ / kDsCounterFrameTicks &&
+            std::any_of(sprites_.begin(), sprites_.begin() + 4, [](const BstSprite& s) {
+                return s.visible && s.img.valid() && s.alpha != 0;
+            })) scene_dirty_ = true;
     }
     if (dc2dm_ending_reference_valid_)
         dc2dm_ending_reference_elapsed_ms_ = std::min(500000.0, dc2dm_ending_reference_elapsed_ms_ + elapsed_ms);
@@ -3604,16 +3733,12 @@ void SceneRunner::update(uint32_t elapsed_ms) {
     }
     update_dialogue_actions(elapsed_ms);
     update_sakura(elapsed_ms);
+    ds_lens_.elapsed_ms += std::min(elapsed_ms, ds_lens_.parameters.duration_ms - ds_lens_.elapsed_ms);
     update_screen_effect(elapsed_ms);
     if (transition_active_) {
         transition_elapsed_ms_ += remaining;
-        if (transition_elapsed_ms_ >= transition_duration_ms_) {
-            transition_active_ = false;
-            transition_elapsed_ms_ = transition_duration_ms_ = 0;
-            transition_snap_.clear();
-            transition_snap_.shrink_to_fit();
-        }
-        scene_dirty_ = true;
+        if (transition_elapsed_ms_ >= transition_duration_ms_) finish_transition();
+        if (!is_dalsegno_profile_) scene_dirty_ = true;
     }
     while (!camera_motion_.empty()) {
         auto& motion = camera_motion_.front();
@@ -3637,6 +3762,7 @@ void SceneRunner::update(uint32_t elapsed_ms) {
 void SceneRunner::finish_animations(bool finish_screen_effect) {
     update_dalsegno_camera(0, true);
     if (finish_screen_effect) {
+        ds_lens_.elapsed_ms = ds_lens_.parameters.duration_ms;
         finish_dalsegno_break();
         for (const auto& [slot, motion] : ds_background_motion_) {
             auto layer = layers_.find(slot);
@@ -3660,13 +3786,7 @@ void SceneRunner::finish_animations(bool finish_screen_effect) {
             s.fade = BstSprite::Fade{};
         }
     }
-    if (transition_active_ || transition_pending_) {
-        transition_active_ = false;
-        transition_pending_ = false;
-        transition_elapsed_ms_ = transition_duration_ms_ = 0;
-        transition_snap_.clear();
-        transition_snap_.shrink_to_fit();
-    }
+    if (transition_active_ || transition_pending_) finish_transition();
     if (camera_motion_.empty()) return;
     const auto& motion = camera_motion_.back();
     camera_scale_ = motion.to_scale; camera_x_ = motion.to_x; camera_y_ = motion.to_y;
@@ -3789,7 +3909,11 @@ void SceneRunner::compose_scene() {
 
 void SceneRunner::draw(int reveal_chars) {
     if (ds_break_.active()) { draw_dalsegno_break(); return; }
-    if (dalsegno_gallery_active()) { frame_ = dalsegno_gallery_frame(kScreenW, kScreenH); return; }
+    if (dalsegno_gallery_active()) {
+        frame_ = dalsegno_gallery_frame(kScreenW, kScreenH);
+        if (transition_active_) draw_transition(frame_.data());
+        return;
+    }
     if (ds_name_pending_) { draw_dalsegno_name(); return; }
     if (minigame_active()) { minigame_->draw(font_, &frame_); return; }
     if (dc2dm_ending_.active) { draw_dc2dm_ending(); return; }
@@ -3804,6 +3928,26 @@ void SceneRunner::draw(int reveal_chars) {
         draw_dc2pc_transition();
         if (!sidebar_visible_) return;
     }
+    if (dc2pc_button_wait_ && !sidebar_visible_) {
+        for (const auto& button : dc2pc_scene_buttons_) {
+            for (const auto& chip : button.layers[0]) {
+                // A same-position sheet 0 blit restores the area under a highlight.
+                // compose_scene() already restored it, including the static panel.
+                if (chip.sheet == 0 && chip.src_x == chip.dst_x && chip.src_y == chip.dst_y) continue;
+                blit_chip(chip, 255);
+            }
+            if (pointer_x_ >= button.x && pointer_x_ < button.x + button.w &&
+                pointer_y_ >= button.y && pointer_y_ < button.y + button.h) {
+                const auto& pressed = button.layers[2];
+                const auto& chips = pointer_down_ && !pressed.empty() ? pressed : button.layers[1];
+                for (const auto& chip : chips) blit_chip(chip, 255);
+            }
+        }
+        clip_dc2pc_viewport(frame_);
+        dc2pc_displayed_frame_ = frame_;
+        return;
+    }
+    draw_dalsegno_lens();
     if (transition_active_) draw_transition(frame_.data());
     if (dc2dm) draw_dc2dm_transition();
     draw_screen_effect();
@@ -3821,11 +3965,20 @@ void SceneRunner::draw(int reveal_chars) {
         }
     };
     if (ds && current_line_.empty()) {
+        int active_button = -1;
+        if (ds_modal_buttons_.empty()) {
+            active_button = ds_focus_;
+            if (active_button < 0) {
+                const auto hit = std::find_if(buttons_.begin(), buttons_.end(), [&](const UiButton& b) {
+                    return pointer_x_ >= b.x && pointer_x_ < b.x + b.w &&
+                           pointer_y_ >= b.y && pointer_y_ < b.y + b.h;
+                });
+                if (hit != buttons_.end()) active_button = int(hit - buttons_.begin());
+            }
+        }
         if (!dalsegno_dialogue_controls()) for (size_t i = 0; i < buttons_.size(); ++i) {
             const auto& b = buttons_[i];
-            const bool hover = ds_modal_buttons_.empty() && (ds_focus_ == int(i) ||
-                (pointer_x_ >= b.x && pointer_x_ < b.x + b.w &&
-                 pointer_y_ >= b.y && pointer_y_ < b.y + b.h));
+            const bool hover = active_button == int(i);
             const bool captured = captured_slider_ == int(i);
             draw_button(b, hover ? (pointer_down_ ? 2 : 1) : 0);
             if (b.is_slider && b.has_knob) {
@@ -3837,7 +3990,7 @@ void SceneRunner::draw(int reveal_chars) {
                 if ((hover || captured) && b.slider_caption.valid) blit_chip(b.slider_caption, 255);
             }
         }
-        draw_dalsegno_captions();
+        draw_dalsegno_captions(active_button, pointer_down_ ? 2 : 1);
         if (ds_music_active_) draw_dalsegno_music();
         draw_dalsegno_confirmation();
         return;
@@ -4204,9 +4357,11 @@ void SceneRunner::update_pck_effect(double elapsed_ms) {
 // Copies one chip out of its sheet and blits it at full alpha.
 void SceneRunner::blit_chip(const UiChip& ch, int alpha) {
     const bool ds_alpha = (mes_.version & 0xFFFF) == 0x9F9A && ch.sheet >= 128 && ch.sheet < 256;
-    auto it = sheets_.find(ds_alpha ? ch.sheet & 127 : ch.sheet);
+    const bool background = mes_.dc2pc_story_controls && ch.sheet == 0;
+    const auto& images = background ? layers_ : sheets_;
+    auto it = images.find(background ? 1 : ds_alpha ? ch.sheet & 127 : ch.sheet);
     if (ds_alpha) alpha = alpha * dalsegno_window_alpha() / 255;
-    if (it == sheets_.end() || ch.w <= 0 || ch.h <= 0) return;
+    if (it == images.end() || ch.w <= 0 || ch.h <= 0) return;
     const Image& s = it->second;
     Image piece;
     piece.w = ch.w;
@@ -4220,9 +4375,10 @@ void SceneRunner::blit_chip(const UiChip& ch, int alpha) {
         memcpy(&piece.rgba[(size_t(y) * ch.w + left) * 4],
                &s.rgba[(size_t(ch.src_y + y) * s.w + ch.src_x + left) * 4], size_t(right - left) * 4);
     }
-    const float scale = dc2pc_ui_ ? 1.2f : (dc2dm_ui_ || mes_.dialect == dc4::MesDialect::ClassicDM) ? 1.25f : 1.0f;
+    const bool dc2pc_viewport = dc2pc_ui_ || mes_.dc2pc_story_controls;
+    const float scale = dc2pc_viewport ? 1.2f : (dc2dm_ui_ || mes_.dialect == dc4::MesDialect::ClassicDM) ? 1.25f : 1.0f;
     blit(&frame_, kScreenW, kScreenH,
-         (dc2pc_ui_ ? 160 : 0) + int(std::lround(ch.dst_x * scale)),
+         (dc2pc_viewport ? 160 : 0) + int(std::lround(ch.dst_x * scale)),
          int(std::lround(ch.dst_y * scale)), piece, scale, alpha);
 }
 
@@ -4858,6 +5014,7 @@ void SceneRunner::draw_choices() {
 }
 
 const std::string* SceneRunner::hit_test(int x, int y) const {
+    if (script_wait_pending_ && script_wait_ms_ == kDc2dmVoiceWait) return nullptr;
     if (is_dalsegno_profile_) {
         if (ds_break_.active()) return nullptr;
         if (dalsegno_gallery_active()) {
@@ -4901,6 +5058,12 @@ const std::string* SceneRunner::hit_test(int x, int y) const {
         return nullptr;
     }
     if (vm_.waiting_for_choice()) return nullptr;
+    if (dc2pc_button_wait_) {
+        for (const auto& button : dc2pc_scene_buttons_)
+            if (!button.action.empty() && x >= button.x && x < button.x + button.w &&
+                    y >= button.y && y < button.y + button.h) return &button.action;
+        return nullptr;
+    }
     if (dc2pc_ui_) {
         if (!message_visible_ || script_wait_pending_ || dc2pc_present_pending_ ||
             dc2pc_black_ || dc2pc_transition_active_) return nullptr;

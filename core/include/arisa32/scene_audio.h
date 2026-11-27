@@ -45,6 +45,7 @@ public:
         return voice_character_ >= character_volume_.size() || character_volume_[voice_character_] > 0;
     }
     void reset_state();
+    void stop_looped_se();
     // MES 0x52 stops BGM/SE/voice, leaving native system SE channels 6/7.
     void stop_for_movie();
     void set_profile(MesProfileId profile) { dc2ty_ = profile == MesProfileId::DC2TY; }

@@ -25,6 +25,7 @@ struct MesFile {
     std::vector<MesLabel> labels;
     std::vector<uint8_t> code;             // includes version prefix
     size_t code_base = 0;                  // offset of code within file
+    bool dc2pc_story_controls = false;
 
     bool load(const uint8_t* data, size_t size, std::string* err = nullptr);
     bool load_file(const std::string& path, std::string* err = nullptr);

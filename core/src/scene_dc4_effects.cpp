@@ -2,11 +2,45 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace dc4scene {
 namespace {
 constexpr int kDensityCounts[] = {0, 1, 3, 6, 9, 12, 20};
 constexpr int kAtlasFrames[] = {7, 7, 6, 8, 5, 8};
+
+#if defined(__ARM_NEON)
+uint8x8_t divide_by_255(uint16x8_t v) {
+    return vshrn_n_u16(vaddq_u16(vaddq_u16(v, vdupq_n_u16(1)), vshrq_n_u16(v, 8)), 8);
+}
+
+void blend_mask_row(uint8_t* dst, const uint8_t* old, const uint8_t* mask, int threshold) {
+    const auto add = vdup_n_u8(uint8_t(std::max(0, threshold)));
+    const auto sub = vdup_n_u8(uint8_t(std::max(0, -threshold)));
+    for (int x = 0; x < kScreenW; x += 8, dst += 32, old += 32, mask += 32) {
+        const auto a = vqsub_u8(vqadd_u8(vld4_u8(mask).val[2], add), sub);
+        const uint64_t bits = vget_lane_u64(vreinterpret_u64_u8(a), 0);
+        if (!bits) continue;
+        auto result = vld4_u8(dst);
+        const auto source = vld4_u8(old);
+        for (int c = 0; c < 3; ++c)
+            result.val[c] = divide_by_255(vmlal_u8(vmull_u8(source.val[c], a), result.val[c], vmvn_u8(a)));
+        vst4_u8(dst, result);
+    }
+}
+
+void whiten_eight(uint8_t* dst, uint8x8_t coverage) {
+    auto out = vld4_u8(dst);
+    for (int c = 0; c < 3; ++c) {
+        const auto dark = vmull_u8(vmvn_u8(out.val[c]), vmvn_u8(coverage));
+        out.val[c] = vmvn_u8(divide_by_255(vaddq_u16(dark, vdupq_n_u16(127))));
+    }
+    vst4_u8(dst, out);
+}
+#endif
 
 int native_random(uint32_t& state, int range) {
     state = state * 214013u + 2531011u;
@@ -84,9 +118,30 @@ int SceneRunner::effect_random(int range) {
 }
 
 bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
+    if (c.opcode() == dc4::Opcode::LENS_PARAMETERS) {
+        if (!c.ds || !is_dalsegno_profile_) return false;
+        if (c.words[0] == 0) {
+            ds_lens_parameters_.x = int16_t(c.words[1]);
+            ds_lens_parameters_.y = int16_t(c.words[2]);
+        } else {
+            ds_lens_parameters_.start_angle = int16_t(c.words[1]);
+            ds_lens_parameters_.end_angle = int16_t(c.words[2]);
+            ds_lens_parameters_.duration_ms = c.words[3] * 200u;
+        }
+        return true;
+    }
     if (c.ds) {
-        if (!is_dalsegno_profile_ || c.opcode() != dc4::Opcode::EFFECT_SETUP ||
-            (c.p1 != 0 && c.p1 != 13)) return false;
+        if (is_dalsegno_profile_ && c.opcode() == dc4::Opcode::SCREEN_EFFECT) {
+            start_screen_effect(c.p2, c.p1);
+            return true;
+        }
+        if (!is_dalsegno_profile_ || c.opcode() != dc4::Opcode::EFFECT_SETUP) return false;
+        if (c.p1 == 15) {
+            start_dalsegno_lens(c.p2);
+            return true;
+        }
+        if (c.p1 != 0 && c.p1 != 13) return false;
+        ds_lens_ = {};
     } else if (!is_dc4_or_dc4ph_ || c.dc2dm || c.classic_dc2() ||
                (mes_.version != 0xAAB6 && mes_.version != 0xABB6)) return false;
     if (c.opcode() == dc4::Opcode::SCREEN_EFFECT) {
@@ -117,6 +172,36 @@ bool SceneRunner::dispatch_dc4_effect_command(const dc4::MesCommand& c) {
     }
     scene_dirty_ = true;
     return true;
+}
+
+void SceneRunner::start_dalsegno_lens(int density) {
+    ds_lens_ = {};
+    const int count = 4 * std::clamp(density, 0, 5);
+    if (!count || !load_grp_crx("SYSTEM/EFFLENS", &ds_lens_.sheet, nullptr)) return;
+    ds_lens_.parameters = ds_lens_parameters_;
+    for (int i = 0; i < count; ++i) {
+        const int radius_x = 64 * i + 8 + effect_random(20);
+        const int radius_y = 64 * i + 8 + effect_random(20);
+        const float scale = (300 + effect_random(400)) / 100.f;
+        const int cell = effect_random(3);
+        constexpr int offsets[] = {140, 180, 200}, sizes[] = {40, 20, 8};
+        ds_lens_.reflections.push_back({radius_x, radius_y, offsets[cell], sizes[cell],
+                                        scale, effect_random(10) / 100.f});
+    }
+}
+
+void SceneRunner::draw_dalsegno_lens() {
+    if (ds_lens_.reflections.empty() || !particle_effects_visible()) return;
+    const auto& p = ds_lens_.parameters;
+    float degrees = float(p.start_angle);
+    if (p.end_angle != -1 && p.duration_ms)
+        degrees += (p.end_angle - p.start_angle) * (float(ds_lens_.elapsed_ms) / p.duration_ms);
+    const float radians = degrees * (3.14159265358979323846f / 180.f);
+    const float dx = std::sin(radians), dy = std::cos(radians);
+    for (const auto& r : ds_lens_.reflections)
+        draw_atlas_sprite(frame_, ds_lens_.sheet, r.source_x, 0, r.size, r.size,
+                          p.x + dx * r.radius_x, p.y + dy * r.radius_y,
+                          r.size / 2.f, r.size / 2.f, r.scale, 0, r.alpha);
 }
 
 void FairyLightSystem::reset_particle(size_t index, int depth, uint32_t& random_state) {
@@ -248,8 +333,10 @@ void SceneRunner::draw_sakura() {
 
 void SceneRunner::start_screen_effect(int type, int duration) {
     screen_effect_.clear();
-    if (!animation_enabled_ || !effects_enabled_ || !screen_effect_atlas_.valid() ||
-        (type < 0 || type > 2) || duration <= 0) return;
+    const bool ds = is_dalsegno_profile_;
+    if (!animation_enabled_ || !effects_enabled_ || duration <= 0 || type < 0) return;
+    if (ds ? (ds_petals_.alpha.empty() || !visual_effects_enabled_ || type > 1)
+           : (!screen_effect_atlas_.valid() || type > 2)) return;
     if (type == 2) {
         ScreenEffectSprite sprite;
         sprite.from_x = sprite.to_x = 280;
@@ -268,14 +355,15 @@ void SceneRunner::start_screen_effect(int type, int duration) {
         sprite.duration_ms = duration * 200.0;
         screen_effect_.push_back(sprite);
     };
-    large(-732, type == 0 ? 1536.f : 1288.f);
+    const bool long_sweep = !ds && type == 0;
+    large(-732, long_sweep ? 1536.f : 1288.f);
     if (type == 1) large(1288, -732);
-    const int count = type == 0 ? 53 : 52;
+    const int count = (ds ? 33 : 53) - type;
     for (int i = 0; i < count; ++i) {
         ScreenEffectSprite sprite;
-        const bool reverse = type == 1 && i >= 27;
+        const bool reverse = type == 1 && i >= (ds ? 17 : 27);
         sprite.from_x = float(reverse ? effect_random(1280) + 2080 : -effect_random(1280) - 800);
-        sprite.to_x = reverse ? -800.f : type == 0 ? 1536.f : 1280.f;
+        sprite.to_x = reverse ? -800.f : long_sweep ? 1536.f : 1280.f;
         sprite.y = float(effect_random(848) - 128);
         sprite.sx = 720; sprite.width = 278; sprite.height = 256;
         sprite.scale = (effect_random(80) + 20) / 100.f;
@@ -301,6 +389,20 @@ double SceneRunner::screen_effect_remaining_ms() const {
 
 void SceneRunner::draw_screen_effect() {
     if (screen_effect_.empty()) return;
+    if (is_dalsegno_profile_) {
+        if (!visual_effects_enabled_) return;
+        auto& coverage = ds_petals_.coverage;
+        coverage.resize((kScreenW / 2 + 1) * (kScreenH / 2 + 1));
+        std::fill(coverage.begin(), coverage.end(), 0);
+        for (const auto& sprite : screen_effect_)
+            ds_petals_.stamp(sprite, float(sprite.elapsed_ms / sprite.duration_ms));
+        constexpr int stride = kScreenW / 2 + 1;
+        for (int y = 0; y < kScreenH / 2; ++y)
+            coverage[(y + 1) * stride - 1] = coverage[(y + 1) * stride - 2];
+        std::copy_n(coverage.end() - 2 * stride, stride, coverage.end() - stride);
+        ds_petals_.composite(frame_);
+        return;
+    }
     // The original sakura atlas has white RGB throughout; retain colored replacement assets too.
     bool white = true;
     for (size_t i = 0; i < screen_effect_atlas_.rgba.size(); i += 4) {
@@ -325,9 +427,91 @@ void SceneRunner::draw_screen_effect() {
     }
 }
 
+bool SceneRunner::DsPetalAtlas::load(const Image& image) {
+    if (!image.valid() || image.w < 2 * width || image.h < 2 * height) return false;
+    alpha.resize(width * height);
+    for (int y = 0; y < height; ++y) {
+        const auto* row = image.rgba.data() + size_t(2 * y) * image.w * 4 + 3;
+        for (int x = 0; x < width; ++x, row += 8)
+            alpha[y * width + x] = uint8_t((row[0] + row[4] + row[4 * image.w] + row[4 * image.w + 4] + 2) / 4);
+    }
+    return true;
+}
+
+void SceneRunner::DsPetalAtlas::stamp(const ScreenEffectSprite& s, float t) {
+    const float angle = t * 3 * 3.14159265358979323846f;
+    const float cs = std::cos(angle), sn = std::sin(angle);
+    const float px = s.pivot_x * .5f, py = s.pivot_y * .5f;
+    const float cx = (s.from_x + t * (s.to_x - s.from_x)) * .5f + px, cy = s.y * .5f + py;
+    const int w = s.width / 2, h = s.height / 2;
+    const float mx = cx + s.scale * (cs * (w * .5f - px) - sn * (h * .5f - py));
+    const float my = cy + s.scale * (sn * (w * .5f - px) + cs * (h * .5f - py));
+    const float rx = .5f * s.scale * (std::abs(cs) * w + std::abs(sn) * h);
+    const float ry = .5f * s.scale * (std::abs(sn) * w + std::abs(cs) * h);
+    const int left = std::max(0, int(std::floor(mx - rx))), right = std::min(kScreenW / 2, int(std::ceil(mx + rx)));
+    const int top = std::max(0, int(std::floor(my - ry))), bottom = std::min(kScreenH / 2, int(std::ceil(my + ry)));
+    if (left >= right || top >= bottom) return;
+    const int opacity = int(std::lround(255 * s.alpha * (s.fade ? 1 - t : 1)));
+    const int du = int(std::lround(65536 * cs / s.scale)), dv = int(std::lround(-65536 * sn / s.scale));
+    const auto* source = alpha.data() + s.sx / 2;
+    for (int y = top; y < bottom; ++y) {
+        const float dx = left + .5f - cx, dy = y + .5f - cy;
+        int u = int(65536 * (px + (cs * dx + sn * dy) / s.scale));
+        int v = int(65536 * (py + (cs * dy - sn * dx) / s.scale));
+        auto* dst = coverage.data() + y * (kScreenW / 2 + 1) + left;
+        for (int x = left; x < right; ++x, u += du, v += dv, ++dst) {
+            if (unsigned(u) >= unsigned(w << 16) || unsigned(v) >= unsigned(h << 16)) continue;
+            const int a = source[(v >> 16) * width + (u >> 16)] * opacity / 255;
+            *dst += uint8_t(((255 - *dst) * a + 127) / 255);
+        }
+    }
+}
+
+void SceneRunner::DsPetalAtlas::composite(std::vector<uint8_t>& frame) const {
+    constexpr int stride = kScreenW / 2 + 1;
+#if !defined(__ARM_NEON)
+    const auto whiten = [](uint8_t* p, int a) {
+        for (int i = 0; i < 3; ++i) p[i] += uint8_t(((255 - p[i]) * a + 127) / 255);
+    };
+#endif
+    for (int y = 0; y < kScreenH / 2; ++y) {
+        const auto* upper = coverage.data() + y * stride;
+        const auto* lower = upper + stride;
+        auto* dst = frame.data() + size_t(2 * y) * kScreenW * 4;
+#if defined(__ARM_NEON)
+        for (int x = 0; x < kScreenW / 2; x += 8, dst += 64) {
+            const auto a = vld1_u8(upper + x), b = vld1_u8(upper + x + 1);
+            const auto c = vld1_u8(lower + x), d = vld1_u8(lower + x + 1);
+            if (!vget_lane_u64(vreinterpret_u64_u8(vorr_u8(vorr_u8(a, b), vorr_u8(c, d))), 0)) continue;
+            const auto top = vzip_u8(a, vrhadd_u8(a, b));
+            const auto sum = vaddq_u16(vaddl_u8(a, b), vaddl_u8(c, d));
+            const auto bottom = vzip_u8(vrhadd_u8(a, c), vrshrn_n_u16(sum, 2));
+            for (int i = 0; i < 2; ++i) {
+                whiten_eight(dst + 32 * i, top.val[i]);
+                whiten_eight(dst + kScreenW * 4 + 32 * i, bottom.val[i]);
+            }
+        }
+#else
+        for (int x = 0; x < kScreenW / 2; ++x, dst += 8) {
+            const int a = upper[x], b = upper[x + 1], c = lower[x], d = lower[x + 1];
+            if (!(a | b | c | d)) continue;
+            auto* next = dst + kScreenW * 4;
+            if ((a & b & c & d) == 255) {
+                std::memset(dst, 255, 8);
+                std::memset(next, 255, 8);
+                continue;
+            }
+            whiten(dst, a); whiten(dst + 4, (a + b + 1) / 2);
+            whiten(next, (a + c + 1) / 2); whiten(next + 4, (a + b + c + d + 2) / 4);
+        }
+#endif
+    }
+}
+
 void SceneRunner::start_transition(int frames, bool scale_speed) {
     if (!animation_enabled_ || !effects_enabled_ || !transition_pending_ || transition_snap_.empty() || frames <= 0) {
         transition_pending_ = false;
+        if (!transition_active_) transition_snap_.clear();
         return;
     }
     transition_pending_ = false;
@@ -343,12 +527,27 @@ void SceneRunner::start_transition(int frames, bool scale_speed) {
     scene_dirty_ = true;
 }
 
+void SceneRunner::finish_transition() {
+    transition_active_ = transition_pending_ = false;
+    transition_elapsed_ms_ = transition_duration_ms_ = 0;
+    transition_snap_.clear();
+    transition_snap_.shrink_to_fit();
+}
+
 void SceneRunner::draw_transition(uint8_t* dst) {
     if (!transition_active_ || !dst || transition_snap_.size() != frame_.size()) return;
     const double t = std::clamp(transition_elapsed_ms_ / transition_duration_ms_, 0.0, 1.0);
     const bool masked = transition_kind_ == 21 && mask_.valid();
     const int threshold = int(std::lround(255 - 510 * t));
     const int fade_alpha = int(std::lround(255 * (1 - t)));
+#if defined(__ARM_NEON)
+    if (masked && mask_.w >= kScreenW && mask_.h >= kScreenH) {
+        for (int y = 0; y < kScreenH; ++y)
+            blend_mask_row(dst + size_t(y) * kScreenW * 4, transition_snap_.data() + size_t(y) * kScreenW * 4,
+                           mask_.rgba.data() + size_t(y) * mask_.w * 4, threshold);
+        return;
+    }
+#endif
     for (int y = 0; y < kScreenH; ++y) {
         for (int x = 0; x < kScreenW; ++x) {
             int old_alpha = fade_alpha;
@@ -358,6 +557,11 @@ void SceneRunner::draw_transition(uint8_t* dst) {
                 old_alpha = std::clamp(int(mask_.rgba[(size_t(my) * mask_.w + mx) * 4 + 2]) + threshold, 0, 255);
             }
             const size_t offset = (size_t(y) * kScreenW + x) * 4;
+            if (old_alpha == 0) continue;
+            if (old_alpha == 255) {
+                std::memcpy(dst + offset, transition_snap_.data() + offset, 3);
+                continue;
+            }
             for (int channel = 0; channel < 3; ++channel)
                 dst[offset + channel] = uint8_t((transition_snap_[offset + channel] * old_alpha + dst[offset + channel] * (255 - old_alpha)) / 255);
         }

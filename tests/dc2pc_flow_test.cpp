@@ -203,6 +203,67 @@ void synthetic_displayed_frame(const std::filesystem::path& root) {
     CHECK(scene.restore_state(saved,&error)); CHECK(!scene.advance_to_next_text());
     scene.update(160); colour(scene,80,40,16); textbox(120,40,100);
 }
+void synthetic_button_wait(const std::filesystem::path& root) {
+    FlowScript menu;
+    menu.string(0x35,"layout");
+    menu.param(0x17,0,0);
+    menu.string(0x30,"bg\\red"); menu.string(0x31,"bg\\blue"); menu.string(0x32,"bg\\red");
+    menu.words(0x53,10,5,0,0); menu.words(0x52,40,24,6,1);
+    menu.words(0x4F,528,325,752,365); menu.string(0x3A,"early");
+    menu.words(0x50,4,4,0,0); menu.words(0x52,30,23,0,9);
+    menu.words(0x50,4,4,4,4); menu.words(0x52,30,23,7,1);
+    menu.words(0x4F,528,395,752,435); menu.string(0x3A,"late");
+    menu.string(0x3B,"layout"); menu.param(0x0A,0,0);
+    menu.string(0x35,"early"); menu.string(0x2E,"morning");
+    menu.string(0x35,"late"); menu.string(0x37,"noon"); menu.string(0x2E,"morning");
+    write_fixture(root/"MES/alarm.mes",menu.bytes);
+    FlowScript destination;
+    destination.text("EARLY"); destination.string(0x35,"noon"); destination.text("LATE");
+    write_fixture(root/"MES/morning.mes",destination.bytes);
+    FlowScript entry;
+    entry.string(0x3B,"noon"); entry.string(0x2E,"morning");
+    write_fixture(root/"MES/entry.mes",entry.bytes);
+    {
+        dc4scene::SceneRunner other(root.string());
+        CHECK(!dc4::is_dc2pc_game(root.string()));
+        CHECK(other.load_script((root/"MES/entry.mes").string()));
+        CHECK(other.advance_to_next_text()); CHECK(other.current_line()=="LATE");
+        CHECK(!other.handle_dc2pc_back());
+    }
+    write_fixture(root/"MES/ed_ais.mes",destination.bytes);
+    CHECK(!dc4::is_dc2pc_game(root.string()));
+    write_fixture(root/"MES/ed_erk.mes",destination.bytes);
+    CHECK(dc4::is_dc2pc_game(root.string()));
+    dc4scene::SceneRunner scene(root.string());
+    for (int i=0;i<2;++i) {
+        CHECK(scene.load_script((root/"MES/alarm.mes").string()));
+        CHECK(!scene.advance_to_next_text()); CHECK(scene.waiting_for_time());
+        scene.set_pointer(-1,-1,false); colour(scene,32,160,224);
+        scene.set_pointer(900,415,false); colour(scene,160,80,32);
+        scene.set_pointer(-1,-1,false); colour(scene,32,160,224);
+        CHECK(scene.handle_dc2pc_back()); CHECK(!scene.advance_to_next_text());
+        const auto position=scene.script_position();
+        scene.update(60000); scene.finish_script_wait();
+        CHECK(!scene.advance_to_next_text()); CHECK(scene.script_position()==position);
+        CHECK(scene.hit_test(300,415)==nullptr);
+        const auto action=scene.hit_test(900,i==0 ? 415 : 500);
+        CHECK(action && *action==(i==0 ? "early" : "late"));
+        if (!action) continue;
+        CHECK(scene.jump_to_label(*action));
+        CHECK(scene.advance_to_next_text()); CHECK(scene.current_line()==(i==0 ? "EARLY" : "LATE"));
+        CHECK(scene.hit_test(900,415)==nullptr); CHECK(scene.last_error().empty());
+    }
+    const auto& ty=dc4::mes_opcode_profile(dc4::MesDialect::ClassicDC2,0x5F69);
+    CHECK(ty.opcodes[0x3B].operation==dc4::Opcode::ENTRY);
+    for (uint32_t version : {0x3B69,0x9C69}) {
+        const auto& classic=dc4::mes_opcode_profile(dc4::MesDialect::ClassicDC2,version);
+        CHECK(classic.id==dc4::MesProfileId::ClassicDC2);
+        CHECK(classic.opcodes[0x3B].operation==dc4::Opcode::LEGACY_ENTRY);
+    }
+    const auto& dm=dc4::mes_opcode_profile(dc4::MesDialect::ClassicDM,0x9D72);
+    CHECK(dm.opcodes[0x3B].operation==dc4::Opcode::MOVIE);
+}
+
 void synthetic_waits(const std::filesystem::path& root) {
     const struct { uint8_t count,flags; int duration; } waits[] = {
         {1,0,200},{255,0,51000},{254,0,50800},{3,2,600},{3,8,30},{3,10,60}};
@@ -265,6 +326,7 @@ int main(int argc, char** argv) {
     const auto synthetic=std::filesystem::temp_directory_path()/
         ("arisa32-dc2pc-transitions-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     synthetic_transitions(synthetic); synthetic_displayed_frame(synthetic); synthetic_waits(synthetic);
+    synthetic_button_wait(synthetic);
     std::filesystem::remove_all(synthetic);
     if (argc < 2) { std::cout << "Installed DC2PC flow checks skipped.\n"; return failures?1:0; }
     if (argc > 2) dc4::configure_resources(argv[1], argv[2]);

@@ -100,6 +100,7 @@ enum class Opcode : uint8_t {
     SPRITE_TRANSFORM = 0x8B,
     SPRITE_EFFECT = 0x8C,
     SPRITE_SLIDE = 0x8E,
+    LENS_PARAMETERS = 0x93,
     PLAY_EFFECT = 0x95,
     CAMERA_DURATION = 0x99,
     CAMERA = 0x9D,

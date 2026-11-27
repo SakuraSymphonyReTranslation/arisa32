@@ -2138,6 +2138,27 @@ void dalsegno_native_save_regressions(const fs::path& data) {
 }
 
 void dalsegno_extras_regressions(const fs::path& data, const fs::path& legacy) {
+    {
+        dc4::AudioEngine mixer;
+        dc4scene::SceneRunner restored(data.string());
+        restored.set_audio(&mixer, nullptr);
+        std::ifstream file(data / "savedata/DSAO03.dat", std::ios::binary);
+        std::vector<uint8_t> quiet{std::istreambuf_iterator<char>(file), {}};
+        CHECK(quiet.size() == 0x11AF8);
+        if (quiet.size() == 0x11AF8) {
+            std::fill(quiet.begin() + 0x7A8, quiet.begin() + 0x838, 0);
+            auto shore = quiet;
+            const std::string wave = "SE\\291.pcm";
+            std::copy(wave.begin(), wave.end(), shore.begin() + 0x7A8);
+            shore[0x828] = 1;
+            CHECK(restored.restore_pc_save(shore) && mixer.channel_playing(2));
+            CHECK(restored.restore_pc_save(quiet) && !mixer.channel_playing(2));
+            CHECK(restored.restore_pc_save(shore) && mixer.channel_playing(2));
+            CHECK(restored.open_dalsegno_title() && !mixer.channel_playing(2));
+            CHECK(restored.restore_pc_save(shore) && mixer.channel_playing(2));
+            CHECK(restored.load_script((data / "MES/SC_END.mes").string()) && !mixer.channel_playing(2));
+        }
+    }
     dc4scene::SceneRunner scene(data.string());
     dc4scene::FontRenderer font;
     CHECK(font.load((data / "GRP/mplus-1c-heavy.ttf").string(), 0, 28));
@@ -2301,6 +2322,20 @@ void dalsegno_extras_regressions(const fs::path& data, const fs::path& legacy) {
     click(900, 360, ":dscgnext");
     CHECK(scene.dalsegno_gallery_frame(1920, 720) == first);
     CHECK(scene.dalsegno_gallery_revision() == only_revision);
+
+    CHECK(scene.handle_dalsegno_action(scene.dalsegno_back_action()));
+    CHECK(scene.load_script((data / "MES/DS_1130D_CM.mes").string(), "new"));
+    run_until([&] { return scene.current_line().find("prospects for a peaceful life") != std::string::npos; }, 250);
+    scene.set_animation_enabled(true);
+    scene.set_variable(99, 13, 0);
+    scene.set_variable(99, 223, 0);
+    scene.set_variable(99, 242, 0);
+    run_until([&] { return on_script("ds_1201a_cm") && scene.script_position() == 2147; }, 60);
+    CHECK(scene.waiting_for_time() && scene.current_line().empty() && !scene.dalsegno_menu_active());
+    CHECK(!scene.hit_test(870, 655));
+    scene.finish_script_wait();
+    run_until([&] { return !scene.current_line().empty(); }, 30);
+    CHECK(scene.current_line().find("sun's piercing rays") != std::string::npos);
 }
 
 void dalsegno_character_overlays(const fs::path& root) {

@@ -712,6 +712,8 @@ bool MesVm::next(MesCommand* out) {
             break;
         case Opcode::LEGACY_ENTRY:
         case Opcode::ENTRY:
+            // Plus Communication registers a local Back callback with 0x3B.
+            if (mes_->dc2pc_story_controls && raw.op == 0x3B) break;
             if (command.kind == CmdKind::Str) {
                 entry_label_ = command.str;
                 continue;

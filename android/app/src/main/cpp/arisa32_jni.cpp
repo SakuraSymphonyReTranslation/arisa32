@@ -345,6 +345,9 @@ bool advance_scene(Engine* e) {
         }
         const bool line = e->scene->advance_to_next_text();
         sync_progress(e);
+        // Start Dal Segno's authored wait after synchronous scene and mask loading.
+        if (e->scene->waiting_for_time() && (e->scene->save_format_version() & 0xFFFF) == 0x9F9A)
+            e->tick = Clock::now();
         if (!e->scene->pending_movie().empty() || e->scene->waiting_for_time()) return true;
         if (line || e->scene->waiting_for_choice()) begin_line(e);
         if (line) {
@@ -596,7 +599,7 @@ std::string restore_save(Engine* e, const std::string& path) {
         return {};
     }
     if (!e->scene->load_state(path)) return "Load failed: " + e->scene->last_error();
-    finish_restore(e);
+    finish_restore(e, (e->scene->save_format_version() & 0xFFFF) == 0x9F9A);
     return {};
 }
 
@@ -1583,6 +1586,7 @@ Java_org_dc4engine_Dc4Activity_dc4Touch(JNIEnv* env, jobject thiz, jint action, 
     const bool was_down = e->pointer_down;
     e->pointer_down = false;
     if (action != 1 || !was_down) {
+        if (action == 3) e->scene->set_pointer(-1, -1, false);
         e->pressed_action.clear();
         e->pressed_widget = false;
         e->pressed_choice = -1;
@@ -2176,6 +2180,7 @@ Java_org_dc4engine_Arisa32Activity_dc4DalSegnoGalleryFrameInfo(JNIEnv* env, jobj
     if (!Java_org_dc4engine_Arisa32Activity_dc4GalleryPreviewActive(env, thiz) ||
         !e->scene || !e->scene->dalsegno_gallery_active()) return 0;
     tick_engine(e);
+    if (e->scene->dalsegno_gallery_wiping()) return 0;
     const auto& image = e->scene->dalsegno_gallery_image();
     if (!image.valid() || image.w < 1 || image.h < 1 || image.w > 8192 || image.h > 8192) return 0;
     return jlong(uint64_t(e->scene->dalsegno_gallery_revision()) << 32 |
@@ -2190,6 +2195,7 @@ Java_org_dc4engine_Arisa32Activity_dc4GalleryFrame(JNIEnv* env, jobject thiz, jo
     Engine* e = g_engine;
     tick_engine(e);
     if (e->scene->dalsegno_gallery_active()) {
+        if (e->scene->dalsegno_gallery_wiping()) return JNI_FALSE;
         const auto& frame = e->scene->dalsegno_gallery_frame(info.width, info.height);
         e->save_frame_visible = false;
         return blit_rgba(env, bitmap, frame, info.width, info.height);
@@ -2291,7 +2297,8 @@ Java_org_dc4engine_Arisa32Activity_dc4BackOrSidemenu(JNIEnv* env, jobject thiz, 
     }
     if (e->in_game && !e->movie.active() && !e->movie_playing_in_java) {
         e->scene->return_to_dialogue();
-        e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
+        if (e->scene->handle_dc2pc_back()) advance_scene(e);
+        else e->scene->set_sidebar_visible(!e->scene->sidebar_visible());
     }
     return env->NewStringUTF("");
 }

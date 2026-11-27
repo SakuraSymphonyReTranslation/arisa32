@@ -199,6 +199,23 @@ public final class Arisa32Activity {
             check(Arrays.equals(original,pixels(frame)),"roundtrip scene pixels "+slot);
             System.out.println("PASS native save "+slot+" and companion roundtrip: "+line);
         }
+        byte[] copy=Files.readAllBytes(new File(input,"DSAO03.dat").toPath());
+        Arrays.fill(copy,0x7A8,0x838,(byte)0);
+        File fixture=new File(input,"ambient.dat");
+        File saved=new File(output,"ambient-roundtrip.dat");
+        for (boolean waves:new boolean[]{true,false}) {
+            if (waves) {
+                byte[] asset=name("SE\\291.pcm");
+                System.arraycopy(asset,0,copy,0x7A8,asset.length);
+            } else Arrays.fill(copy,0x7A8,0x7C8,(byte)0);
+            copy[0x828]=(byte)(waves?1:0);
+            Files.write(fixture.toPath(),copy);
+            check(dc4Load(fixture.getAbsolutePath()).isEmpty(),"load ambient fixture");
+            check(dc4Save(saved.getAbsolutePath()).isEmpty(),"save restored mixer");
+            byte[] restored=Files.readAllBytes(saved.toPath());
+            check((restored[0x828]!=0)==waves,"wave channel follows the loaded scene");
+        }
+        System.out.println("PASS looping waves restored at shore and cleared on quiet load");
     }
     private void backlog(File input,File captures,Bitmap frame) throws Exception {
         load(new File(input,"DSAO03.dat"),frame); dc4LogClear();
@@ -287,6 +304,186 @@ public final class Arisa32Activity {
             Thread.sleep(20);
         } while (System.nanoTime()<deadline);
         throw new AssertionError(output.getName()+": no frame retained outgoing pixels between black gaps");
+    }
+    private static double[] wipeBands(Bitmap frame) {
+        double[] bands=new double[3];
+        for (int i=0;i<bands.length;++i) {
+            int x=frame.getWidth()*(1+4*i)/10, count=0;
+            for (int y=frame.getHeight()/8;y<frame.getHeight()*2/3;y+=3) {
+                int pixel=frame.getPixel(x,y);
+                bands[i]+=(((pixel>>16)&255)*.299+((pixel>>8)&255)*.587+(pixel&255)*.114);
+                ++count;
+            }
+            bands[i]/=count;
+        }
+        return bands;
+    }
+    private void maskedTransitions(File input,File captures,Bitmap frame) throws Exception {
+        loadDialogue(new File(input,"DSAO02.dat"),frame);
+        String cue="following behind felt safer";
+        for (int i=0;i<300 && !dc4CurrentLine().contains(cue);++i) {
+            dc4Advance(); dc4Render(frame);
+        }
+        check(dc4CurrentLine().contains(cue),"airport dialogue: "+dc4CurrentLine());
+        ArrayList<Bitmap> samples=new ArrayList<>();
+        samples.add(Bitmap.createScaledBitmap(frame,320,180,true));
+        for (int i=0;i<3 && dc4CurrentLine().contains(cue);++i) dc4Advance();
+        long deadline=System.nanoTime()+10_000_000_000L;
+        do {
+            dc4Render(frame);
+            samples.add(Bitmap.createScaledBitmap(frame,320,180,true));
+            if (!dc4CurrentLine().isEmpty()) break;
+            Thread.sleep(15);
+        } while (System.nanoTime()<deadline);
+        check(dc4Speaker().equals("Ame") && !dc4CurrentLine().isEmpty(),"first coastal line: "+dc4CurrentLine());
+        int black=-1;
+        ArrayList<double[]> bands=new ArrayList<>();
+        for (Bitmap sample:samples) {
+            double[] values=wipeBands(sample);
+            if (black<0 && Math.max(values[0],Math.max(values[1],values[2]))<2) black=bands.size();
+            bands.add(values);
+        }
+        check(black>0 && black<samples.size()-1,"both scenes surround a black frame");
+        for (int phase=0;phase<2;++phase) {
+            boolean outgoing=phase==0;
+            double[] ref=bands.get(outgoing ? 0 : samples.size()-1);
+            int middle=outgoing ? 0 : black;
+            for (int i=middle+1;i<(outgoing ? black : samples.size());++i)
+                if (Math.abs(bands.get(i)[1]/ref[1]-.5)<Math.abs(bands.get(middle)[1]/ref[1]-.5)) middle=i;
+            double[] values=bands.get(middle);
+            double left=values[0]/ref[0],center=values[1]/ref[1],right=values[2]/ref[2];
+            System.out.printf(java.util.Locale.ROOT,"wipe %s left=%.3f center=%.3f right=%.3f%n",
+                              outgoing ? "out" : "in",left,center,right);
+            check(center>.25 && center<.75 && (outgoing ? right-left : left-right)>.65,"soft left-to-right wipe");
+            png(samples.get(middle),new File(captures,outgoing ? "wipe-out.png" : "wipe-in.png"));
+        }
+        png(samples.get(black),new File(captures,"wipe-black.png"));
+        png(samples.get(samples.size()-1),new File(captures,"wipe-coast.png"));
+        for (Bitmap sample:samples) sample.recycle();
+        System.out.println("PASS airport to black to coast before Ame's dialogue");
+    }
+    private void petals(File input,File captures,Bitmap frame,boolean two) throws Exception {
+        String cue=two ? "panicking like this" : "needed to get to the dorms";
+        loadDialogue(new File(input,two ? "petals-two.dat" : "DSAO02.dat"),frame);
+        for (int i=0;i<1500 && !dc4CurrentLine().contains(cue);++i) {
+            dc4Advance(); dc4Render(frame);
+        }
+        check(dc4CurrentLine().contains(cue),"petal cue: "+dc4CurrentLine());
+        String prefix=two ? "two" : "single";
+        renderFor(frame,400);
+        png(frame,new File(captures,prefix+"-before.png"));
+        ArrayList<Double> costs=new ArrayList<>();
+        ArrayList<Bitmap> pictures=new ArrayList<>();
+        ArrayList<Long> times=new ArrayList<>();
+        long start=System.nanoTime();
+        for (int i=0;i<4 && dc4CurrentLine().contains(cue);++i) dc4Advance();
+        do {
+            long t=System.nanoTime();
+            dc4Render(frame);
+            long end=System.nanoTime();
+            costs.add((end-t)/1e6);
+            times.add((end-start)/1_000_000);
+            pictures.add(Bitmap.createScaledBitmap(frame,160,90,true));
+            if (two && end-start>3_000_000_000L) break;
+            if (!dc4CurrentLine().isEmpty()) break;
+            Thread.sleep(15);
+        } while (System.nanoTime()-start<12_000_000_000L);
+        if (!two) check(dc4CurrentLine().contains("Almost there"),"arrival dialogue: "+dc4CurrentLine());
+        int[] rgb=new int[160*90];
+        int peak=-1, hold=-1, incoming=-1, tail=-1;
+        int maxOut=0,maxIn=0;
+        ArrayList<Double> active=new ArrayList<>();
+        StringBuilder metrics=new StringBuilder("time_ms,jni_ms,white,black,gray\n");
+        for (int i=0;i<pictures.size();++i) {
+            pictures.get(i).getPixels(rgb,0,160,0,0,160,90);
+            int white=0,black=0,gray=0;
+            for (int color:rgb) {
+                int r=(color>>16)&255,g=(color>>8)&255,b=color&255;
+                int lo=Math.min(r,Math.min(g,b)),hi=Math.max(r,Math.max(g,b));
+                if (lo>=247) ++white;
+                if (hi<5) ++black;
+                if (hi-lo<6 && hi>=5 && hi<210) ++gray;
+            }
+            metrics.append(times.get(i)).append(',').append(costs.get(i)).append(',').append(white).append(',').append(black).append(',').append(gray).append('\n');
+            if (i==0) check(white<rgb.length*.07,"first frame precedes flower entry");
+            if (hold<0 && white>maxOut) { maxOut=white; peak=i; }
+            if (peak>=0 && hold<0 && white<100 && gray>400 && black>rgb.length*.45) tail=i;
+            if (peak>=0 && hold<0 && black>rgb.length*.99) hold=i;
+            if (hold>=0 && white>maxIn) { maxIn=white; incoming=i; }
+            if (white>rgb.length*.09 || (peak>=0 && hold<0 && gray>400)) active.add(costs.get(i));
+        }
+        Files.write(new File(captures,prefix+"-timing.csv").toPath(),metrics.toString().getBytes("UTF-8"));
+        check(peak>=0 && maxOut>rgb.length*.20 && tail>peak && hold>tail,"departure peak/tail/hold: "+peak+"/"+tail+"/"+hold);
+        png(pictures.get(peak),new File(captures,prefix+"-peak.png"));
+        png(pictures.get(tail),new File(captures,prefix+"-tail.png"));
+        if (!two) {
+            check(incoming>hold && maxIn>rgb.length*.20,"arrival petals after black");
+            png(pictures.get(incoming),new File(captures,prefix+"-arrival.png"));
+        }
+        java.util.Collections.sort(active);
+        System.out.printf(java.util.Locale.ROOT,"PASS %s petals: peak %d ms, tail %d ms, black %d ms; %d active frames JNI p50 %.2f ms p95 %.2f ms%n",
+            prefix,times.get(peak),times.get(tail),times.get(hold),active.size(),active.get(active.size()/2),active.get((int)Math.ceil(active.size()*.95)-1));
+        for (Bitmap picture:pictures) picture.recycle();
+    }
+    private void opening(File captures,Bitmap frame) throws Exception {
+        for (int i=0;i<8;++i) { dc4Render(frame); dc4Advance(); Thread.sleep(20); }
+        dc4Touch(3,-1,-1);
+        dc4Render(frame);
+        tap(234,704);
+
+        int[] thresholds={232,216,180,150,125,77};
+        ArrayList<Bitmap> samples=new ArrayList<>();
+        long whiteTime=0;
+        long deadline=System.nanoTime()+25_000_000_000L;
+        while (System.nanoTime()<deadline && dc4CurrentLine().isEmpty()) {
+            dc4Render(frame);
+            int pixel=frame.getPixel(1080,120);
+            int red=(pixel>>16)&255;
+            if (whiteTime==0 && red>=249 && (pixel&255)>=249 && ((frame.getPixel(360,380)>>16)&255)>=249)
+                whiteTime=System.nanoTime();
+            int i=samples.size()/2;
+            if (whiteTime!=0 && i<thresholds.length && red<=thresholds[i] && (pixel&255)>red+8) {
+                long elapsedMs=(System.nanoTime()-whiteTime)/1_000_000;
+                samples.add(frame.copy(Bitmap.Config.ARGB_8888,false));
+                dc4ConfigureDisplay(22,false);
+                dc4RenderPreview(frame);
+                samples.add(frame.copy(Bitmap.Config.ARGB_8888,false));
+                dc4ConfigureDisplay(22,true);
+                System.out.println("opening sample "+i+" red="+red+" ms since white="+elapsedMs);
+            }
+            Thread.sleep(12);
+        }
+        check(dc4CurrentLine().contains("looked up to a blue sky"),"first opening line: "+dc4CurrentLine()+" "+dc4Status());
+        dc4Render(frame);
+        png(frame,new File(captures,"opening-dialogue.png"));
+        check(samples.size()==2*thresholds.length,"opening samples during the sky reveal: "+samples.size());
+        double heldAngle=0;
+        for (int i=0;i<thresholds.length;++i) {
+            Bitmap on=samples.get(2*i),off=samples.get(2*i+1);
+            png(on,new File(captures,"opening-"+i+".png"));
+            png(off,new File(captures,"opening-"+i+"-base.png"));
+            int[] lit=pixels(on),base=pixels(off);
+            double mx=0,my=0;
+            for (int y=0;y<530;y+=2) for (int x=0;x<1280;x+=2) {
+                int dx=x-560,dy=y-274;
+                if (dx*dx+dy*dy<100*100) continue;
+                int index=y*1280+x;
+                int light=((lit[index]>>16)&255)-((base[index]>>16)&255);
+                if (light>0) { mx+=(double)dx*light; my+=(double)dy*light; }
+            }
+            double angle=(Math.toDegrees(Math.atan2(mx,my))+360)%360;
+            System.out.println("opening sample "+i+" measured angle="+angle);
+            check(mx!=0 || my!=0,"lens visible at sample "+i);
+            if (i==0) check(angle>120 && angle<185,"lens starts above and right of the sun");
+            if (i==1) check(angle>145 && angle<240,"lens crosses the upper sky");
+            if (i==2) check(angle>235 && angle<310,"lens crosses the left sky");
+            if (i==3) check(angle>310 && angle<360,"lens passes below and left of the sun");
+            if (i>=4) check(angle<25 || angle>355,"lens holds near 370 degrees");
+            if (i==4) heldAngle=angle;
+            if (i==5) check(Math.abs(Math.IEEEremainder(angle-heldAngle,360))<3,"lens remains still during the fade");
+            on.recycle(); off.recycle();
+        }
+        System.out.println("PASS opening lens sweep, held endpoint and first dialogue");
     }
     private void menus(File input,File captures,Bitmap frame) throws Exception {
         for (int i=0;i<8;++i) { dc4Render(frame); dc4Advance(); Thread.sleep(20); }
@@ -419,6 +616,78 @@ public final class Arisa32Activity {
         check(":qs".equals(toolbarTap(1074,588)),"QS returns with the textbox");
         png(frame,new File(captures,"transitions-dialogue.png"));
         System.out.println("PASS native automatic date load, cyan alpha/origin, hidden toolbar, background tap and restored toolbar");
+        String[][] dates={
+            {"ds_1130a_cm","Hnnn"},
+            {"ds_1219b_hm","Comingggg"},
+            {"ds_1318b_hd","Lunchtime on Monday"},
+            {"ds_1301b_io","hnnn"},
+            {"ds_1220b_ne","Hey, Noeri"},
+            {"ds_1224c_am","no sooner than the chime"},
+            {"ds_1411d_hm","this is everything"}
+        };
+        byte[] checkpoint=Files.readAllBytes(new File(input,"date-start.dat").toPath());
+        File fixture=new File(input,"route-date.dat");
+        for (String[] dateCase:dates) {
+            Arrays.fill(checkpoint,8,168,(byte)0);
+            byte[] script=dateCase[0].getBytes("US-ASCII");
+            System.arraycopy(script,0,checkpoint,8,script.length);
+            Files.write(fixture.toPath(),checkpoint);
+            check(dc4Load(fixture.getAbsolutePath()).isEmpty(),"route date loads: "+dateCase[0]);
+            renderFor(frame,4200);
+            check(dc4CurrentLine().isEmpty(),"route card waits: "+dateCase[0]);
+            png(frame,new File(captures,dateCase[0]+"-card.png"));
+            tap(870,655);
+            String dialogue=waitForDialogue(frame);
+            check(dialogue.contains(dateCase[1]),"one tap at the old gallery arrow reaches dialogue: "+dateCase[0]+" "+dialogue);
+            System.out.println("PASS date card and first dialogue "+dateCase[0]);
+        }
+    }
+    private void waitForGalleryWipe(Bitmap frame) throws Exception {
+        long deadline=System.nanoTime()+4_000_000_000L;
+        while (dc4DalSegnoGalleryFrameInfo()==0 && System.nanoTime()<deadline) {
+            dc4Render(frame);
+            Thread.sleep(16);
+        }
+        check(dc4DalSegnoGalleryFrameInfo()!=0,"gallery exposes original image after the wipe");
+    }
+    private void verifyGalleryWipe(Bitmap frame,Bitmap before) throws Exception {
+        ArrayList<Bitmap> samples=new ArrayList<>();
+        long deadline=System.nanoTime()+4_000_000_000L;
+        while (dc4DalSegnoGalleryFrameInfo()==0 && System.nanoTime()<deadline) {
+            dc4Render(frame);
+            samples.add(Bitmap.createScaledBitmap(frame,160,90,false));
+            Thread.sleep(16);
+        }
+        check(dc4DalSegnoGalleryFrameInfo()!=0,"cg284 reaches its original resolution");
+        dc4Render(frame);
+        Bitmap after=Bitmap.createScaledBitmap(frame,160,90,false);
+        double strongest=0;
+        for (Bitmap sample:samples) {
+            double[] fraction=new double[2];
+            for (int side=0;side<2;++side) {
+                int delta=0,total=0;
+                for (int x=12+128*side;x<20+128*side;++x) for (int y=12;y<78;++y) {
+                    int old=before.getPixel(x,y), dest=after.getPixel(x,y), current=sample.getPixel(x,y);
+                    for (int shift=0;shift<=16;shift+=8) {
+                        int source=(old>>shift)&255;
+                        delta+=Math.abs(((current>>shift)&255)-source);
+                        total+=Math.abs(((dest>>shift)&255)-source);
+                    }
+                }
+                fraction[side]=(double)delta/Math.max(1,total);
+            }
+            strongest=Math.max(strongest,fraction[0]-fraction[1]);
+            sample.recycle();
+        }
+        before.recycle(); after.recycle();
+        System.out.printf(java.util.Locale.ROOT,"cg276 to cg284 left-right reveal difference %.3f%n",strongest);
+        check(strongest>.55,"cg284 reveals the left side before the right side");
+    }
+    private int[] scenarioHeader(Bitmap frame) {
+        dc4RenderPreview(frame);
+        int[] header=new int[440*48];
+        frame.getPixels(header,0,440,816,60,440,48);
+        return header;
     }
     private void extras(File output,File captures,Bitmap frame,String mode) throws Exception {
         boolean fresh=mode.equals("extras-fresh"), legacy=mode.equals("extras-legacy");
@@ -436,6 +705,27 @@ public final class Arisa32Activity {
         settle(frame,"Common Scenario");
         int[] scenario=pixels(frame);
         png(frame,new File(captures,mode+"-scenario.png"));
+        int[] blank=scenarioHeader(frame);
+        dc4Touch(2,455,190);
+        int[] firstTitle=scenarioHeader(frame);
+        check(Arrays.equals(blank,firstTitle)==fresh,"only unlocked tiles have hover titles");
+        if (!fresh) {
+            dc4Touch(2,870,190);
+            int[] second=scenarioHeader(frame);
+            check(!Arrays.equals(firstTitle,second) && !Arrays.equals(second,blank),"moving to a second tile replaces the title");
+            dc4Touch(0,870,190);
+            check(!Arrays.equals(scenarioHeader(frame),blank),"holding a tile shows its title");
+            png(frame,new File(captures,mode+"-title-on-press.png"));
+            dc4Touch(3,870,190);
+            check(Arrays.equals(scenarioHeader(frame),blank),"cancelling touch clears the title");
+        }
+        dc4Touch(2,-1,-1);
+        boolean tenthUnlocked=!fresh && Files.readAllBytes(new File(output,"system.dat").toPath())[0x7A0+228]!=0;
+        if (!tenthUnlocked) {
+            tap(661,434);
+            dc4RenderPreview(frame);
+            check(Arrays.equals(scenario,pixels(frame)),"unreached tenth tile stays locked");
+        }
         tap(455,190);
         dc4RenderPreview(frame);
         if (fresh) {
@@ -461,6 +751,20 @@ public final class Arisa32Activity {
             check(dc4BackOrSidemenu(false,false).isEmpty(),"Back reopens End Scene");
             tap(540,270);
             settle(frame,"Scenario after End Scene Yes",scenario);
+            if (tenthUnlocked) {
+                tap(661,434);
+                tap(540,270);
+                renderFor(frame,6500);
+                png(frame,new File(captures,mode+"-dec02.png"));
+                check(dc4CurrentLine().isEmpty(),"December 2 eyecatch waits for a tap");
+                tap(700,300);
+                String december=waitForDialogue(frame);
+                check(december.contains("really concentrate for the first time in class"),"one screen tap leaves the December 2 map: "+december);
+                png(frame,new File(captures,mode+"-dec02-dialogue.png"));
+                check(dc4BackOrSidemenu(false,false).isEmpty(),"Back opens End Scene on December 2");
+                tap(540,270);
+                settle(frame,"Scenario after December 2",scenario);
+            }
             for (String key:Files.readAllLines(new File(output,"read-lines.txt").toPath())) {
                 if (!legacy) check(!key.startsWith("DS_"),"replay cannot mark story dialogue read");
             }
@@ -477,6 +781,8 @@ public final class Arisa32Activity {
         tap(500,180);
         check(dc4GalleryPreviewActive()!=fresh,"only unlocked CG tiles open");
         if (!fresh) {
+            if (!legacy) check(dc4DalSegnoGalleryFrameInfo()==0,"cg274 opens via cg_draw2");
+            waitForGalleryWipe(frame);
             Bitmap wide=Bitmap.createBitmap(1920,720,Bitmap.Config.ARGB_8888);
             check(dc4GalleryFrame(wide),"original CG renders at surface size");
             check(wide.getPixel(0,360)==0xff000000 && wide.getPixel(1919,360)==0xff000000,
@@ -501,14 +807,20 @@ public final class Arisa32Activity {
             if (!legacy) {
                 tap(-1,-1);
                 long secondInfo=dc4DalSegnoGalleryFrameInfo();
-                check(secondInfo!=firstInfo && dc4GalleryFrame(wide) && !wide.sameAs(first),
+                check(secondInfo!=0 && secondInfo!=firstInfo && dc4GalleryFrame(wide) && !wide.sameAs(first),
                       "tap skips the locked CG between 274 and 276");
                 Bitmap second=wide.copy(Bitmap.Config.ARGB_8888,false);
+                dc4Render(frame);
+                Bitmap beforeWipe=Bitmap.createScaledBitmap(frame,160,90,false);
                 tap(960,360);
+                check(dc4DalSegnoGalleryFrameInfo()==0,"cg284 uses cg_draw2 when cycling across tiles");
+                verifyGalleryWipe(frame,beforeWipe);
                 check(dc4DalSegnoGalleryFrameInfo()!=secondInfo && dc4GalleryFrame(wide)
                       && !wide.sameAs(first) && !wide.sameAs(second),"tap advances across tiles to CG 284");
                 second.recycle();
                 tap(960,360);
+                check(dc4DalSegnoGalleryFrameInfo()==0,"wrapping to cg274 uses cg_draw2");
+                waitForGalleryWipe(frame);
                 check(dc4GalleryFrame(wide) && wide.sameAs(first),"CG category wraps to CG 274");
             }
             first.recycle(); wide.recycle();
@@ -584,6 +896,10 @@ public final class Arisa32Activity {
             else if (mode.equals("backlog")) backlog(new File(root,"input"),captures,frame);
             else if (mode.equals("toolbar")) toolbar(new File(root,"input"),captures,frame);
             else if (mode.equals("menus")) menus(new File(root,"input"),captures,frame);
+            else if (mode.equals("opening")) opening(captures,frame);
+            else if (mode.equals("wipes")) maskedTransitions(new File(root,"input"),captures,frame);
+            else if (mode.equals("petals") || mode.equals("petals-two"))
+                petals(new File(root,"input"),captures,frame,mode.equals("petals-two"));
             else if (mode.equals("config")) config(new File(root,"input"),captures,frame);
             else if (mode.equals("transitions")) transitions(new File(root,"input"),captures,frame);
             else if (mode.equals("render-timing")) renderTiming(new File(root,"input"),captures,frame);
