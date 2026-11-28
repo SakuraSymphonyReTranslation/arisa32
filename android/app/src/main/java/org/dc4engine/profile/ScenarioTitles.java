@@ -6,6 +6,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.io.FileInputStream;
 import java.io.DataInputStream;
+import java.text.Normalizer;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -13,6 +14,20 @@ import java.util.Map;
 /** Native DC4/DC2DM pointer tables and fixed-width DC2PC/DC2TY chapter tables. */
 public final class ScenarioTitles {
     private ScenarioTitles() {}
+
+    static String dc4Title(String script, String language, Map<String, String> titles, Map<String, String> translations) {
+        if (script == null || script.isEmpty()) return "";
+        String key = script.toLowerCase(Locale.ROOT);
+        if (key.endsWith(".mes")) key = key.substring(0, key.length() - 4);
+        String title = titles == null ? null : titles.get(key);
+        if (title == null || title.isEmpty()) return script;
+        if (!"id".equalsIgnoreCase(language) || translations == null) return title;
+        String translation = translations.get(title);
+        if (translation == null || translation.isEmpty()) return title;
+        if ("Ｄ．Ｃ．".equals(title) && Normalizer.normalize(translation, Normalizer.Form.NFKC)
+                .matches("D\\.C\\.(?:\\s*/\\s*D\\.C\\.)+")) return "D.C.";
+        return translation;
+    }
     private static int u32(byte[] b, int p) {
         return (b[p] & 255) | (b[p+1] & 255) << 8 | (b[p+2] & 255) << 16 | (b[p+3] & 255) << 24;
     }
@@ -99,7 +114,8 @@ public final class ScenarioTitles {
                 long raw = Integer.toUnsignedLong(u32(b, off+20)) + delta;
                 if (raw >= b.length) continue;
                 String title = string(b, (int)raw, 256, sjis);
-                if (japanese(title) || (dmScript(name) || name.startsWith("ds_")) && title.matches("[A-Za-z][A-Za-z0-9 ,.!?'#():/\\-]{2,150}"))
+                if (japanese(title) || name.startsWith("dc4_") && title.matches("[Ａ-Ｚａ-ｚ][Ａ-Ｚａ-ｚ０-９．　]*")
+                        || (dmScript(name) || name.startsWith("ds_")) && title.matches("[A-Za-z][A-Za-z0-9 ,.!?'#():/\\-]{2,150}"))
                     titles.put(name, title);
             }
         }

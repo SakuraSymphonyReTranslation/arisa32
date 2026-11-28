@@ -16,6 +16,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.dc4engine.profile.GameProfile;
 import org.dc4engine.profile.GameProfileRegistry;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -35,7 +36,7 @@ final class FloatingNavigationChecks {
     }
 
     int run() throws Exception {
-        for (String profile : new String[]{"dc4", "dc4ph", "dc2pc", "dc2dm", "dal_segno"}) verify(profile);
+        for (GameProfile profile : GameProfileRegistry.getAllProfiles()) verify(profile.getId());
         settings();
         ui(() -> { navigation.dispose(); activity.finish(); });
         return checks;
@@ -60,7 +61,8 @@ final class FloatingNavigationChecks {
             set("gameLayout", layout); set("navigation", null);
             activity.setContentView(root);
             createControls();
-            check((back != null) == (profile.equals("dc2pc") || profile.equals("dc2dm") || profile.equals("dal_segno")), "profile button policy " + profile);
+            boolean hasBack = profile.equals("dc2pc") || profile.equals("dc2ty") || profile.equals("dc2dm") || profile.equals("dal_segno");
+            check((back != null) == hasBack, "profile button policy " + profile);
             if(profile.equals("dal_segno")) check(back.getContentDescription().toString().contains("Upper menu"), "Dal Segno upper menu label");
         });
         host.waitForIdleSync();
@@ -69,19 +71,20 @@ final class FloatingNavigationChecks {
             check(bubble.getWidth() >= dp(48) && bubble.getX() >= layout.getPaddingLeft(), "visible 48dp control clears insets");
             check(back == null || back.getY()+back.getHeight() <= layout.getHeight(), "Back fits 180dp height");
             check(edge.getVisibility() == View.GONE, "handle absent while shown");
-            if (profile.equals("dal_segno")) {
-                View gallery = (View) get("galleryBack");
-                invoke("updateGalleryBack", new Class<?>[]{boolean.class}, true);
-                check(gallery.getVisibility() == View.VISIBLE && back.getVisibility() == View.INVISIBLE,
-                        "Dal Segno gallery preview replaces Back / Upper menu");
-                navigation.hide();
-                navigation.show();
-                check(gallery.getVisibility() == View.VISIBLE && back.getVisibility() == View.INVISIBLE,
-                        "revealing gallery controls keeps Back / Upper menu hidden");
-                invoke("updateGalleryBack", new Class<?>[]{boolean.class}, false);
-                check(gallery.getVisibility() == View.GONE && back.getVisibility() == View.VISIBLE,
-                        "closing Dal Segno gallery preview restores Back / Upper menu");
-            }
+            View gallery = (View) get("galleryBack");
+            invoke("updateGalleryBack", new Class<?>[]{boolean.class}, true);
+            check(gallery.isShown() && (back == null || !back.isShown()), "CG has a single Back control: " + profile);
+            navigation.hide();
+            navigation.show();
+            check(gallery.isShown() && (back == null || !back.isShown()), "revealing CG controls keeps menu Back hidden: " + profile);
+            invoke("updateGalleryBack", new Class<?>[]{boolean.class}, false);
+            check(!gallery.isShown() && (back == null || back.isShown()), "gallery restores profile navigation: " + profile);
+            invoke("updateGalleryBack", new Class<?>[]{boolean.class}, true);
+            navigation.hide();
+            invoke("updateGalleryBack", new Class<?>[]{boolean.class}, false);
+            check(!gallery.isShown() && (back == null || !back.isShown()), "exiting CG respects hidden controls: " + profile);
+            navigation.show();
+            check(!gallery.isShown() && (back == null || back.isShown()), "revealing controls after exit restores menu Back: " + profile);
         });
         positions(profile);
         capture(profile + "-shown");

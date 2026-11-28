@@ -4,7 +4,7 @@
 
 Arisa32 adalah implementasi ulang runtime visual novel CIRCUS adv32 dalam C++17 untuk seri Da Capo dan Dal Segno. Arisa32 berjalan di Windows dengan SDL2 dan di Android dengan NativeActivity + JNI, serta membaca skrip MES, gambar CRX/CRM, dan audio XPCM langsung dari instalasi game.
 
-Arisa32 **v0.7.6** memperbaiki transisi dan Scenario Replay di Dal Segno, pilihan alarm D.C. II P.C., serta suara menu Start D.C. II Dearest Marriage. [Rilis terbaru](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.6) · [Catatan rilis](docs/releases/v0.7.6/id.md) · [Riwayat versi](CHANGELOG.md)
+Arisa32 **v0.7.7** bisa memuat save Dal Segno setelah pemain berganti antara bahasa Inggris resmi dan patch Indonesia. Tombol Kembali pada tampilan CG membawa pemain ke galeri. Di Android, enam game yang diuji mencapai frame pertama lebih cepat. [Rilis terbaru](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.7) · [Catatan rilis](docs/releases/v0.7.7/id.md) · [Riwayat versi](CHANGELOG.md)
 
 > [!IMPORTANT]
 > Seluruh kode sumber, arsitektur sistem, rekayasa balik opcode MES adv32, dekoder aset, antarmuka Android/JNI, dan dokumentasi repositori ini dibuat oleh Large Language Model (LLM).
@@ -60,7 +60,7 @@ Pada game asli D.C. II P.C. (DC2PC) dan D.C. II To You (DC2TY), panah atas/bawah
 
 Arisa32 mendukung D.S. -Dal Segno- edisi MangaGamer dengan terjemahan Inggris resmi mulai v0.7.5. Dukungan mencakup Save/Load, Backlog, Scenario Replay, CG Mode, dan Music Mode. Seluruh rute, ending, dan unlock masih perlu divalidasi. [Catatan rilis Dal Segno](docs/releases/v0.7.5/id.md)
 
-Edisi Standard, Limited, Deluxe, dan Download dikelompokkan ke judul utamanya. Game yang memakai engine lain, seperti D.C.4 Fortunate Departures, tidak didukung.
+Edisi Standard, Limited, Deluxe, dan Download dikelompokkan ke judul utamanya. Game yang memakai engine lain, seperti D.C.4 Fortunate Departures & D.C.4 Sweet Harmony, tidak didukung.
 
 ## Platform dan fitur
 
@@ -148,10 +148,10 @@ Build menghasilkan APK universal yang berisi ARM64 dan ARMv7. Di PowerShell, gun
 
 APK siap pasang tersedia di [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| APK v0.7.6 | Android minimum | Kegunaan |
+| APK v0.7.7 | Android minimum | Kegunaan |
 | --- | --- | --- |
-| `Arisa32-v0.7.6.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
-| `Arisa32-v0.7.6-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
+| `Arisa32-v0.7.7.apk` | 5.0 / API 21 | Rilis untuk penggunaan biasa |
+| `Arisa32-v0.7.7-debug.apk` | 5.0 / API 21 | Debug untuk pengujian dan diagnosis |
 
 Kedua APK bersifat universal dan masing-masing berisi ARM64 serta ARMv7. `SHA256SUMS.txt` memuat checksum kedua APK.
 

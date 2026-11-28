@@ -45,6 +45,11 @@ void overlays(const fs::path& root) {
 
     dc4::configure_resources(base.u8string(), english.u8string(), "UTF-8");
     CHECK(dc4::prefers_utf8_text());
+    std::vector<uint8_t> bytes;
+    CHECK(dc4::read_asset((base / "gRp/SYSTEM/WINDOW.crx").u8string(), &bytes));
+    CHECK(std::string(bytes.begin(), bytes.end()) == "english-window");
+    CHECK(!dc4::read_asset((base / "GRP/System/absent.crx").u8string(), &bytes));
+    CHECK(bytes.empty());
     CHECK(get(dc4::resolve_asset((base / "gRp/SYSTEM/WINDOW.crx").u8string())) == "english-window");
     CHECK(get(dc4::resolve_asset((base / "mes/OPENING.MES").u8string())) == "english-script");
     // Opening movies retain the original audio; other movies use the overlay.
@@ -155,6 +160,13 @@ void dalsegno_identity(const fs::path& root) {
 int main() {
     const auto root = fs::temp_directory_path() / ("dc4-resource-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "org.dc4engine/files/games/unrelated/AdvData").u8string()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "D.C.4 Sweet Harmony").u8string()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "DC4_SH/AdvData").u8string()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "DC4_FD/AdvData").u8string()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "Da Capo 4 Fortunate Departures").u8string()));
+    CHECK(!dc4::is_dc4_or_dc4ph_game((root / "DC4FD").u8string()));
+    CHECK(dc4::is_dc4_or_dc4ph_game((root / "DC4PH/AdvData").u8string()));
     try { overlays(root); utf8(); movie_paths(root); dc2dm_movie_paths(root); dalsegno_identity(root); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     dc4::configure_resources({});

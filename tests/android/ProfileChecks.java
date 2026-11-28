@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 import org.dc4engine.profile.GameProfile;
 import org.dc4engine.profile.Dc4Profile;
+import org.dc4engine.profile.Dc4PlusHarmonyProfile;
 import org.dc4engine.profile.GameProfileRegistry;
 import org.dc4engine.profile.GameFonts;
 import org.dc4engine.profile.GameSaveDirectory;
@@ -78,6 +79,10 @@ public final class ProfileChecks {
         pe.position(1200); pe.put("DC4_COM_01".getBytes(StandardCharsets.US_ASCII));
         pe.position(1500); pe.put(modernTitle.getBytes(Charset.forName("windows-31j"))).put((byte)0);
         pe.putInt(2000, 0x401000 + 1200 - 512); pe.putInt(2004, 0x401000 + 1500 - 512);
+        String dcScript = "dc4_dc99990101a", dcTitle = "Ｄ．Ｃ．";
+        pe.position(1600); pe.put(dcScript.getBytes(StandardCharsets.US_ASCII));
+        pe.position(1640); pe.put(dcTitle.getBytes(Charset.forName("windows-31j")));
+        pe.putInt(2008, 0x401000 + 1600 - 512); pe.putInt(2012, 0x401000 + 1640 - 512);
         pe.position(2400); pe.put("2IND_CHAPTER".getBytes(StandardCharsets.US_ASCII));
         pe.position(2660); pe.put(classicTitle.getBytes(Charset.forName("windows-31j"))).put((byte)0);
         pe.position(3000); pe.put("dc4!invalid".getBytes(StandardCharsets.US_ASCII));
@@ -88,7 +93,19 @@ public final class ProfileChecks {
         check(classicTitle.equals(titles.get("fst_chapter")), "DC2PC title is at script plus 260");
         check(modernTitle.equals(titles.get("dc4_com_01")), "modern title pointer pair");
         check(classicTitle.equals(titles.get("2ind_chapter")), "uppercase numbered DC2PC prefix");
-        check(titles.size() == 3, "invalid and truncated script prefixes rejected");
+        check(dcTitle.equals(titles.get(dcScript)), "D.C.4 fullwidth Latin chapter title");
+        for (GameProfile profile : new GameProfile[]{new Dc4Profile(), new Dc4PlusHarmonyProfile()}) {
+            String id = profile.getId();
+            String key = "DC4_DC99990101A.MES";
+            check(Files.readAllLines(Path.of("android/app/src/main/assets/scenario-titles", id + ".tsv"))
+                    .contains(dcScript + "\t" + dcTitle), id + " bundled D.C. title");
+            check(dcTitle.equals(profile.resolveScenarioTitle(key, "jp", titles, null)), id + " original D.C. title");
+            check("D.C.".equals(profile.resolveScenarioTitle(key, "id", titles,
+                    Map.of(dcTitle, "Ｄ．Ｃ． / Ｄ．Ｃ． / D.C."))), id + " equivalent patch spellings");
+            check("Judul pilihan".equals(profile.resolveScenarioTitle(key, "id", titles,
+                    Map.of(dcTitle, "Judul pilihan"))), id + " custom patch title");
+        }
+        check(titles.size() == 4, "invalid and truncated script prefixes rejected");
         pe.position(2800); pe.put("MAR_0114_A1\0".getBytes(StandardCharsets.US_ASCII));
         pe.position(2860); pe.put("Awal semester terakhir sekolah\0".getBytes(StandardCharsets.US_ASCII));
         pe.putInt(2032,0x401000+2800-512);pe.putInt(2036,0x401000+2860-512);
@@ -312,12 +329,66 @@ public final class ProfileChecks {
         check(!ty.matches(data.toFile(), "DC2TY"), "TY truncated label table rejected");
     }
 
+    private static void checkKirikiriRejection(Path folder, String title) throws java.io.IOException {
+        try {
+            GameLibrary.dataRoot(folder.toFile(), false);
+            throw new AssertionError("Accepted KiriKiri game folder: " + folder);
+        } catch (GameLibrary.UnsupportedEngineException expected) {
+            check(title.equals(expected.title), "KiriKiri title for " + folder);
+            check((title + " uses KiriKiri. Arisa32 supports ADV32 games.").equals(expected.getMessage()),
+                    "KiriKiri engine error for " + folder);
+        }
+    }
+
+    private static void checkKirikiriGame(Path root, String title, String... aliases) throws Exception {
+        for (String name : aliases) {
+            Path game = Files.createDirectories(root.resolve(name));
+            Files.write(game.resolve("data.xp3"), new byte[]{'X','P','3',13,10,32,10,26,(byte)139,103,1});
+            GameLibrary.Entry entry = new GameLibrary.Entry();
+            entry.path = game.toString();
+            entry.title = GameLibrary.detectTitle(game.toFile());
+            check(title.equals(entry.title), "Library title for " + name);
+            check(!GameLibrary.isNativeEnglish(entry), "Native English detection for " + name);
+            check(!GameProfileRegistry.getProfileById("dc4").matches(null, name), "D.C.4 profile for " + name);
+            check("circus_generic".equals(GameProfileRegistry.resolveProfile(game.toFile(), title).getId()),
+                    "Profile fallback for " + name);
+            checkKirikiriRejection(game, title);
+
+            Path data = Files.createDirectories(game.resolve("AdvData"));
+            Files.write(Files.createDirectories(data.resolve("MES")).resolve("start.mes"), new byte[]{0});
+            checkKirikiriRejection(game, title);
+            checkKirikiriRejection(data, title);
+        }
+    }
+
+    private static void checkEngineMarkers(Path root) throws Exception {
+        Path collection = Files.createDirectories(root.resolve("collection"));
+        Path renamed = Files.createDirectories(collection.resolve("renamed"));
+        Path data = Files.createDirectories(renamed.resolve("AdvData"));
+        Files.write(Files.createDirectories(data.resolve("MES")).resolve("start.mes"), new byte[]{0});
+        Path archive = renamed.resolve("scenario.XP3");
+        Files.write(archive, new byte[]{'X', 'P', '3', 13, 10, 32, 10, 26, (byte)139, 103, 1});
+        checkKirikiriRejection(renamed, "renamed");
+        checkKirikiriRejection(data, "renamed");
+        Path neighbor = Files.createDirectories(collection.resolve("supported/AdvData"));
+        Files.write(Files.createDirectories(neighbor.resolve("MES")).resolve("start.mes"), new byte[]{1});
+        check(GameLibrary.dataRoot(collection.toFile(), false).equals(neighbor.toFile()), "Skip XP3 game in a mixed collection");
+        Files.write(archive, new byte[]{'X', 'P', '3'});
+        check(GameLibrary.dataRoot(renamed.toFile(), false).equals(data.toFile()), "An extension alone does not identify XP3");
+        Files.write(renamed.resolve("startup.tjs"), new byte[]{1});
+        checkKirikiriRejection(data, "renamed");
+        check(GameLibrary.dataRoot(data.toFile(), true).equals(data.toFile()), "Engine check applies to base game registration");
+    }
+
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("arisa32-profile-check-");
         try {
             scenarioMetadata(root);
             dearestMarriage(root);
             toYou(root);
+            checkKirikiriGame(root, "D.C.4 Sweet Harmony", "DC4_SH", "DC4SH", "Da Capo 4 Sweet Harmony");
+            checkKirikiriGame(root, "D.C.4 Fortunate Departures", "DC4_FD", "DC4FD", "Da Capo 4 Fortunate Departures");
+            checkEngineMarkers(root);
             Path data = root.resolve("renamed-game/AdvData");
             mes(data, 0x9969, 2);
             GameProfile dc2pc = GameProfileRegistry.resolveProfile(data.toFile(), "unknown");

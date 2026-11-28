@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 
 namespace dc4 {
 namespace {
@@ -43,12 +42,6 @@ std::string resolve(const std::string& base, std::string relative) {
         if (!found) return {};
     }
     return path.string();
-}
-bool read_bytes(const std::string& path, std::vector<uint8_t>* bytes) {
-    std::ifstream file(resolve_asset(path), std::ios::binary);
-    if (!file) return false;
-    bytes->assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    return true;
 }
 uint32_t u32(const std::vector<uint8_t>& bytes, size_t offset) {
     return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
@@ -168,8 +161,8 @@ void SceneAudio::fail(const std::string& message) {
 bool SceneAudio::load_names(std::string* error) {
     std::vector<uint8_t> bytes;
     GameNames names;
-    const bool valid = (read_bytes(resolve(data_, "GRP/NAMES.DAT"), &bytes) ||
-                        read_bytes(resolve(data_, "DAT/names.dat"), &bytes)) && decode_game_names(bytes,&names);
+    const bool valid = (read_asset(resolve(data_, "GRP/NAMES.DAT"), &bytes) ||
+                        read_asset(resolve(data_, "DAT/names.dat"), &bytes)) && decode_game_names(bytes,&names);
     if (!valid) {
         last_error_ = "invalid or missing NAMES.DAT audio tables";
         if (error) *error = last_error_;
@@ -300,7 +293,7 @@ bool SceneAudio::read_voice(const std::string& name, std::vector<uint8_t>* bytes
     if (!archive && local_archive.open(resolve(data_, "VOICE.DAT"), nullptr)) archive = &local_archive;
     const VoiceEntry* entry = archive ? archive->find(name) : nullptr;
     return entry ? archive->read_entry(*entry, bytes, nullptr)
-                 : read_bytes(resolve(data_, audio_name(name)), bytes);
+                 : read_asset(resolve(data_, audio_name(name)), bytes);
 }
 bool SceneAudio::play_voice(const std::string& name) {
     if (!safe_resource_name(name)) { fail("invalid voice resource name"); return false; }
@@ -384,7 +377,7 @@ bool SceneAudio::restore_snapshot(const SceneAudioSnapshot& snapshot, bool repla
         item.options = options;
         item.position_frames = position;
         item.playing = playing;
-        if (!read_bytes(resolve(data_, audio_name(name)), &bytes) ||
+        if (!read_asset(resolve(data_, audio_name(name)), &bytes) ||
             !decode_xpcm_pcm(bytes.data(), bytes.size(), &item.pcm, &item.rate, &item.channels))
             return invalid("missing or undecodable track " + name);
         prepared.push_back(std::move(item));

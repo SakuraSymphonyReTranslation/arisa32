@@ -10,6 +10,21 @@ public final class Dc4Profile implements GameProfile {
     public static final String ID = "dc4";
     public static final String DISPLAY_NAME = "D.C.4 ~Da Capo 4~";
 
+    public static String kirikiriTitle(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.contains("sweet harmony") || lower.contains("dc4_sh") || lower.contains("dc4sh") ||
+                lower.contains("スイートハーモニー") || lower.contains("スウィートハーモニー")) return "D.C.4 Sweet Harmony";
+        if (lower.contains("fortunate departures") || lower.contains("dc4_fd") || lower.contains("dc4fd") ||
+                lower.contains("フォーチュネイトデパーチャーズ")) return "D.C.4 Fortunate Departures";
+        return null;
+    }
+
+    public static String kirikiriFolderTitle(File dir) {
+        if (dir == null) return null;
+        File game = dir.getName().equalsIgnoreCase("AdvData") ? dir.getParentFile() : dir;
+        return game == null ? null : kirikiriTitle(game.getName());
+    }
+
     @Override
     public String getId() {
         return ID;
@@ -23,7 +38,8 @@ public final class Dc4Profile implements GameProfile {
     @Override
     public boolean matches(File dataRoot, String pathLower) {
         if (dataRoot == null && pathLower == null) return false;
-        String p = pathLower != null ? pathLower : "";
+        String p = pathLower != null ? pathLower.toLowerCase(Locale.ROOT) : "";
+        if (kirikiriTitle(p) != null || kirikiriFolderTitle(dataRoot) != null) return false;
         if (dataRoot != null) {
             String abs = dataRoot.getAbsolutePath().toLowerCase(Locale.ROOT);
             File parent = dataRoot.getParentFile();
@@ -31,7 +47,7 @@ public final class Dc4Profile implements GameProfile {
             p = p.isEmpty() ? abs : p + " " + abs;
 
             // Reject Plus Harmony explicitly
-            if (p.contains("plus harmony") || p.contains("dc4ph") || p.contains("dc4_ph") || p.contains("sweet harmony") || p.contains("dc4sh")) {
+            if (p.contains("plus harmony") || p.contains("dc4ph") || p.contains("dc4_ph")) {
                 return false;
             }
             if (parent != null && (new File(parent, "DC4PHDL.exe").isFile() || new File(parent, "DC4PHLauncher.exe").isFile())) {
@@ -92,20 +108,7 @@ public final class Dc4Profile implements GameProfile {
 
     @Override
     public String resolveScenarioTitle(String scriptName, String language, Map<String, String> exeTitles, Map<String, String> jpToIdTitles) {
-        if (scriptName == null || scriptName.isEmpty()) return "";
-        String sLower = scriptName.toLowerCase(Locale.ROOT);
-        if (sLower.endsWith(".mes")) sLower = sLower.substring(0, sLower.length() - 4);
-        if (exeTitles != null) {
-            String jp = exeTitles.get(sLower);
-            if (jp != null && !jp.isEmpty()) {
-                if ("id".equalsIgnoreCase(language) && jpToIdTitles != null) {
-                    String id = jpToIdTitles.get(jp);
-                    if (id != null && !id.isEmpty()) return id;
-                }
-                return jp;
-            }
-        }
-        return scriptName;
+        return ScenarioTitles.dc4Title(scriptName, language, exeTitles, jpToIdTitles);
     }
 
     @Override

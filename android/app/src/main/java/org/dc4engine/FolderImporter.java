@@ -23,24 +23,34 @@ final class FolderImporter {
     FolderImporter(ContentResolver resolver, Uri tree, File destination, AtomicBoolean cancelled, Progress progress) {
         this.resolver = resolver; this.tree = tree; this.destination = destination; this.cancelled = cancelled; this.progress = progress;
     }
-    void run() throws IOException {
+    void run(boolean baseGame) throws IOException {
         if (!destination.mkdirs()) throw new IOException("Cannot create import folder.");
         available = new StatFs(destination.getAbsolutePath()).getAvailableBytes() - 32L * 1024 * 1024;
         boolean done = false;
-        try { walk(findGameRoot(DocumentsContract.getTreeDocumentId(tree)), destination, 0); done = true; }
+        try { walk(findGameRoot(DocumentsContract.getTreeDocumentId(tree), baseGame), destination, 0); done = true; }
         finally { if (!done) SaveArchive.removeTree(destination); }
     }
-    private String findGameRoot(String id) throws IOException {
+    private String findGameRoot(String id, boolean baseGame) throws IOException {
         String parentData = null; boolean mes = false;
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, id);
         String[] fields = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                 DocumentsContract.Document.COLUMN_MIME_TYPE};
         try (Cursor cursor = resolver.query(children, fields, null, null, null)) {
             if (cursor == null) throw new IOException("Cannot inspect the selected folder.");
-            while (cursor.moveToNext()) if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2))) {
+            while (cursor.moveToNext()) {
                 String name = cursor.getString(1);
-                if ("MES".equals(name)) mes = true;
-                if ("AdvData".equalsIgnoreCase(name)) parentData = cursor.getString(0);
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2))) {
+                    if ("MES".equals(name)) mes = true;
+                    if ("AdvData".equalsIgnoreCase(name)) parentData = cursor.getString(0);
+                } else if (baseGame && name != null) {
+                    if (name.equalsIgnoreCase("startup.tjs")) GameLibrary.rejectKirikiri("");
+                    if (name.toLowerCase(Locale.ROOT).endsWith(".xp3")) {
+                        Uri archive = DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0));
+                        try (InputStream in = resolver.openInputStream(archive)) {
+                            if (in != null && GameLibrary.isXp3Archive(in)) GameLibrary.rejectKirikiri("");
+                        }
+                    }
+                }
             }
         }
         if (mes) return id;

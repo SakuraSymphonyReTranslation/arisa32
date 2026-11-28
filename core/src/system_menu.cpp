@@ -91,12 +91,6 @@ std::string resolve(const std::string& root, const std::string& name) {
     }
     return path.string();
 }
-bool read_bytes(const std::string& path, std::vector<uint8_t>* out) {
-    std::ifstream in(dc4::resolve_asset(path), std::ios::binary);
-    if (!in) return false;
-    out->assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
-}
 enum class MenuTag : uint16_t {
     Unknown = 0,
 
@@ -624,10 +618,9 @@ struct SystemMenu::Impl {
         std::vector<uint8_t> bytes;
         dc4::CrxInfo info;
         std::string path = resolve(data + "/GRP", name + ".crx");
-        if (!read_bytes(path, &bytes)) {
-            if (name == "system/titlechip01") path = resolve(data + "/GRP", "system/titlechip.crx");
-            else if (name == "system/exchip") path = resolve(data + "/GRP", "system/extrachip.crx");
-            read_bytes(path, &bytes);
+        if (!dc4::read_asset(path, &bytes)) {
+            if (name == "system/titlechip01") dc4::read_asset(resolve(data + "/GRP", "system/titlechip.crx"), &bytes);
+            else if (name == "system/exchip") dc4::read_asset(resolve(data + "/GRP", "system/extrachip.crx"), &bytes);
         }
         if (!bytes.empty() && dc4::crx_decode(bytes.data(), bytes.size(), &result.rgba, &info)) {
             result.w = info.width; result.h = info.height; result.name = name;
@@ -657,10 +650,10 @@ struct SystemMenu::Impl {
     }
     bool names() {
         std::vector<uint8_t> b;
-        std::string path = resolve(data, "GRP/NAMES.DAT");
-        if (!read_bytes(path, &b)) path = resolve(data, "DAT/names.dat");
-        if (!read_bytes(path, &b)) path = resolve(data, "DAT/NAMES.DAT");
-        if (!read_bytes(path, &b) || b.size() < 4) return false;
+        if (!dc4::read_asset(resolve(data, "GRP/NAMES.DAT"), &b) &&
+            !dc4::read_asset(resolve(data, "DAT/names.dat"), &b) &&
+            !dc4::read_asset(resolve(data, "DAT/NAMES.DAT"), &b)) return false;
+        if (b.size() < 4) return false;
         dc4::GameNames result;
         if (!dc4::decode_game_names(b,&result)) return false;
         bgm_names=std::move(result.bgm); cg_names=std::move(result.cg); scene_names=std::move(result.scenes);
@@ -3260,7 +3253,7 @@ bool SystemMenu::profile_requires_save()const{return p_->dc4_profile_requires_sa
 bool SystemMenu::load_system_dat(const std::string& path, std::string* error) {
     if (p_->dc2ty) {
         std::vector<uint8_t> bytes;
-        if (!read_bytes(path,&bytes) || bytes.size()!=0x738) {
+        if (!dc4::read_asset(path,&bytes) || bytes.size()!=0x738) {
             if (error) *error="Unsupported or truncated DC2TY system data";
             return false;
         }

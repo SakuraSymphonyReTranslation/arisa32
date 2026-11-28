@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.7 - 2026-11-28
+
+[Bahasa Indonesia](docs/releases/v0.7.7/id.md) | [English](docs/releases/v0.7.7/en.md)
+
+- **Dal Segno** dapat melanjutkan save di checkpoint dialog yang didukung setelah berganti antara Inggris resmi dan patch Indonesia. Dialog tiga baris atau lebih menyesuaikan posisi di textbox.
+- **Galeri CG** menampilkan satu tombol untuk kembali ke galeri. Pada layar Save dan Load **D.C.4** dan **D.C.4 Plus Harmony**, slot dari segmen D.C. menampilkan judul skenarionya.
+- **Koleksi Android** mengenali game KiriKiri saat memilih folder dan melewatinya saat memindai penyimpanan, termasuk D.C.4 Sweet Harmony dan Fortunate Departures.
+- **Waktu mulai** berkurang pada enam game yang diuji di iQOO Z9x 5G. Median D.C. II Plus Communication turun dari 2,66 ke 1,99 detik hingga frame pertama.
+
 ## 0.7.6 - 2026-11-27
 
 ### Bahasa Indonesia

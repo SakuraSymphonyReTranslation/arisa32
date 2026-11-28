@@ -55,7 +55,7 @@ public final class DalSegnoProfile implements GameProfile {
 
         // Early reject: Da Capo family, D.S. in Future, etc.
         if (p.contains("plus harmony") || p.contains("dc4") || p.contains("da capo") ||
-            p.contains("sweet harmony") || p.contains("dc3") || p.contains("dc2") ||
+            Dc4Profile.kirikiriTitle(p) != null || p.contains("dc3") || p.contains("dc2") ||
             p.contains("dcpc") || p.contains("dcas") || p.contains("dcdx") ||
             p.contains("future") || p.contains("dsif")) {
             return false;
@@ -225,7 +225,8 @@ public final class DalSegnoProfile implements GameProfile {
             if (entries == null) continue;
             for (File entry : entries) {
                 String name = entry.getName().toLowerCase(Locale.ROOT);
-                if (entry.isFile() && (name.startsWith("dsif") || name.startsWith("ds_if")) && (name.endsWith(".exe") || name.endsWith(".mes"))) return true;
+                if ((name.startsWith("dsif") || name.startsWith("ds_if")) &&
+                        (name.endsWith(".exe") || name.endsWith(".mes")) && entry.isFile()) return true;
             }
         }
         return false;

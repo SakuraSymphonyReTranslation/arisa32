@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <mutex>
 
@@ -193,6 +194,10 @@ void configure_resources(const std::string& base, const std::string& overlay,
     }
 }
 
+std::string resolve_original_asset(const std::string& directory, const std::string& relative) {
+    return case_path(absolute_path(directory), fs::u8path(relative)).u8string();
+}
+
 std::string resolve_asset(const std::string& requested) {
     if (requested.empty()) return {};
     std::lock_guard<std::mutex> lock(resource_mutex);
@@ -244,6 +249,19 @@ std::string resolve_asset(const std::string& requested) {
 bool asset_exists(const std::string& path) {
     std::error_code error;
     return std::filesystem::is_regular_file(std::filesystem::u8path(resolve_asset(path)), error);
+}
+bool read_asset(const std::string& path, std::vector<uint8_t>* bytes) {
+    bytes->clear();
+    const auto resolved = fs::u8path(resolve_asset(path));
+    std::error_code error;
+    const auto size = fs::file_size(resolved, error);
+    if (error || size > bytes->max_size() || size > uintmax_t(std::numeric_limits<std::streamsize>::max())) return false;
+    std::ifstream in(resolved, std::ios::binary);
+    if (!in) return false;
+    bytes->resize(static_cast<size_t>(size));
+    if (size == 0 || in.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(size))) return true;
+    bytes->clear();
+    return false;
 }
 bool prefers_utf8_text() {
     std::lock_guard<std::mutex> lock(resource_mutex);
@@ -368,12 +386,16 @@ int romanized_face_id(const std::u16string& name) {
 
 bool is_dc4_or_dc4ph_game(const std::string& data_dir) {
     if (data_dir.empty()) return false;
-    std::string lower_dir = data_dir;
-    for (char& c : lower_dir) c = char(std::tolower(static_cast<unsigned char>(c)));
-    if (lower_dir.find("d.c.4") != std::string::npos ||
-        lower_dir.find("da capo 4") != std::string::npos ||
-        lower_dir.find("dc4") != std::string::npos ||
-        lower_dir.find("da capo iv") != std::string::npos) {
+    auto dir = fs::u8path(data_dir).lexically_normal();
+    if (!dir.has_filename()) dir = dir.parent_path();
+    if (folded(dir.filename().u8string()) == "advdata") dir = dir.parent_path();
+    const auto title = folded(dir.filename().u8string());
+    for (const char* kirikiri : {"sweet harmony", "dc4_sh", "dc4sh", "fortunate departures", "dc4_fd", "dc4fd",
+            u8"スイートハーモニー", u8"スウィートハーモニー", u8"フォーチュネイトデパーチャーズ"}) {
+        if (title.find(kirikiri) != std::string::npos) return false;
+    }
+    if (title.find("d.c.4") != std::string::npos || title.find("da capo 4") != std::string::npos ||
+        title.find("dc4") != std::string::npos || title.find("da capo iv") != std::string::npos) {
         return true;
     }
     namespace fs = std::filesystem;
@@ -414,16 +436,17 @@ bool is_dalsegno_in_future_game(const std::string& data_dir) {
         std::error_code ec;
         for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
             const auto name = folded(it->path().filename().u8string());
+            if (name.rfind("dsif", 0) != 0 && name.rfind("ds_if", 0) != 0) continue;
             const auto ext = folded(it->path().extension().u8string());
-            if (it->is_regular_file(ec) && (name.rfind("dsif", 0) == 0 || name.rfind("ds_if", 0) == 0) &&
-                (ext == ".mes" || ext == ".exe")) return true;
+            std::error_code status_error;
+            if ((ext == ".mes" || ext == ".exe") && it->is_regular_file(status_error)) return true;
         }
     }
     return false;
 }
 
 bool is_dalsegno_game(const std::string& data_dir) {
-    if (data_dir.empty() || is_dalsegno_in_future_game(data_dir)) return false;
+    if (data_dir.empty()) return false;
     const auto mes = case_path(absolute_path(data_dir), "MES");
     // The engine version is shared evidence; the opening scenario identifies the game.
     for (const char* filename : {"main.mes", "DS_1129B_CM.mes"}) {
@@ -442,7 +465,7 @@ bool is_dalsegno_game(const std::string& data_dir) {
         if (!in.read(reinterpret_cast<char*>(version), 3) ||
             version[0] != 0x9A || version[1] != 0x9F || version[2] != 0) return false;
     }
-    return true;
+    return !is_dalsegno_in_future_game(data_dir);
 }
 
 bool is_kotori_song_movie(const std::string& asset) {

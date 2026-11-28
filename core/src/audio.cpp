@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <limits>
 
 namespace dc4 {
@@ -203,10 +202,8 @@ bool AudioEngine::play_blob(int channel, const uint8_t* data, size_t size,
 }
 bool AudioEngine::play_file(int channel, const std::string& path, const AudioPlayback& options) {
     if (!valid_channel(channel)) return false;
-    std::ifstream file(resolve_asset(path), std::ios::binary);
-    if (!file) return false;
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    return play_blob(channel, bytes.data(), bytes.size(), options);
+    std::vector<uint8_t> bytes;
+    return read_asset(path, &bytes) && play_blob(channel, bytes.data(), bytes.size(), options);
 }
 bool AudioEngine::play_bgm_file(const std::string& path, size_t start, size_t end, bool loop) {
     return play_file(0, path, {loop, start, end});

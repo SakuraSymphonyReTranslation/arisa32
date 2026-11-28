@@ -66,6 +66,9 @@ target_compile_definitions(arisa32 PRIVATE
     MA_NO_AAUDIO
 )
 
+set_property(SOURCE ${DC4_CORE}/src/audio.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    MA_NO_DECODING MA_NO_ENCODING MA_NO_GENERATION MA_NO_NODE_GRAPH)
+
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(openmaxndk OpenMAXAL)

@@ -83,30 +83,60 @@ bool resource_name(const std::string& name, bool allow_separator = true) {
     if (!allow_separator && name.find_first_of("/\\") != std::string::npos) return false;
     return true;
 }
-bool dalsegno_save_position(const dc4::MesFile& mes, const std::vector<uint8_t>& bytes, bool empty_dialogue,
+struct DsCheckpoint {
+    uint32_t resume, id, index, pc;
+    explicit DsCheckpoint(const std::vector<uint8_t>& bytes) {
+        Reader in{bytes, 0x83C};
+        resume = in.u32(); id = in.u32(); index = in.u32(); pc = in.u32();
+    }
+};
+bool dalsegno_save_position(const dc4::MesFile& mes, const DsCheckpoint& position, bool empty_dialogue,
                            bool* automatic_save) {
-    const auto resume = Reader{bytes, 0x83C}.u32(), id = Reader{bytes, 0x840}.u32();
-    const auto index = Reader{bytes, 0x844}.u32(), pc = Reader{bytes, 0x848}.u32();
+    const auto [resume, id, index, pc] = position;
     dc4::MesStream scan(mes);
     dc4::MesCommand command;
-    bool boundary = false, automatic = false, text_boundary = false, in_checkpoint = false;
-    uint32_t checkpoint_end = 0;
-    while (scan.next(&command)) {
+    if (resume < pc || resume > mes.code.size()) return false;
+    bool automatic = false, text_boundary = false, in_checkpoint = false;
+    while (scan.pos() < resume && scan.next(&command)) {
         if (command.op == 3) {
-            in_checkpoint = (unsigned(command.p1) | unsigned(command.p2) << 8) == index;
-            if (in_checkpoint) checkpoint_end = command.pos + uint32_t(command.size);
+            in_checkpoint = index < mes.labels.size() && mes.labels[index].id == id &&
+                (unsigned(command.p1) | unsigned(command.p2) << 8) == index && mes.labels[index].offset == scan.pos();
+            text_boundary = in_checkpoint && pc == scan.pos();
         }
         if (command.pos == pc && command.kind == dc4::CmdKind::Text && command.op != 0x60 && in_checkpoint)
             text_boundary = true;
         if (command.op == 0x1A && command.pos + command.size == resume) automatic = true;
-        if (command.pos == resume || command.pos + command.size == resume) boundary = true;
     }
-    const bool checkpoint = index < mes.labels.size() && mes.labels[index].id == id &&
-        mes.labels[index].offset == checkpoint_end && (pc == checkpoint_end || text_boundary);
     // Native automatic saves retain the previous dialogue's table fields.
     automatic = automatic && empty_dialogue && pc == resume;
     if (automatic_save) *automatic_save = automatic;
-    return (checkpoint || automatic) && boundary && resume >= pc;
+    return (text_boundary || automatic) && scan.pos() == resume;
+}
+
+// A translation can change string lengths. Anchor the two streams at the same
+// label and accept only corresponding command boundaries up to the saved PC.
+bool map_dalsegno_offset(const dc4::MesFile& from, const dc4::MesFile& to, uint32_t offset, uint32_t* result) {
+    if (from.version != to.version || offset > from.code.size()) return false;
+    dc4::MesStream source(from), target(to);
+    size_t anchor = from.labels.size();
+    for (size_t i = 0; i < from.labels.size(); ++i) {
+        if (from.labels[i].offset <= offset &&
+            (anchor == from.labels.size() || from.labels[i].offset > from.labels[anchor].offset)) anchor = i;
+    }
+    if (anchor < from.labels.size()) {
+        if (anchor >= to.labels.size() || from.labels[anchor].id != to.labels[anchor].id) return false;
+        source.seek(from.labels[anchor].offset);
+        target.seek(to.labels[anchor].offset);
+    }
+    dc4::MesCommand a, b;
+    while (source.pos() < offset) {
+        if (!source.next(&a) || !target.next(&b) || a.op != b.op) return false;
+        if (a.kind != dc4::CmdKind::Text && (a.size != b.size ||
+            !std::equal(from.code.begin()+a.pos, from.code.begin()+source.pos(), to.code.begin()+b.pos))) return false;
+    }
+    if (source.pos() != offset || target.pos() > to.code.size()) return false;
+    *result = target.pos();
+    return true;
 }
 bool valid_saved_chip(const UiChip& chip) {
     if (chip.w<0 || chip.w>16384 || chip.h<0 || chip.h>16384 || chip.sheet<0 || chip.sheet>255) return false;
@@ -137,6 +167,38 @@ bool read_bytes(const std::string& path, std::vector<uint8_t>* bytes) {
     if (size < 8 || size > std::streamoff(kMaxSave + 64)) return false;
     bytes->assign(size_t(size), 0); file.seekg(0);
     return bool(file.read(reinterpret_cast<char*>(bytes->data()), size));
+}
+bool load_ds_script(const std::string& root, const std::string& script, dc4::MesFile* mes) {
+    const auto path = dc4::resolve_original_asset(root, "MES/" + script);
+    std::vector<uint8_t> source;
+    return !path.empty() && read_bytes(path, &source) && mes->load(source.data(), source.size()) &&
+           (mes->version & 0xFFFF) == 0x9F9A;
+}
+
+bool resolve_ds_checkpoint(const std::string& data, const std::string& script, const dc4::MesFile& active,
+                           DsCheckpoint* checkpoint, bool empty, bool* automatic) {
+    const auto translate = [&](const dc4::MesFile& source) {
+        DsCheckpoint mapped = *checkpoint;
+        if (!dalsegno_save_position(source, mapped, empty, nullptr) ||
+            !map_dalsegno_offset(source, active, checkpoint->pc, &mapped.pc) ||
+            !map_dalsegno_offset(source, active, checkpoint->resume, &mapped.resume) ||
+            !dalsegno_save_position(active, mapped, empty, automatic)) return false;
+        *checkpoint = mapped;
+        return true;
+    };
+    // Arisa32 writes native slots in the original PC script's coordinates.
+    dc4::MesFile source;
+    const auto original = dc4::resolve_original_asset(data, "MES/" + script);
+    if (original != dc4::resolve_asset(data + "/MES/" + script) &&
+        load_ds_script(data, script, &source) && translate(source)) return true;
+    if (dalsegno_save_position(active, *checkpoint, empty, automatic)) return true;
+    // Imported PC slots can instead use the installed Indonesian script's offsets.
+    for (const auto& root : {std::filesystem::path(data).parent_path(), std::filesystem::path(data)})
+        for (const auto* patch : {"id_Data", "id"}) {
+            auto folder = dc4::resolve_original_asset(root.u8string(), patch);
+            if (!folder.empty() && load_ds_script(folder, script, &source) && translate(source)) return true;
+        }
+    return false;
 }
 void write_vm(Writer& out, const dc4::MesVmSnapshot& vm) {
     out.u32(vm.version); out.u64(vm.script_fingerprint); out.u32(vm.pc);
@@ -789,9 +851,10 @@ void SceneRunner::recover_dalsegno_progress(const std::set<std::string>& read_li
             return end == begin + size ? std::string{} : std::string(begin, end);
         };
         const auto script = scenario_key(field(8, 160));
+        DsCheckpoint checkpoint(bytes);
         dc4::MesFile mes;
         if (!ds_scene_ids_.count(script) || !load_scenario(script, &mes) ||
-            !dalsegno_save_position(mes, bytes, bytes[0x117F8] == 0, nullptr)) continue;
+            !resolve_ds_checkpoint(data_, script + ".mes", mes, &checkpoint, bytes[0x117F8] == 0, nullptr)) continue;
         award_dalsegno_scene(script);
         award_dalsegno_cg(field(0xD8, 48));
     }
@@ -814,27 +877,28 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
             throw std::runtime_error("save at a dialogue or choice");
         const unsigned index = unsigned(marker.p1) | unsigned(marker.p2) << 8;
         dc4::MesFile original;
-        std::vector<uint8_t> source;
-        auto filename=dc4::find_file_ci(data_+"/MES",script_name_);
-        const auto path = data_ + "/MES/" + (filename.empty()?script_name_:filename);
-        if (!read_bytes(path, &source) || !original.load(source.data(), source.size()) || original.version != mes_.version)
+        if (!load_ds_script(data_, script_name_, &original) || original.version != mes_.version)
             throw std::runtime_error("original Dal Segno scenario is unavailable");
-        if (!automatic && index >= original.labels.size()) throw std::runtime_error("invalid Dal Segno checkpoint index");
+        if (!automatic && (index >= original.labels.size() || index >= mes_.labels.size() ||
+            mes_.labels[index].id != original.labels[index].id || mes_.labels[index].offset != marker.pos + marker.size))
+            throw std::runtime_error("invalid Dal Segno checkpoint index");
         uint32_t marker_pc = 0, resume = 0, text_pc=0;
-        size_t matches = 0;
-        dc4::MesStream native(original);
-        while (native.next(&c)) {
-            if (c.pos==marker.pos && c.op == marker.op && (unsigned(c.p1) | unsigned(c.p2) << 8) == index) {
-                marker_pc = c.pos + uint32_t(c.size); ++matches;
-            }
-        }
-        if (matches != 1 || (!automatic && original.labels[index].offset != marker_pc))
+        if (!map_dalsegno_offset(mes_, original, marker.pos + uint32_t(marker.size), &marker_pc) ||
+            marker_pc < marker.size)
             throw std::runtime_error("Dal Segno checkpoint does not match the original scenario");
-        native.seek(marker_pc);
+        dc4::MesStream native(original);
+        native.seek(marker_pc - uint32_t(marker.size));
+        if (!native.next(&c) || c.op != marker.op || c.p1 != marker.p1 || c.p2 != marker.p2 ||
+            native.pos() != marker_pc || (!automatic && original.labels[index].offset != marker_pc))
+            throw std::runtime_error("Dal Segno checkpoint does not match the original scenario");
         if (automatic) resume=text_pc=marker_pc;
+        std::string native_line, native_speaker;
         while (!automatic && native.next(&c)) {
             if (c.op == 3 || c.op == 0x1A) break;
-            if (!text_pc && c.kind==dc4::CmdKind::Text && c.op!=0x60) text_pc=c.pos;
+            if (!text_pc && c.kind == dc4::CmdKind::Text) {
+                if (c.op == 0x60) native_speaker = dalsegno_text(c.str);
+                else { text_pc = c.pos; native_line = dalsegno_text(c.str); }
+            }
             if (c.op == 6 || c.op == 8) { resume = c.pos + uint32_t(c.size); break; }
         }
         if (!resume) throw std::runtime_error("native Dal Segno dialogue pause is unavailable");
@@ -864,7 +928,10 @@ bool SceneRunner::capture_dalsegno_pc_save(std::vector<uint8_t>* destination, st
         const int fields[]={local.tm_mon+1,local.tm_mday,local.tm_hour,local.tm_min,(local.tm_year+1900)%100,local.tm_sec};
         for (size_t i=0;i<6;++i) out[0x4566+i]=uint8_t(fields[i]);
         text(0x116E0,20,vm_.given_name()); text(0x116F4,20,vm_.family_name());
-        text(0x117F8,260,current_line_); text(0x118FC,128,speaker_); text(0x119F4,260,current_line_);
+        // PC preview fields are fixed width. The checkpoint retains the full translated line.
+        const auto& preview = current_line_.size() < 260 ? current_line_ : native_line;
+        text(0x117F8,260,preview); text(0x118FC,128,speaker_.size() < 128 ? speaker_ : native_speaker);
+        text(0x119F4,260,preview);
         for (int i=0;i<120;++i) {
             const size_t at=0x4C4C+i*0x1B0;
             number(at+0x50,1); number(at+0x54,100); number(at+0x58,100);
@@ -972,9 +1039,9 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
         if (script.find('.')==std::string::npos) script+=".mes";
         SceneRunner candidate(data_);
         if (!candidate.load_script(data_+"/MES/"+script) || (candidate.mes_.version & 0xFFFF)!=0x9F9A) throw std::runtime_error("saved Dal Segno scenario is unavailable");
-        const auto resume=integer(0x83C);
+        DsCheckpoint checkpoint(bytes);
         bool automatic = false;
-        if (!dalsegno_save_position(candidate.mes_, bytes, text(0x117F8,260).empty(), &automatic))
+        if (!resolve_ds_checkpoint(data_, script, candidate.mes_, &checkpoint, text(0x117F8,260).empty(), &automatic))
             throw std::runtime_error("invalid Dal Segno checkpoint table or resume position");
         dc4::MesVmSnapshot current; std::string error;
         if (vm_.capture_snapshot(&current,&error)) for (const auto& item:current.variables)
@@ -984,7 +1051,24 @@ bool SceneRunner::restore_dalsegno_pc_save(const std::vector<uint8_t>& bytes, st
         candidate.current_line_=text(0x117F8,260);
         if (candidate.current_line_.empty() && !automatic) candidate.current_line_=text(0x119F4,260);
         candidate.speaker_=text(0x118FC,128);
-        candidate.vm_.seek_to_pc(resume);
+        if (!automatic && !candidate.current_line_.empty()) {
+            dc4::MesStream dialogue(candidate.mes_);
+            const auto start = candidate.mes_.labels[checkpoint.index].offset;
+            dialogue.seek(start);
+            dc4::MesCommand command;
+            std::string speaker;
+            while (dialogue.pos() < checkpoint.resume && dialogue.next(&command)) {
+                if (command.op == 3 || command.op == 0x1A) break;
+                if (command.kind != dc4::CmdKind::Text) continue;
+                if (command.op == 0x60) speaker = candidate.dalsegno_text(command.str);
+                else if (command.pos == checkpoint.pc || checkpoint.pc == start) {
+                    candidate.current_line_ = candidate.dalsegno_text(command.str);
+                    candidate.speaker_ = speaker;
+                    break;
+                } else speaker.clear();
+            }
+        }
+        candidate.vm_.seek_to_pc(checkpoint.resume);
         for (const int slot : {1, 16, 17, 18}) {
             const auto background = name(0xA8 + slot * 48, 48);
             if (background.empty()) continue;

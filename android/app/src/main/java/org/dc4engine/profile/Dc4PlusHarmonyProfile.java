@@ -109,20 +109,7 @@ public final class Dc4PlusHarmonyProfile implements GameProfile {
 
     @Override
     public String resolveScenarioTitle(String scriptName, String language, Map<String, String> exeTitles, Map<String, String> jpToIdTitles) {
-        if (scriptName == null || scriptName.isEmpty()) return "";
-        String sLower = scriptName.toLowerCase(Locale.ROOT);
-        if (sLower.endsWith(".mes")) sLower = sLower.substring(0, sLower.length() - 4);
-        if (exeTitles != null) {
-            String jp = exeTitles.get(sLower);
-            if (jp != null && !jp.isEmpty()) {
-                if ("id".equalsIgnoreCase(language) && jpToIdTitles != null) {
-                    String id = jpToIdTitles.get(jp);
-                    if (id != null && !id.isEmpty()) return id;
-                }
-                return jp;
-            }
-        }
-        return scriptName;
+        return ScenarioTitles.dc4Title(scriptName, language, exeTitles, jpToIdTitles);
     }
 
     @Override

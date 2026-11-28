@@ -65,8 +65,139 @@ void start(dc4scene::SceneRunner& scene, const fs::path& root, const dc4scene::F
 std::vector<uint8_t> render(const fs::path& root, const std::string& text,
                            const dc4scene::FontRenderer& font, int reveal = -1) {
     script(root, text);
-    dc4scene::SceneRunner scene(root.string()); start(scene,root,font);
+    dc4scene::SceneRunner scene(root.string());
+    CHECK(scene.load_ui_script((root / "MES/start.mes").string()));
+    start(scene,root,font);
     scene.draw(reveal); return scene.frame();
+}
+std::vector<std::pair<int,int>> ink_bands(const std::vector<uint8_t>& frame) {
+    std::vector<std::pair<int,int>> bands;
+    for (int y = 0; y < dc4scene::kScreenH; ++y) {
+        for (int x = 390; x < 1190; ++x) {
+            if (frame[(size_t(y) * dc4scene::kScreenW + x) * 4] < 100) continue;
+            if (!bands.empty() && bands.back().second == y - 1) bands.back().second = y;
+            else bands.emplace_back(y, y);
+            break;
+        }
+    }
+    return bands;
+}
+void translated_saves(const fs::path& root) {
+    const auto base = root / "AdvData", patch = root / "id_Data";
+    const auto scenario = fs::path("MES") / "DS_1129B_CM.mes";
+    const auto story = [&](const fs::path& folder, std::string first, std::string who, std::string line) {
+        std::vector<uint8_t> code{0x9A,0x9F,0}, table{3,0,0,0};
+        const auto text = [&](uint8_t op, const std::string& value) {
+            code.push_back(op);
+            for (char ch : value) code.push_back(uint8_t((ch == ' ' ? '$' : ch) - 0x20));
+            code.push_back(0);
+        };
+        for (int index = 0; index < 3; ++index) {
+            code.insert(code.end(), {3,uint8_t(index),0});
+            uint32_t offset = uint32_t(code.size());
+            for (int i = 0; i < 4; ++i) table.push_back(uint8_t(offset >> (8*i)));
+            if (index == 1) text(0x60,who);
+            text(0x61,index == 0 ? first : index == 1 ? line : "Still in English");
+            code.insert(code.end(), {6,0,0});
+        }
+        table.insert(table.end(), {11,0,12,0,13,0});
+        table.insert(table.end(),code.begin(),code.end()); table.push_back(0);
+        write(folder / scenario,table);
+    };
+    script(base,"Title");
+    story(base,"One","Visitor","Second line");
+    story(patch,"Baris pertama","Tamu","Baris kedua");
+    const auto save = (root / "slot.dat").string();
+    const auto configure = [&](const fs::path& overlay) {
+        dc4::configure_resources(base.string(),overlay.string());
+    };
+    configure({});
+    dc4scene::SceneRunner en(base.string());
+    CHECK(en.load_script((base / scenario).string()));
+    CHECK(en.advance_to_next_text() && en.advance_to_next_text());
+    en.set_variable(2,9,37);
+    CHECK(en.save_state(save));
+    const auto check_load = [&](const std::string& who, const std::string& line, bool resave) {
+        dc4scene::SceneRunner scene(base.string());
+        CHECK(scene.load_script((base / "MES/main.mes").string()));
+        CHECK(scene.load_state(save));
+        CHECK(scene.speaker() == who && scene.current_line() == line && scene.variable(2,9) == 37);
+        if (resave) CHECK(scene.save_state(save));
+        CHECK(scene.advance_to_next_text() && scene.current_line() == "Still in English");
+    };
+    configure(patch);
+    check_load("Tamu","Baris kedua",true);
+    // Some PC saves use offsets from the installed translation itself.
+    {
+        std::ifstream file(save,std::ios::binary);
+        std::vector<uint8_t> imported((std::istreambuf_iterator<char>(file)),{});
+        dc4::MesFile translated;
+        if (imported.size() == 0x11AF8 && translated.load_file((base / scenario).string()) &&
+            translated.labels.size() == 3) {
+            dc4::MesStream stream(translated);
+            stream.seek(translated.labels[1].offset);
+            dc4::MesCommand command;
+            auto field = [&](size_t at, uint32_t value) {
+                for (int i = 0; i < 4; ++i) imported[at+i] = uint8_t(value >> (8*i));
+            };
+            while (stream.next(&command)) {
+                if (command.op == 0x61) field(0x848,command.pos);
+                if (command.op == 6) { field(0x83C,stream.pos()); break; }
+            }
+            configure({});
+            std::string error;
+            CHECK(en.restore_pc_save(imported,&error));
+            CHECK(en.speaker() == "Visitor" && en.current_line() == "Second line");
+            CHECK(en.advance_to_next_text() && en.current_line() == "Still in English");
+        } else CHECK(false);
+    }
+    const std::string revision = "Dialog pengganti " + std::string(280,'x');
+    story(patch,"Revisi awal yang lebih panjang","Pengunjung",revision);
+    configure(patch);
+    check_load("Pengunjung",revision,true);
+    fs::remove(root / "slot.arisa.dat");
+    check_load("Pengunjung",revision,false);
+    configure({});
+    check_load("Visitor","Second line",false);
+    fs::remove(patch / scenario);
+    configure(patch);
+    check_load("Visitor","Second line",false);
+    std::ifstream file(save,std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),{});
+    if (bytes.size() == 0x11AF8) {
+        std::string error;
+        for (size_t field : {0x83C,0x840,0x844,0x848}) {
+            auto damaged = bytes;
+            std::fill_n(damaged.begin()+field,4,0xFF);
+            CHECK(!en.restore_pc_save(damaged,&error));
+        }
+        bytes.resize(0x1000); CHECK(!en.restore_pc_save(bytes,&error));
+    } else CHECK(false);
+}
+void multiline_dialogue(const fs::path& root, const dc4scene::FontRenderer& font) {
+    const std::string word = "gantung";
+    const auto one = ink_bands(render(root,word,font));
+    const auto two = ink_bands(render(root,word+"\n"+word,font));
+    const auto three = ink_bands(render(root,word+"\n"+word+"\n"+word,font));
+    CHECK(one.size() == 1 && two.size() == 2 && three.size() == 3);
+    if (one.size() != 1 || two.size() != 2 || three.size() != 3) return;
+    CHECK(one[0].first >= 632 && one[0].second >= 656 && one[0].second < 668);
+    CHECK(two[0] == one[0] && two[1].first == one[0].first + 32);
+    CHECK(three[0].first > 602 && three[0].first < one[0].first);
+    CHECK(three[2].second < 712);
+    for (int i = 0; i < 3; ++i) {
+        CHECK(three[i].first == three[0].first + 32 * i);
+        CHECK(three[i].second - three[i].first == one[0].second - one[0].first);
+    }
+    std::string wrapped = word;
+    while (font.text_width(std::u16string(wrapped.begin(),wrapped.end()) + u" gantung",22) <= 800)
+        wrapped += " " + word;
+    const std::string paragraph = wrapped + " " + wrapped + " " + word;
+    CHECK(ink_bands(render(root,paragraph,font)) == three);
+    const auto partial = ink_bands(render(root,paragraph,font,int(word.size())));
+    CHECK(partial.size() == 1 && partial[0] == three[0]);
+    const auto four = ink_bands(render(root,paragraph+"\n"+word,font));
+    CHECK(four.size() == 4 && four.front().first > 602 && four.back().second < 712);
 }
 void bitmap(const dc4scene::FontRenderer& font) {
     const auto image = bar();
@@ -170,7 +301,8 @@ int main(int argc, char** argv) {
     dc4::configure_resources(root.string(),"","windows-31j"); dc4::set_language(dc4::Language::English);
     dc4scene::FontRenderer font;
     if (argc < 2 || !font.load(argv[1],0,22,false)) return 1;
-    bitmap(font); dialogue_and_log(root,font);
+    bitmap(font); dialogue_and_log(root,font); multiline_dialogue(root,font);
+    translated_saves(root / "translation");
     dc4::configure_resources("",""); fs::remove_all(root);
     std::cout << (failures ? "Dal Segno text FAILED\n" : "Dal Segno text passed\n");
     return failures ? 1 : 0;

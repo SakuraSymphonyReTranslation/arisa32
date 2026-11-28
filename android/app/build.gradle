@@ -17,8 +17,8 @@ android {
         manifestPlaceholders = [appLabel: '@string/app_name']
         minSdk arisaAbi == null ? 21 : 23
         targetSdk 36       // Android 16 (Baklava)
-        versionCode 24
-        versionName '0.7.6'
+        versionCode 25
+        versionName '0.7.7'
         testInstrumentationRunner 'org.dc4engine.UpdateDialogChecks'
         externalNativeBuild {
             cmake {
@@ -70,10 +70,4 @@ android {
         abortOnError false
         checkReleaseBuilds false
     }
-}
-
-
-// dc4core lives at the repo root, two levels above android/app/.
-gradle.projectsEvaluated {
-    // nothing to do; the CMake path below reaches the sources directly
 }

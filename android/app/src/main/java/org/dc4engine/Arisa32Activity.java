@@ -9,7 +9,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.SharedPreferences;
-import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
@@ -17,7 +16,6 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.*;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -77,7 +75,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.RandomAccessFile;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -406,7 +403,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private boolean exportIncludeCompanions = true;
     private String pendingOverlayLanguage;
     private String pendingTitleHint;
-    private String pendingPresetId;
     private static final int PICK_GAME = 20, PICK_OVERLAY = 21, PICK_FONT = 22, EXPORT_SAVES = 23, IMPORT_SAVES = 24, PICK_WALLPAPER = 25, IMPORT_SAVES_TREE = 26;
     private static final int TEXT = ArisaUi.TEXT, MUTED = ArisaUi.MUTED;
 
@@ -506,9 +502,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
     private String tr(String en, String id, String jp) { return uiLanguage.equals("id") ? id : uiLanguage.equals("jp") ? jp : en; }
     private int dp(float value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
-    private Bitmap frame;
-    private Bitmap galleryFrame;
     private Thread renderThread;
+    private Bitmap galleryFrame;
     private boolean namePromptShown;
     private volatile boolean nameDialogOpen;
     private volatile boolean running;
@@ -543,9 +538,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private File pickerSaveDir;
     private GameLibrary.Entry profileGame;
     private GameProfile cachedProfile;
-    private int pendingSaveSlot = -1, saveRequestToken;
-    private AlertDialog saveDialog;  // UI thread only.
-    private Bitmap previewBitmap;
     private Paint badgePaint, badgeBgPaint;
     private Paint fpsPaint, fpsBgPaint;
     private volatile boolean showFps = true;
@@ -642,8 +634,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private String effectiveFont(GameLibrary.Entry game) {
         if (game == null) return "";
         File data = new File(game.path);
-        GameProfile profile = GameProfileRegistry.resolveProfile(data, game.title);
-        return GameFonts.resolve(profile, data, game.font, ensureDefaultFont());
+        GameProfile profile = game == selected ? currentProfile() : GameProfileRegistry.resolveProfile(data, game.title);
+        File fallback = new File(getFilesDir(), "fonts/MSGOTHIC.TTC");
+        String path = GameFonts.resolve(profile, data, game.font, fallback);
+        if (!path.equals(fallback.getAbsolutePath())) return path;
+        File installed = ensureDefaultFont();
+        return installed != null ? installed.getAbsolutePath() : "";
     }
 
     @Override
@@ -665,7 +661,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        ensureDefaultFont();
         preferences = getSharedPreferences("launcher", MODE_PRIVATE);
         uiLanguage = preferences.getString("uiLanguage", "en");
         updateUi = new UpdateUi(this);
@@ -683,7 +678,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             documentLanguage = savedInstanceState.getString("documentLanguage");
             exportIncludeCompanions = savedInstanceState.getBoolean("exportIncludeCompanions", true);
         }
-        frame = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
         showLibrary();
         if (ACTION_UPDATE.equals(getIntent().getAction())) {
             getIntent().setAction(Intent.ACTION_MAIN);
@@ -1015,7 +1009,8 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                 mesDir = new File(adv, "MES");
             }
         }
-        if (!mesDir.isDirectory() || GameLibrary.baseDataError(target) != null) return null;
+        if (!mesDir.isDirectory() || GameLibrary.kirikiriGame(target) != null ||
+                GameLibrary.baseDataError(target) != null) return null;
         File startMes = new File(mesDir, "start.mes");
         if (startMes.isFile()) {
             try (InputStream in = new FileInputStream(startMes)) {
@@ -1031,7 +1026,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         File[] mesList = mesDir.listFiles();
         if (mesList != null) {
             for (File f : mesList) {
-                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".mes")) {
+                if (f.getName().toLowerCase(Locale.ROOT).endsWith(".mes") && f.isFile()) {
                     try (InputStream in = new FileInputStream(f)) {
                         if (in.read() >= 0) return target;
                     } catch (IOException ignored) {}
@@ -1053,6 +1048,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         File hit = probeDir(new File(entry, "AdvData"));
                         if (hit == null) hit = probeDir(new File(entry, "Advdata"));
                         if (hit != null) return hit;
+                        if (GameLibrary.kirikiriGame(entry) != null) continue;
                         File[] inner = entry.listFiles();
                         if (inner != null) {
                             for (File i : inner) {
@@ -1100,11 +1096,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         return findSharedDataDir();
     }
 
-    private File defaultDataDir() {
-        File external = getExternalFilesDir(null);
-        return new File(external != null ? external : getFilesDir(), "AdvData");
-    }
-
     /** True when the app is allowed to read arbitrary shared-storage paths. */
     private boolean storageAccessGranted() {
         if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
@@ -1145,9 +1136,10 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (!initialized) {
             dataDir = selected.path;
             pauseCheckpoint = new File(getFilesDir(), "games/" + selected.id + "/pause-" + selected.language + ".dc4save").getAbsolutePath();
-            SaveArchive.recover(savesDir());
-            savesDir().mkdirs();
-            dc4Configure(savesDir().getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
+            File saves = savesDir();
+            SaveArchive.recover(saves);
+            saves.mkdirs();
+            dc4Configure(saves.getAbsolutePath(), selected.overlay(), selected.encoding(), effectiveFont(selected), selected.language);
             dc4ConfigureDisplay(selected.fontSize, selected.visualEffectsEnabled);
             Log.i(TAG, "data dir: " + dataDir);
             initialized = dc4Init(dataDir);
@@ -1176,6 +1168,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final View pendingOverlay = launchOverlay;
         final boolean dalSegno = isDalSegno();
         renderThread = new Thread(() -> {
+            Bitmap frame = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
             SurfaceFrameRenderer renderer = new SurfaceFrameRenderer(surface.getHolder(), !canvasOnlySurface,
                     (canvas, vp, dest, movie) -> drawOverlays(canvas, vp, getActiveFrameInVp(movie, dest, vp)));
             Bitmap movieBitmap = null;
@@ -1316,8 +1309,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         touches.clear();
         menuCommands.clear();
-        pendingSaveSlot = -1;
-        ++saveRequestToken;
         activePointerId = -1;
         updateGalleryBack(false);
         if (initialized) notifyUser(dc4SetPaused(true, retainSession ? pauseCheckpoint : ""));
@@ -1532,8 +1523,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void closeMenus() {
         slotMenuOpen = false;
         backlogOpen = false;
-        pendingSaveSlot = -1;
-        ++saveRequestToken;
     }
 
     private void backlogTouch(Touch touch) {
@@ -1544,7 +1533,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     private void slotTouch(Touch touch) {
-        if (pendingSaveSlot >= 0) return;
         final String action = dc4SlotsTouch(touch.action, touch.x, touch.y);
         if (action == null || action.isEmpty()) return;
         if (action.startsWith("slot:")) {
@@ -1563,33 +1551,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         else if (action.equals("automatic")) persistState(true, -3);
     }
 
-    private void confirmOverwrite(int slot) {
-        pendingSaveSlot = slot;
-        final int token = ++saveRequestToken;
-        runOnUiThread(() -> {
-            if (!resumed) return;
-            saveDialog = dialog()
-                    .setTitle(tr("Replace save?", "Ganti simpanan?", "セーブを上書きしますか？"))
-                    .setMessage(tr("Replace the saved game in slot ", "Ganti simpanan pada slot ", "次のスロットを上書きします：") + (slot + 1) + "?")
-                    .setPositiveButton(tr("Save", "Simpan", "セーブ"), (dialog, which) -> menuCommands.add(() -> {
-                        if (saveRequestToken == token && slotMenuOpen && !slotMenuLoading &&
-                                pendingSaveSlot == slot) {
-                            pendingSaveSlot = -1;
-                            persistState(false, slot);
-                        }
-                    }))
-                    .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), (dialog, which) -> cancelOverwrite(token))
-                    .setOnCancelListener(dialog -> cancelOverwrite(token)).create();
-            saveDialog.show();
-        });
-    }
-
-    private void cancelOverwrite(int token) {
-        menuCommands.add(() -> {
-            if (saveRequestToken == token) pendingSaveSlot = -1;
-        });
-    }
-
     private void openSlots(boolean loading) {
         if (!dc4SaveLoadAllowed()) return;
         final long started = android.os.SystemClock.elapsedRealtime();
@@ -1598,8 +1559,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         skipMode = false;
         backlogOpen = false;
         slotMenuLoading = loading;
-        pendingSaveSlot = -1;
-        ++saveRequestToken;
         refreshSlots();
         final long prepared = android.os.SystemClock.elapsedRealtime();
         File quick = pickerSaveFiles[0];
@@ -1611,33 +1570,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
 
     // ------------------------------------------------------------ save / load
-
-    private static int extractSlotNumber(String filename) {
-        if (filename == null) return -1;
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("system") || lower.startsWith("uinst") || lower.contains("profile")) {
-            return -1;
-        }
-        if (lower.startsWith("slot") && lower.endsWith(".dc4sav")) {
-            try {
-                return Integer.parseInt(lower.substring(4, lower.length() - 7));
-            } catch (NumberFormatException ignored) {}
-        }
-        String stem = lower.replaceAll("^(dc4phdl|dc4ph|dc4|dc3|dc2|dc|ds2|ds|save|qsave|quick|slot)", "");
-        if (stem.endsWith(".dat")) {
-            String numStr = stem.substring(0, stem.length() - 4);
-            try {
-                return Integer.parseInt(numStr);
-            } catch (NumberFormatException ignored) {}
-        }
-        if (lower.endsWith(".dat") && lower.length() >= 6) {
-            String lastTwo = lower.substring(lower.length() - 6, lower.length() - 4);
-            try {
-                return Integer.parseInt(lastTwo);
-            } catch (NumberFormatException ignored) {}
-        }
-        return -1;
-    }
 
     private GameProfile currentProfile() {
         if (cachedProfile == null || profileGame != selected) {
@@ -1852,10 +1784,12 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     /** Optional 128x72 thumbnail and scenario-title sidecars for the picker. */
     private void writePreview(File save) {
         try {
-            if (previewBitmap == null)
-                previewBitmap = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
-            dc4RenderPreview(previewBitmap);
-            final Bitmap thumb = Bitmap.createScaledBitmap(previewBitmap, 128, 72, true);
+            Bitmap preview = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+            final Bitmap thumb;
+            try {
+                dc4RenderPreview(preview);
+                thumb = Bitmap.createScaledBitmap(preview, 128, 72, true);
+            } finally { preview.recycle(); }
             String previewPath = save.getAbsolutePath();
             if (previewPath.toLowerCase(Locale.ROOT).endsWith(".dat"))
                 previewPath = previewPath.substring(0, previewPath.length()-4);
@@ -2497,7 +2431,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
 
     private void showGameAddOptions(String defaultTitle, String defaultPath, String presetId) {
         pendingTitleHint = defaultTitle;
-        pendingPresetId = presetId;
         LinearLayout body = ArisaUi.column(this);
         String label = defaultTitle != null ? defaultTitle : tr("Custom ADV32 Game", "Game ADV32 Kustom", "カスタム ADV32");
         body.addView(text(label, 17, TEXT));
@@ -2624,6 +2557,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             });
         }
         builder.setPositiveButton(tr("Select Current Folder", "Pilih Folder Ini", "このフォルダーを選択"), (d, w) -> {
+            if (rejectKirikiriFolder(currentDir)) return;
             File hit = probeDir(currentDir);
             if (hit == null) hit = probeDir(new File(currentDir, "AdvData"));
             if (hit == null) hit = probeDir(new File(currentDir, "Advdata"));
@@ -2640,32 +2574,37 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         builder.show();
     }
 
-    private void scanStorageVolume(File rootVolume) {
-        runFileTask(tr("Scanning " + rootVolume.getName() + "…", "Memindai " + rootVolume.getName() + "…", "スキャン中…"), () -> {
-            ArrayList<File> candidates = new ArrayList<>();
-            File[] list1 = rootVolume.listFiles();
-            if (list1 != null) {
-                for (File d1 : list1) {
-                    if (!d1.isDirectory()) continue;
-                    String n1 = d1.getName().toLowerCase(Locale.ROOT);
-                    if (n1.startsWith("android") || n1.startsWith(".")) continue;
-                    File hit = probeDir(d1);
-                    if (hit == null) hit = probeDir(new File(d1, "AdvData"));
-                    if (hit == null) hit = probeDir(new File(d1, "Advdata"));
-                    if (hit != null && !candidates.contains(hit)) candidates.add(hit);
-                    File[] list2 = d1.listFiles();
-                    if (list2 != null) {
-                        for (File d2 : list2) {
-                            if (!d2.isDirectory()) continue;
-                            if (d2.getName().startsWith(".")) continue;
-                            File hit2 = probeDir(d2);
-                            if (hit2 == null) hit2 = probeDir(new File(d2, "AdvData"));
-                            if (hit2 == null) hit2 = probeDir(new File(d2, "Advdata"));
-                            if (hit2 != null && !candidates.contains(hit2)) candidates.add(hit2);
-                        }
+    private static void collectStorageCandidates(File root, ArrayList<File> candidates) {
+        File[] list1 = root.listFiles();
+        if (list1 != null) {
+            for (File d1 : list1) {
+                if (!d1.isDirectory()) continue;
+                String n1 = d1.getName().toLowerCase(Locale.ROOT);
+                if (n1.startsWith("android") || n1.startsWith(".")) continue;
+                File hit = probeDir(d1);
+                if (hit == null) hit = probeDir(new File(d1, "AdvData"));
+                if (hit == null) hit = probeDir(new File(d1, "Advdata"));
+                if (hit != null && !candidates.contains(hit)) candidates.add(hit);
+                if (GameLibrary.kirikiriGame(d1) != null) continue;
+                File[] list2 = d1.listFiles();
+                if (list2 != null) {
+                    for (File d2 : list2) {
+                        if (!d2.isDirectory()) continue;
+                        if (d2.getName().startsWith(".")) continue;
+                        File hit2 = probeDir(d2);
+                        if (hit2 == null) hit2 = probeDir(new File(d2, "AdvData"));
+                        if (hit2 == null) hit2 = probeDir(new File(d2, "Advdata"));
+                        if (hit2 != null && !candidates.contains(hit2)) candidates.add(hit2);
                     }
                 }
             }
+        }
+    }
+
+    private void scanStorageVolume(File rootVolume) {
+        runFileTask(tr("Scanning " + rootVolume.getName() + "…", "Memindai " + rootVolume.getName() + "…", "スキャン中…"), () -> {
+            ArrayList<File> candidates = new ArrayList<>();
+            collectStorageCandidates(rootVolume, candidates);
             int added = 0;
             for (File c : candidates) {
                 try {
@@ -2721,29 +2660,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     File hit = probeDir(new File(root, sp));
                     if (hit != null && !candidates.contains(hit)) candidates.add(hit);
                 }
-                File[] list1 = root.listFiles();
-                if (list1 != null) {
-                    for (File d1 : list1) {
-                        if (!d1.isDirectory()) continue;
-                        String n1 = d1.getName().toLowerCase(Locale.ROOT);
-                        if (n1.startsWith("android") || n1.startsWith(".")) continue;
-                        File hit = probeDir(d1);
-                        if (hit == null) hit = probeDir(new File(d1, "AdvData"));
-                        if (hit == null) hit = probeDir(new File(d1, "Advdata"));
-                        if (hit != null && !candidates.contains(hit)) candidates.add(hit);
-                        File[] list2 = d1.listFiles();
-                        if (list2 != null) {
-                            for (File d2 : list2) {
-                                if (!d2.isDirectory()) continue;
-                                if (d2.getName().startsWith(".")) continue;
-                                File hit2 = probeDir(d2);
-                                if (hit2 == null) hit2 = probeDir(new File(d2, "AdvData"));
-                                if (hit2 == null) hit2 = probeDir(new File(d2, "Advdata"));
-                                if (hit2 != null && !candidates.contains(hit2)) candidates.add(hit2);
-                            }
-                        }
-                    }
-                }
+                collectStorageCandidates(root, candidates);
             }
             int added = 0;
             for (File c : candidates) {
@@ -2909,6 +2826,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                         hit = probePresetCandidate(f, presetId);
                         if (hit != null) break;
 
+                        if (GameLibrary.kirikiriGame(f) != null) continue;
                         File[] sublist = f.listFiles();
                         if (sublist != null) {
                             for (File sub : sublist) {
@@ -2940,17 +2858,15 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     }
     private void launchGame(GameLibrary.Entry game) {
         if (ioBusy) return;
-        String dataError = GameLibrary.baseDataError(new File(game.path));
-        if (dataError != null) {
-            settingsDialog = dialog().setTitle(tr("Incomplete game folder", "Folder game tidak lengkap", "ゲームデータが不足しています"))
-                    .setMessage(incompleteBaseMessage(dataError))
-                    .setPositiveButton(tr("Add folder", "Tambah folder", "フォルダーを追加"), (d,w) -> chooseAddMethod())
-                    .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
-            return;
-        }
-        if (probeDir(new File(game.path)) == null) {
-            settingsDialog = dialog().setTitle(tr("Reconnect your game", "Hubungkan kembali game", "ゲームを再登録"))
-                    .setMessage(tr("Game files are unavailable. Add the folder again to reconnect it. Your saves are kept.", "Berkas game tidak tersedia. Tambahkan ulang folder untuk menghubungkannya. Simpanan Anda tetap tersimpan.", "ゲームデータを読み取れません。フォルダーを再追加してください。セーブは保持されます。"))
+        File root = new File(game.path);
+        if (probeDir(root) == null) {
+            if (rejectKirikiriFolder(root)) return;
+            String dataError = GameLibrary.baseDataError(root);
+            settingsDialog = dialog().setTitle(dataError != null
+                    ? tr("Incomplete game folder", "Folder game tidak lengkap", "ゲームデータが不足しています")
+                    : tr("Reconnect your game", "Hubungkan kembali game", "ゲームを再登録"))
+                    .setMessage(dataError != null ? incompleteBaseMessage(dataError)
+                            : tr("Game files are unavailable. Add the folder again to reconnect it. Your saves are kept.", "Berkas game tidak tersedia. Tambahkan ulang folder untuk menghubungkannya. Simpanan Anda tetap tersimpan.", "ゲームデータを読み取れません。フォルダーを再追加してください。セーブは保持されます。"))
                     .setPositiveButton(tr("Add folder", "Tambah folder", "フォルダーを追加"), (d,w) -> chooseAddMethod())
                     .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show(); return;
         }
@@ -2964,6 +2880,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             Locale.setDefault(Locale.Category.DISPLAY, Locale.JAPAN);
             Locale.setDefault(Locale.Category.FORMAT, Locale.JAPAN);
         }
+        cachedProfile = null;
         selected = game; inLibrary = false; initializationFailed = false; surfaceReady = false;
         stretchToScreen = game.stretchToScreen;
         lastLineSerial = -1; wasEnded = wasRevealed = choiceNotified = false; pickerLatestFile = pickerLatestCopy = null;
@@ -3113,8 +3030,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         final Button button = galleryBack;
         runOnUiThread(() -> {
             if (button != null && button == galleryBack) {
-                if (navigation != null) navigation.setGalleryPreviewActive(galleryPreviewActive,
-                        org.dc4engine.profile.DalSegnoProfile.ID.equals(currentProfile().getId()));
+                if (navigation != null) navigation.setGalleryPreviewActive(galleryPreviewActive);
                 else button.setVisibility(View.GONE);
             }
         });
@@ -3345,8 +3261,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         if (selected == null) return false;
         if (org.dc4engine.profile.DalSegnoProfile.ID.equals(selected.id)) return true;
         try {
-            String id = GameProfileRegistry.resolveProfile(new File(selected.path), selected.title).getId();
-            return org.dc4engine.profile.DalSegnoProfile.ID.equals(id);
+            return org.dc4engine.profile.DalSegnoProfile.ID.equals(currentProfile().getId());
         } catch (Throwable ignored) {
             return false;
         }
@@ -3691,6 +3606,26 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
     private void runFileTask(String label, FileTask task, Runnable success, boolean cancellable) {
         runFileTask(label, task, success, cancellable, false);
     }
+    private boolean rejectKirikiriFolder(File folder) {
+        try {
+            GameLibrary.rejectKirikiri(GameLibrary.kirikiriGame(folder));
+            return false;
+        } catch (GameLibrary.UnsupportedEngineException error) {
+            showFileError(error);
+            return true;
+        }
+    }
+    private void showFileError(Exception error) {
+        String title = tr("Operation failed", "Operasi gagal", "操作に失敗しました");
+        String message = error.getMessage() == null ? error.toString() : error.getMessage();
+        if (error instanceof GameLibrary.UnsupportedEngineException) {
+            String game = ((GameLibrary.UnsupportedEngineException) error).title;
+            title = tr("Unsupported game engine", "Engine game tidak didukung", "非対応のゲームエンジン");
+            message = tr(message, (game.isEmpty() ? "Game ini" : game) + " menggunakan KiriKiri. Arisa32 mendukung game ADV32.",
+                    (game.isEmpty() ? "このゲーム" : game) + " は吉里吉里を使用しています。Arisa32 は ADV32 のゲームに対応しています。");
+        }
+        dialog().setTitle(title).setMessage(message).setPositiveButton("OK", null).show();
+    }
     private void runFileTask(String label, FileTask task, Runnable success, boolean cancellable, boolean determinate) {
         if (ioBusy || destroyed) return;
         stopRendering(); ioBusy = true; importCancelled = new AtomicBoolean();
@@ -3712,15 +3647,14 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         }
         progressDialog = builder.show();
         fileWorker.execute(() -> {
-            String failure = null;
-            try { task.run(); } catch (Exception error) { Log.e(TAG, "File operation failed", error); failure = error.getMessage() == null ? error.toString() : error.getMessage(); }
-            final String result = failure;
+            Exception failure = null;
+            try { task.run(); } catch (Exception error) { Log.e(TAG, "File operation failed", error); failure = error; }
+            final Exception result = failure;
             runOnUiThread(() -> {
                 ioBusy = false;
                 if (destroyed) return;
                 if (progressDialog != null) { progressDialog.dismiss(); progressDialog = null; progressMessage = null; progressBar = null; }
-                if (result != null) dialog().setTitle(tr("Operation failed", "Operasi gagal", "操作に失敗しました"))
-                        .setMessage(result).setPositiveButton("OK", null).show();
+                if (result != null) showFileError(result);
                 else success.run();
                 if (inLibrary) showLibrary(); else startRendering();
             });
@@ -3824,7 +3758,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             try {
                 new FolderImporter(getContentResolver(), uri, folder, importCancelled, (name, bytes) -> runOnUiThread(() -> {
                     if (progressMessage != null) progressMessage.setText(name + "\n" + (bytes / (1024 * 1024)) + " MiB");
-                })).run();
+                })).run(overlay == null);
                 registerGame(folder, overlay, game, true, titleHint); installed = true;
             } finally { if (!installed) SaveArchive.removeTree(folder); }
         }, () -> notifyUser(tr("Folder added. Select the content language in game settings.", "Folder ditambahkan. Pilih bahasa konten di pengaturan game.", "フォルダーを追加しました。ゲーム設定で内容の言語を選べます。")), true);
@@ -3859,14 +3793,13 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
             final String titleHint = pendingTitleHint;
             pendingTitleHint = null;
 
-            {
-                File direct = resolveUriToDirectPath(uri);
+            File direct = resolveUriToDirectPath(uri);
+            if (direct != null) {
                 File validDirect = null;
-                if (direct != null) {
-                    try { validDirect = GameLibrary.dataRoot(direct, overlay != null); }
-                    catch (IOException ignored) {}
-                    validDirect = probeDir(validDirect);
-                }
+                try { validDirect = GameLibrary.dataRoot(direct, overlay != null); }
+                catch (GameLibrary.UnsupportedEngineException error) { showFileError(error); return; }
+                catch (IOException ignored) {}
+                validDirect = probeDir(validDirect);
                 if (validDirect != null) {
                     final File chosenDirect = validDirect;
                     settingsDialog = dialog().setTitle(tr("Play Directly or Copy?", "Mainkan Langsung atau Salin?", "直接起動かコピーか"))
@@ -3885,7 +3818,7 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     return;
                 }
             }
-            settingsDialog = dialog().setTitle(tr("Copy folder to app storage?", "Salin folder ke penyimpanan aplikasi?", "アプリ領域にコピーしますか？"))
+            Runnable offerCopy = () -> settingsDialog = dialog().setTitle(tr("Copy folder to app storage?", "Salin folder ke penyimpanan aplikasi?", "アプリ領域にコピーしますか？"))
                     .setMessage(tr(
                             "This folder cannot currently be read directly. Copying the game or patch may use several GB. For direct playback, enable storage access and choose a local folder again.",
                             "Folder ini belum dapat dibaca langsung. Menyalin game atau patch dapat memakai beberapa GB. Untuk pemutaran langsung, aktifkan akses penyimpanan lalu pilih kembali folder lokal.",
@@ -3893,6 +3826,19 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
                     .setPositiveButton(tr("Copy to App Storage", "Salin ke Penyimpanan Aplikasi", "アプリ領域にコピー"), (d, w) -> startFolderImport(uri, overlay, game, titleHint))
                     .setNeutralButton(tr("Storage access", "Akses penyimpanan", "ストレージ権限"), (d, w) -> ensureStorageAccess())
                     .setNegativeButton(tr("Cancel", "Batal", "キャンセル"), null).show();
+            if (direct == null && request == PICK_GAME && DocumentsContract.isTreeUri(uri)) {
+                runFileTask(tr("Checking game folder", "Memeriksa folder game", "ゲームフォルダーを確認中"), () -> {
+                    Uri document = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri));
+                    String name;
+                    try (android.database.Cursor cursor = getContentResolver().query(document,
+                            new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+                        name = cursor != null && cursor.moveToFirst() ? cursor.getString(0) : null;
+                    } catch (UnsupportedOperationException | IllegalArgumentException ignored) {
+                        return;
+                    }
+                    if (name != null) GameLibrary.rejectKirikiri(org.dc4engine.profile.Dc4Profile.kirikiriTitle(name));
+                }, offerCopy);
+            } else offerCopy.run();
         } else if (game == null) { notifyUser("Select the game again before importing or exporting."); }
         else if (request == PICK_FONT) {
             runFileTask(tr("Importing font", "Mengimpor font", "フォントを追加中"), () -> importFont(uri, game),
@@ -4054,7 +4000,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         } else {
             preferences.edit().remove("pausedGame").remove("pausedLanguage").commit();
         }
-        if (saveDialog != null) { saveDialog.dismiss(); saveDialog = null; }
         super.onPause();
     }
 
@@ -4080,7 +4025,6 @@ public class Arisa32Activity extends Activity implements SurfaceHolder.Callback 
         fileWorker.shutdownNow();
         if (progressDialog != null) progressDialog.dismiss();
         if (settingsDialog != null) settingsDialog.dismiss();
-        if (frame != null) frame.recycle();
         super.onDestroy();
     }
 

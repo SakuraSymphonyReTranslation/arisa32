@@ -4,7 +4,7 @@
 
 Arisa32 is a C++17 reimplementation of the CIRCUS adv32 visual novel runtime for the Da Capo and Dal Segno series. It runs on Windows with SDL2 and on Android with NativeActivity + JNI, reading MES scripts, CRX/CRM artwork, and XPCM audio directly from an installed game.
 
-Arisa32 **v0.7.6** fixes transitions and Scenario Replay in Dal Segno, alarm choices in D.C. II P.C., and Start menu voices in D.C. II Dearest Marriage. [Latest release](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.6) · [Release notes](docs/releases/v0.7.6/en.md) · [Version history](CHANGELOG.md)
+Arisa32 **v0.7.7** can load Dal Segno saves after you switch between the official English script and the Indonesian patch. The Back button in the CG viewer returns you to the gallery. On Android, all six games tested now reach their first frame sooner. [Latest release](https://github.com/SakuraSymphonyReTranslation/arisa32/releases/tag/v0.7.7) · [Release notes](docs/releases/v0.7.7/en.md) · [Version history](CHANGELOG.md)
 
 > [!IMPORTANT]
 > Large Language Models (LLMs) generated all source code, system architecture, adv32 MES opcode reverse engineering, asset decoders, Android/JNI interfaces, and documentation in this repository.
@@ -60,7 +60,7 @@ In the original D.C. II P.C. (DC2PC) and D.C. II To You (DC2TY), the up/down arr
 
 Arisa32 supports the MangaGamer edition of D.S. -Dal Segno- with the official English translation as of v0.7.5. Support covers Save/Load, Backlog, Scenario Replay, CG Mode, and Music Mode. Full routes, endings, and unlocks still require validation. [Dal Segno release notes](docs/releases/v0.7.5/en.md)
 
-Standard, Limited, Deluxe, and Download editions are grouped under their main title. Games that use another engine, such as D.C.4 Fortunate Departures, are not supported.
+Standard, Limited, Deluxe, and Download editions are grouped under their main title. Games that use another engine, such as D.C.4 Fortunate Departures & D.C.4 Sweet Harmony, are not supported.
 
 ## Platforms and features
 
@@ -148,10 +148,10 @@ The build produces a universal APK containing ARM64 and ARMv7. In PowerShell, us
 
 Prebuilt APKs are available on [GitHub Releases](https://github.com/SakuraSymphonyReTranslation/arisa32/releases):
 
-| v0.7.6 APK | Minimum Android | Use |
+| v0.7.7 APK | Minimum Android | Use |
 | --- | --- | --- |
-| `Arisa32-v0.7.6.apk` | 5.0 / API 21 | Release build for normal use |
-| `Arisa32-v0.7.6-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
+| `Arisa32-v0.7.7.apk` | 5.0 / API 21 | Release build for normal use |
+| `Arisa32-v0.7.7-debug.apk` | 5.0 / API 21 | Debug build for testing and diagnosis |
 
 Both APKs are universal, each containing ARM64 and ARMv7. `SHA256SUMS.txt` contains checksums for both APKs.
 

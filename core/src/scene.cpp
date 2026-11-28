@@ -4824,10 +4824,16 @@ void SceneRunner::draw_text_line(const std::string& sjis, int reveal) {
         if (shown_end > line.start) { last_x = x; last_y = line_offsets[line_index]; }
         remaining -= int(shown_end - line.start);
     }
-    const int y = text_baseline - text_top;
+    const int text_bottom = layout_.bg_y + layout_.bg_h - 8;
+    int y = text_baseline - text_top;
+    const bool ds_multiline = is_dalsegno_profile_ && lines.size() >= 3;
+    if (ds_multiline) {
+        const int first_baseline_min = layout_.name_baseline + line_spacing;
+        y = std::min(y, std::max(first_baseline_min - text_top, text_bottom - text_img.h));
+    }
     const float scale = dc2pc_ui_ ? 1.2f : dc2dm_ui_ ? 1.25f : 1.0f;
-    const int available_height = layout_.bg_y + layout_.bg_h - 8 - y;
-    const float fit = dm_proportional && text_img.h > available_height && available_height > 0 ?
+    const int available_height = text_bottom - y;
+    const float fit = (dm_proportional || ds_multiline) && text_img.h > available_height && available_height > 0 ?
         float(available_height) / text_img.h : 1.0f;
     blit(&frame_, kScreenW, kScreenH, (dc2pc_ui_ ? 160 : 0) + int(std::lround((layout_.text_x - 2) * scale)),
          int(std::lround(y * scale)), text_img, scale * fit, 255);

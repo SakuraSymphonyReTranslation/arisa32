@@ -76,7 +76,7 @@ struct Engine {
     // Original-look Log screen state (dc4ui::LogScreen). Rows are recorded
     // natively as lines begin; dialogue_index counts text lines for jumps.
     dc4ui::LogScreen log;
-    bool log_loaded = false;
+    bool log_load_attempted = false;
     std::vector<dc4ui::LogRow> log_rows;
     int log_scroll = 0;
     bool log_thumbs = true;
@@ -1132,9 +1132,6 @@ Java_org_dc4engine_Dc4Activity_dc4Init(JNIEnv* env, jobject thiz, jstring data_d
         }
     }
     if (!font_ok) LOGE("no CJK font found; text will be blank");
-    e->log_loaded = e->log.load(e->data_dir);
-    e->log.set_latin_mode(dc4::is_latin());
-    if (!e->log_loaded) LOGE("log screen artwork unavailable");
     bool imported_pc_progress = false;
     if (!menu_ok) {
         LOGI("system menus unavailable (%s); using in-game flow", err.c_str());
@@ -1989,6 +1986,15 @@ Java_org_dc4engine_Dc4Activity_dc4SlotsTouch(JNIEnv* env, jobject, jint action, 
 
 // ------------------------------------------------------------ Log screen
 
+static bool ensure_log_artwork(Engine* e) {
+    if (!e->log_load_attempted) {
+        e->log_load_attempted = true;
+        if (!e->log.load(e->data_dir)) LOGE("log screen artwork unavailable");
+        e->log.set_latin_mode(dc4::is_latin());
+    }
+    return e->log.loaded();
+}
+
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogSetCursorEnabled(JNIEnv*, jobject, jboolean enabled) {
     Engine* e = g_engine;
@@ -2004,7 +2010,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogSetCursorEnabled(JNIEnv*, jobject, jboolean
 JNIEXPORT void JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogOpen(JNIEnv*, jobject) {
     Engine* e = g_engine;
-    if (!e) return;
+    if (!e || !ensure_log_artwork(e)) return;
     e->log_scroll = e->log.last_scroll(e->log_rows.size());
     if (!e->log_cursor_enabled) e->log.select_top(e->log_scroll, e->log_rows.size());
     e->log_mx = e->log_my = -1;
@@ -2028,7 +2034,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogClear(JNIEnv*, jobject) {
 JNIEXPORT jboolean JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogFrame(JNIEnv* env, jobject, jobject bitmap) {
     Engine* e = g_engine;
-    if (!e || !e->scene || !e->log_loaded) return JNI_FALSE;
+    if (!e || !e->scene || !ensure_log_artwork(e)) return JNI_FALSE;
     e->save_frame_visible = false;
     e->tick = Clock::now();
     const bool visible = e->scene->message_visible();
@@ -2059,7 +2065,7 @@ Java_org_dc4engine_Dc4Activity_dc4LogFrame(JNIEnv* env, jobject, jobject bitmap)
 JNIEXPORT jstring JNICALL
 Java_org_dc4engine_Dc4Activity_dc4LogTouch(JNIEnv* env, jobject, jint action, jint x, jint y) {
     Engine* e = g_engine;
-    if (!e || !e->log_loaded) return env->NewStringUTF("");
+    if (!e || !ensure_log_artwork(e)) return env->NewStringUTF("");
     e->log_mx = x;
     e->log_my = y;
     const size_t count = e->log_rows.size();

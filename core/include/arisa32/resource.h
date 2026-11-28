@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,9 @@ enum class Language {
 void configure_resources(const std::string& base, const std::string& overlay = {},
                          const std::string& text_encoding = "windows-31j");
 std::string resolve_asset(const std::string& path);
+std::string resolve_original_asset(const std::string& directory, const std::string& relative);
 bool asset_exists(const std::string& path);
+bool read_asset(const std::string& path, std::vector<uint8_t>* bytes);
 bool prefers_utf8_text();
 bool decode_utf8(const std::string& bytes, std::u16string* text);
 

@@ -7,6 +7,17 @@ import java.util.*;
 
 /** Small, atomically persisted catalogue. All paths are real filesystem paths. */
 final class GameLibrary {
+    private static final byte[] XP3_MAGIC = {'X', 'P', '3', 13, 10, 32, 10, 26, (byte) 139, 103, 1};
+
+    static final class UnsupportedEngineException extends IOException {
+        final String title;
+
+        private UnsupportedEngineException(String title) {
+            super((title.isEmpty() ? "This game" : title) + " uses KiriKiri. Arisa32 supports ADV32 games.");
+            this.title = title;
+        }
+    }
+
     static final class Entry {
         String id, title, path, language = "jp", font = "";
         int fontSize = 22;
@@ -45,7 +56,7 @@ final class GameLibrary {
                 File pFile = new File(e.path);
                 if (pFile.exists()) e.title = detectTitle(pFile);
                 else if (e.title.contains("Plus Harmony") || e.title.contains("プラスハーモニー")) e.title = "D.C.4 ~Da Capo 4~ Plus Harmony";
-                else if (e.title.contains("Sweet Harmony") || e.title.contains("スウィートハーモニー")) e.title = "D.C.4 ~Da Capo 4~ Sweet Harmony";
+                else if (org.dc4engine.profile.Dc4Profile.kirikiriTitle(e.title) != null) e.title = org.dc4engine.profile.Dc4Profile.kirikiriTitle(e.title);
                 else if (e.title.contains("Platinum Partner") || e.title.contains("P.P.")) e.title = "D.C. III P.P. ~Da Capo III Platinum Partner~";
                 else if (e.title.contains("With You")) e.title = "D.C. III With You ~Da Capo III With You~";
                 else if (e.title.contains("Dream Days")) e.title = "D.C. III Dream Days ~Da Capo III Dream Days~";
@@ -66,9 +77,10 @@ final class GameLibrary {
                 else if (e.title.contains("Dal Segno") || e.title.contains("D.S.")) e.title = "D.S. -Dal Segno-";
                 else e.title = "D.C.4 ~Da Capo 4~";
             }
-            e.language = p.getProperty(id + ".language", isNativeEnglish(e) ? "en" : "jp");
-            if (isNativeEnglish(e) && ("jp".equals(e.language) || e.language.isEmpty())) e.language = "en";
-            if (!Arrays.asList("jp", "en", "id").contains(e.language)) e.language = isNativeEnglish(e) ? "en" : "jp";
+            boolean nativeEnglish = isNativeEnglish(e);
+            e.language = p.getProperty(id + ".language", nativeEnglish ? "en" : "jp");
+            if (nativeEnglish && ("jp".equals(e.language) || e.language.isEmpty())) e.language = "en";
+            if (!Arrays.asList("jp", "en", "id").contains(e.language)) e.language = nativeEnglish ? "en" : "jp";
             e.font = p.getProperty(id + ".font", "");
             try { e.fontSize = Math.max(18, Math.min(22, Integer.parseInt(p.getProperty(id + ".fontSize", "22")))); }
             catch (NumberFormatException ignored) { e.fontSize = 22; }
@@ -83,12 +95,14 @@ final class GameLibrary {
             e.enFingerprint = p.getProperty(id + ".enFingerprint", "");
             e.idFingerprint = p.getProperty(id + ".idFingerprint", "");
             autoDetectOverlays(e);
-            if (!e.language.equals("jp") && e.overlay().isEmpty() && !isNativeEnglish(e)) e.language = "jp";
+            if (!e.language.equals("jp") && e.overlay().isEmpty() && !nativeEnglish) e.language = "jp";
             entries.add(e);
         }
     }
     static String detectTitle(File dataRoot) {
         if (dataRoot == null) return "CIRCUS ADV32";
+        String kirikiri = org.dc4engine.profile.Dc4Profile.kirikiriFolderTitle(dataRoot);
+        if (kirikiri != null) return kirikiri;
         File mes = new File(dataRoot, "MES");
         File grp = new File(dataRoot, "GRP");
         if (!mes.isDirectory()) {
@@ -123,9 +137,6 @@ final class GameLibrary {
         if ((exe1 != null && exe1.isFile()) || (exe2 != null && exe2.isFile()) || exe3.isFile() ||
             pathStr.contains("plus harmony") || pathStr.contains("dc4ph") || pathStr.contains("dc4_ph")) {
             return "D.C.4 ~Da Capo 4~ Plus Harmony";
-        }
-        if (pathStr.contains("sweet harmony") || pathStr.contains("dc4sh") || pathStr.contains("dc4_sh")) {
-            return "D.C.4 ~Da Capo 4~ Sweet Harmony";
         }
         if (new File(mes, "dc4_asu20190506c.mes").isFile() ||
             new File(mes, "dc4_asu20190511b.mes").isFile() ||
@@ -301,28 +312,16 @@ final class GameLibrary {
 
     static boolean isNativeEnglish(Entry e) {
         if (e == null) return false;
-        if (e.path != null) {
-            String p = e.path.toLowerCase(Locale.ROOT);
-            if (p.contains("plus harmony") || p.contains("dc4") || p.contains("da capo") ||
-                p.contains("sweet harmony") || p.contains("dc3") || p.contains("dc2")) {
-                return false;
-            }
+        String title = e.title == null ? "" : e.title.toLowerCase(Locale.ROOT);
+        if (title.contains("da capo") || title.contains("d.c.")) return false;
+        File dir = e.path == null || e.path.isEmpty() ? null : new File(e.path);
+        String identity = title + " " + (dir == null ? "" : dir.getPath().toLowerCase(Locale.ROOT));
+        if (!identity.contains("dal segno") && !identity.contains("d.s.") && !identity.contains("dsao")) {
+            if (dir == null || !(new File(dir, "DSAO.exe").isFile() ||
+                    new File(dir.getParentFile(), "DSAO.exe").isFile() ||
+                    new File(dir, "GRP/mplus-1c-heavy.ttf").isFile())) return false;
         }
-        if (e.title != null) {
-            String t = e.title.toLowerCase(Locale.ROOT);
-            if (t.contains("da capo") || t.contains("d.c.")) return false;
-            if (t.contains("dal segno") || t.contains("d.s.")) return true;
-        }
-        if (e.path != null) {
-            String p = e.path.toLowerCase(Locale.ROOT);
-            if (p.contains("dal segno") || p.contains("dsao") || p.contains("[mangagamer] d.s.")) return true;
-            File dir = new File(e.path);
-            File parent = dir.getParentFile();
-            if (new File(dir, "DSAO.exe").isFile() || (parent != null && new File(parent, "DSAO.exe").isFile())) return true;
-            File grp = new File(dir, "GRP");
-            if (grp.isDirectory() && new File(grp, "mplus-1c-heavy.ttf").isFile()) return true;
-        }
-        return false;
+        return org.dc4engine.profile.GameProfileRegistry.getProfileById("dal_segno").matches(dir, identity);
     }
 
     private static boolean hasMesScripts(File dir, boolean overlay) {
@@ -340,6 +339,7 @@ final class GameLibrary {
             }
         }
         if (!mes.isDirectory()) return false;
+        if (!overlay && kirikiriGame(dir) != null) return false;
         if (!overlay && (new File(mes, "start.mes").isFile() || new File(mes, "dc4_start.mes").isFile())) return true;
         File[] list = mes.listFiles();
         if (list != null) {
@@ -356,7 +356,7 @@ final class GameLibrary {
         boolean dc4 = false;
         for (File script : scripts) {
             String name = script.getName().toLowerCase(Locale.ROOT);
-            if (script.isFile() && name.startsWith("dc4_") && name.endsWith(".mes")) {
+            if (name.startsWith("dc4_") && name.endsWith(".mes") && script.isFile()) {
                 dc4 = true;
                 break;
             }
@@ -376,7 +376,46 @@ final class GameLibrary {
         return "GRP/NAMES.DAT";
     }
 
+    static boolean isXp3Archive(InputStream input) throws IOException {
+        byte[] header = new byte[XP3_MAGIC.length];
+        try {
+            new DataInputStream(input).readFully(header);
+            return Arrays.equals(header, XP3_MAGIC);
+        } catch (EOFException truncated) {
+            return false;
+        }
+    }
+
+    private static boolean hasKirikiriData(File folder) {
+        if (folder == null) return false;
+        String[] names = folder.list();
+        if (names == null) return false;
+        for (String name : names) {
+            if (name.equalsIgnoreCase("startup.tjs") && new File(folder, name).isFile()) return true;
+            if (!name.toLowerCase(Locale.ROOT).endsWith(".xp3")) continue;
+            try (InputStream in = new FileInputStream(new File(folder, name))) {
+                if (isXp3Archive(in)) return true;
+            } catch (IOException ignored) {}
+        }
+        return false;
+    }
+
+    static String kirikiriGame(File path) {
+        if (path == null) return null;
+        String title = org.dc4engine.profile.Dc4Profile.kirikiriFolderTitle(path);
+        if (title != null) return title;
+        File game = path.getName().equalsIgnoreCase("AdvData") ? path.getParentFile() : path;
+        if (hasKirikiriData(path) || (game != path && hasKirikiriData(game)))
+            return game == null ? path.getName() : game.getName();
+        return null;
+    }
+
+    static void rejectKirikiri(String title) throws UnsupportedEngineException {
+        if (title != null) throw new UnsupportedEngineException(title);
+    }
+
     static File dataRoot(File path, boolean overlay) throws IOException {
+        if (!overlay) rejectKirikiri(kirikiriGame(path));
         if (hasMesScripts(path, overlay)) return path;
         File[] list = path.listFiles();
         if (list != null) {
